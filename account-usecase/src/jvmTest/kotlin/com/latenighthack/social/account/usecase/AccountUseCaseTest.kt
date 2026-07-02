@@ -32,12 +32,12 @@ class AccountUseCaseTest {
     fun `create account then sign out`() = runTest {
         val manager = FakeAccountManager()
 
-        val created = CreateAccountUseCase(manager).execute()
+        val created = CreateAccountUseCase(manager).create()
         assertIs<AccountResult.Ready>(created)
         assertEquals(33, created.accountId.size)
         assertTrue(manager.hasAccount)
 
-        val signedOut = SignOutUseCase(manager).execute()
+        val signedOut = SignOutUseCase(manager).signOut()
         assertEquals(AccountResult.SignedOut, signedOut)
         assertFalse(manager.hasAccount)
     }

@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.first
 class UpdateMyDisplayNameUseCase(
     private val myProfiles: MyProfilesManager,
 ) {
-    suspend fun execute(name: String) {
+    suspend fun update(name: String) {
         val existing = myProfiles.getProfileList().first().firstOrNull()
         if (existing == null) {
             myProfiles.createProfile(name)

@@ -9,7 +9,7 @@ import com.latenighthack.social.account.domain.AccountManager
 class SignOutUseCase(
     private val manager: AccountManager,
 ) {
-    suspend fun execute(): AccountResult =
+    suspend fun signOut(): AccountResult =
         try {
             manager.signOut()
             AccountResult.SignedOut

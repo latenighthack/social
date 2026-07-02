@@ -10,6 +10,6 @@ import kotlinx.coroutines.flow.map
 class ProfileInfoUseCase(
     private val profiles: ProfilesManager,
 ) {
-    fun execute(profileId: ProfileId): Flow<String?> =
+    fun watch(profileId: ProfileId): Flow<String?> =
         profiles.watchProfile(profileId).map { it?.displayName() }
 }

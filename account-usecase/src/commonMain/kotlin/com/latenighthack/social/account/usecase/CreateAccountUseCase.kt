@@ -9,7 +9,7 @@ import com.latenighthack.social.account.domain.AccountManager
 class CreateAccountUseCase(
     private val manager: AccountManager,
 ) {
-    suspend fun execute(): AccountResult =
+    suspend fun create(): AccountResult =
         try {
             AccountResult.Ready(manager.createAccount())
         } catch (e: Exception) {

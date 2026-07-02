@@ -16,7 +16,7 @@ class MyProfileInfoUseCase(
     private val myProfiles: MyProfilesManager,
 ) {
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun execute(): Flow<String?> =
+    fun watch(): Flow<String?> =
         myProfiles.getProfileList().flatMapLatest { ids ->
             ids.firstOrNull()
                 ?.let { id -> myProfiles.watchProfile(id).map { it?.displayName() } }
