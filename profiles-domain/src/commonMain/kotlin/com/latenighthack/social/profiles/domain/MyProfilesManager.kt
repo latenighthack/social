@@ -2,6 +2,7 @@ package com.latenighthack.social.profiles.domain
 
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.profiles.v1.Profile
+import com.latenighthack.social.profiles.v1.ProfileBuilder
 import com.latenighthack.social.profiles.v1.ProfileId
 import kotlinx.coroutines.flow.Flow
 
@@ -18,8 +19,12 @@ interface MyProfilesManager {
     /** Mints a new profile with the given display name and returns its id. */
     suspend fun createProfile(displayName: String): ProfileId
 
-    /** Updates the display name of one of the user's profiles. */
-    suspend fun setDisplayName(profileId: ProfileId, name: String)
+    /**
+     * Applies [builder] to the profile's current value, re-signs every resulting disclosure with
+     * the profile key, and writes it back. The caller sets disclosure payloads via the ktproto
+     * builder; signatures are (re)computed here.
+     */
+    suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit)
 
     /** The ids of the user's profiles, updated as profiles are added. */
     fun getProfileList(): Flow<List<ProfileId>>

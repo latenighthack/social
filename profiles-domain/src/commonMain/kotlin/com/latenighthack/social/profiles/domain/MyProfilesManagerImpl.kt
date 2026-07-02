@@ -13,6 +13,7 @@ import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.social.account.domain.AccountManager
 import com.latenighthack.social.profiles.v1.Profile
+import com.latenighthack.social.profiles.v1.ProfileBuilder
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.profiles.v1.ProfileSource
 import com.latenighthack.social.profiles.v1.copy
@@ -139,14 +140,23 @@ class MyProfilesManagerImpl(
         return profileId
     }
 
-    override suspend fun setDisplayName(profileId: ProfileId, name: String) {
-        val lockers = lockers ?: error("setDisplayName requires start(lockers) first")
+    override suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit) {
+        val lockers = lockers ?: error("updateProfile requires start(lockers) first")
         val keyPair = keyPairs[profileId] ?: error("unknown profile")
-        val disclosure = Disclosures.sign(keyPair, displayNamePayload(name))
-        val profile = profileClient(lockers).updateLocker(profileId.toRoomId(), profileId.toProfileLockerId()) {
-            it.copy { disclosures = listOf(disclosure) }
-        } ?: return
-        _profiles.value = _profiles.value + (profileId to profile)
+
+        // Apply the caller's builder to the current profile, then re-sign every disclosure over
+        // its payload so signatures always match the written content.
+        val built = (getProfile(profileId) ?: Profile { }).copy(builder)
+        val signed = mutableListOf<Profile.Disclosure>()
+        for (disclosure in built.disclosures) {
+            signed.add(Disclosures.sign(keyPair, disclosure.payload ?: Profile.Disclosure.Payload()))
+        }
+        val updatedProfile = built.copy { disclosures = signed }
+
+        val stored = profileClient(lockers)
+            .updateLocker(profileId.toRoomId(), profileId.toProfileLockerId()) { updatedProfile }
+            ?: updatedProfile
+        _profiles.value = _profiles.value + (profileId to stored)
     }
 
     private suspend fun ensureProfileRoom(

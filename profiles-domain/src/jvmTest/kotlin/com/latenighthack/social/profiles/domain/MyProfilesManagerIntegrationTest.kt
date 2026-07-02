@@ -68,10 +68,18 @@ class MyProfilesManagerIntegrationTest {
             assertEquals("Alice", profile.displayName())
             assertTrue(profile.disclosures.first().signature.isNotEmpty())
 
-            // Updating the display name rewrites the disclosure.
-            myProfiles.setDisplayName(profileId, "Bob")
+            // Updating via the builder rewrites (and re-signs) the disclosures.
+            myProfiles.updateProfile(profileId) {
+                disclosures = emptyList()
+                disclosures {
+                    addDisclosure {
+                        payload { content.displayName { value = "Bob" } }
+                    }
+                }
+            }
             val updated = profileClient.getLocker(profileId.toRoomId(), profileId.toProfileLockerId())
             assertEquals("Bob", updated?.displayName())
+            assertTrue(updated!!.disclosures.first().signature.isNotEmpty())
 
             // A fresh manager over the same account loads the profile proactively from sources.
             val reloaded = MyProfilesManagerImpl(account)
