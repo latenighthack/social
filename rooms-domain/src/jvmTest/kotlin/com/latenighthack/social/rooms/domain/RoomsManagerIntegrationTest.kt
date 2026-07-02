@@ -79,7 +79,7 @@ class RoomsManagerIntegrationTest {
             val bobProfile = bob.myProfiles.createProfile("Bob")
 
             val roomId = alice.rooms.createGroup("Team")
-            alice.rooms.invite(roomId, bobProfile)
+            alice.rooms.invite(roomId, listOf(bobProfile))
 
             // Bob unseals the invite from his inbox, adopts the group key, and joins.
             assertTrue(bob.rooms.watchRooms().first { it.contains(roomId) }.isNotEmpty())

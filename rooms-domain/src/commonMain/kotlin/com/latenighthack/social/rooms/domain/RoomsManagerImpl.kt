@@ -164,15 +164,19 @@ class RoomsManagerImpl(
         return roomId
     }
 
-    override suspend fun invite(roomId: RoomId, inviteeProfileId: ProfileId) {
+    override suspend fun invite(roomId: RoomId, inviteeProfileIds: List<ProfileId>) {
         val lockers = lockers ?: error("invite requires start(lockers) first")
         val record = records[roomId] ?: error("not a member of this room")
         require(record.kind == RoomKind.ROOM_KIND_GROUP) { "only group rooms are invited to; rendezvous is 1:1" }
-        sendInvite(lockers, inviteeProfileId, Invite(
+        val invite = Invite(
             kind = RoomKind.ROOM_KIND_GROUP,
             roomId = roomId.rawValue,
             groupPrivateKey = record.sharedPrivateKey,
-        ))
+        )
+        // Each recipient gets its own envelope, sealed to that profile's key.
+        for (inviteeProfileId in inviteeProfileIds) {
+            sendInvite(lockers, inviteeProfileId, invite)
+        }
     }
 
     override suspend fun leave(roomId: RoomId) {

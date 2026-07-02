@@ -36,9 +36,11 @@ RoomsManager.createGroup(name):
 ## Invite & join
 
 ```
-member.invite(roomId, inviteeProfileId):
-  seal Invite{kind: GROUP, room_id: roomId, group_private_key: G.private}
-       into invitee's inbox                                # confidential: only they unwrap G
+member.invite(roomId, [inviteeProfileId, ...]):           # one or more invitees at once
+  for each invitee:
+    seal Invite{kind: GROUP, room_id: roomId, group_private_key: G.private}
+         into invitee's inbox                              # confidential: only they unwrap G;
+                                                           # a fresh envelope is sealed per recipient
 
 invitee (inbox watcher unseals the invite):
   if already a member of room_id: skip

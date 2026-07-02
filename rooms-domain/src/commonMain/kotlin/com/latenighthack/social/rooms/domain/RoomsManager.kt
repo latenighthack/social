@@ -26,8 +26,8 @@ interface RoomsManager {
     /** Opens the rendezvous room shared with [peerProfileId] and sends the peer a bootstrap invite. */
     suspend fun openRendezvous(peerProfileId: ProfileId): RoomId
 
-    /** Invites [inviteeProfileId] into a group [roomId] by sealing the group key into their inbox. */
-    suspend fun invite(roomId: RoomId, inviteeProfileId: ProfileId)
+    /** Invites [inviteeProfileIds] into a group [roomId] by sealing the group key into each inbox. */
+    suspend fun invite(roomId: RoomId, inviteeProfileIds: List<ProfileId>)
 
     /** Leaves [roomId]: removes the user's own roster + profile entries and drops the local record. */
     suspend fun leave(roomId: RoomId)
