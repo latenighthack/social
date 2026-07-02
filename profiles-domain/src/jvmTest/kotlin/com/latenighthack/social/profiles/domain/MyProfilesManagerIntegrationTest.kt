@@ -88,4 +88,6 @@ class MyProfilesManagerIntegrationTest {
 }
 
 internal fun Profile.displayName(): String? =
-    disclosures.firstNotNullOfOrNull { (it.element as? Profile.Disclosure.OneOfElement.displayName)?.value?.value }
+    disclosures.firstNotNullOfOrNull {
+        (it.payload?.content as? Profile.Disclosure.Payload.OneOfContent.displayName)?.value?.value
+    }

@@ -130,7 +130,7 @@ class MyProfilesManagerImpl(
         // Lock the profile's own room and write the initial signed disclosure.
         val profileClient = profileClient(lockers)
         ensureProfileRoom(profileClient, profileId, keyPair)
-        val disclosure = Disclosures.signDisplayName(keyPair, displayName)
+        val disclosure = Disclosures.sign(keyPair, displayNamePayload(displayName))
         val profile = profileClient.updateLocker(profileId.toRoomId(), profileId.toProfileLockerId()) {
             it.copy { disclosures = listOf(disclosure) }
         } ?: Profile { disclosures = listOf(disclosure) }
@@ -142,7 +142,7 @@ class MyProfilesManagerImpl(
     override suspend fun setDisplayName(profileId: ProfileId, name: String) {
         val lockers = lockers ?: error("setDisplayName requires start(lockers) first")
         val keyPair = keyPairs[profileId] ?: error("unknown profile")
-        val disclosure = Disclosures.signDisplayName(keyPair, name)
+        val disclosure = Disclosures.sign(keyPair, displayNamePayload(name))
         val profile = profileClient(lockers).updateLocker(profileId.toRoomId(), profileId.toProfileLockerId()) {
             it.copy { disclosures = listOf(disclosure) }
         } ?: return
@@ -165,6 +165,12 @@ class MyProfilesManagerImpl(
             parentKeyPair = keyPair,
         )
     }
+
+    private fun displayNamePayload(name: String) = Profile.Disclosure.Payload(
+        content = Profile.Disclosure.Payload.OneOfContent.displayName(
+            Profile.Disclosure.Payload.DisplayName(value = name),
+        ),
+    )
 
     private fun sourceClient(lockers: LockersClient): TypedLockerClient<ProfileSource> =
         lockers.typed(ProfileKeyspaces.PROFILE_SOURCE, ProfileSource::toByteArray, ProfileSource.Companion::fromByteArray)

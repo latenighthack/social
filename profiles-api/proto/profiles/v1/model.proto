@@ -17,15 +17,21 @@ message Profile {
   repeated Disclosure disclosures = 1;
 
   message Disclosure {
-    // Profile-key signature over the truncated sha256 of the disclosed element bytes.
-    bytes signature = 1;
+    // The disclosed content. The signature is computed over this payload's encoded bytes,
+    // so it is independent of which content variant is present.
+    Payload payload = 1;
 
-    oneof element {
-      DisplayName display_name = 2;
-    }
+    // Profile-key signature over the truncated sha256 of the encoded payload.
+    bytes signature = 2;
 
-    message DisplayName {
-      string value = 1;
+    message Payload {
+      oneof content {
+        DisplayName display_name = 1;
+      }
+
+      message DisplayName {
+        string value = 1;
+      }
     }
   }
 }

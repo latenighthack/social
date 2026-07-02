@@ -8,21 +8,18 @@ import com.latenighthack.social.profiles.v1.Profile.Disclosure
 import com.latenighthack.social.profiles.v1.toByteArray
 
 /**
- * Builds the signed disclosures that make up a [Profile]. Each disclosure is signed by the
- * profile key over a truncated sha256 of the disclosed element. Verification is deferred.
+ * Signs the disclosures that make up a [Profile]: a disclosure carries a [Payload] and a
+ * profile-key signature over a truncated sha256 of the payload's encoded bytes — so the
+ * signature is independent of which payload variant is present. Verification is deferred.
  */
 internal object Disclosures {
     /** First N bytes of sha256 — the integrity check the signature commits to. */
     const val TRUNCATED_HASH_LENGTH = 16
 
-    suspend fun signDisplayName(profileKey: Secp256r1KeyPair, name: String): Disclosure {
-        val displayName = Profile.Disclosure.DisplayName(value = name)
-        val digest = SHA256.digest(displayName.toByteArray()).copyOf(TRUNCATED_HASH_LENGTH)
+    suspend fun sign(profileKey: Secp256r1KeyPair, payload: Profile.Disclosure.Payload): Disclosure {
+        val digest = SHA256.digest(payload.toByteArray()).copyOf(TRUNCATED_HASH_LENGTH)
         val signature = ecdsaDerToRaw(profileKey.privateKey.sign(digest))
-        return Profile.Disclosure(
-            element = Profile.Disclosure.OneOfElement.displayName(displayName),
-            signature = signature,
-        )
+        return Profile.Disclosure(payload = payload, signature = signature)
     }
 }
 
