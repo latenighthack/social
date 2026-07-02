@@ -29,3 +29,8 @@ dependencyResolutionManagement {
 include(":account-api")      // plugins { id("social.kmp-proto") }   — proto/ + generated Kotlin
 include(":account-domain")   // plugins { id("social.kmp-library") } — identity + private-room session mgmt
 include(":account-usecase")  // plugins { id("social.kmp-library") } — CreateAccount / SignOut use cases
+
+// profiles: identities presented publicly, separate from the account id. Profile key pairs
+// live as locked lockers in the account room; each profile has its own key-locked room.
+include(":profiles-api")     // plugins { id("social.kmp-proto") }   — ProfileId / Profile / ProfileSource / LocalProfile
+include(":profiles-domain")  // plugins { id("social.kmp-library") } — My/ProfilesManager over the lockers client
