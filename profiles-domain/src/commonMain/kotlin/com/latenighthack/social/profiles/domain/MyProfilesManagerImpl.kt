@@ -141,7 +141,7 @@ class MyProfilesManagerImpl(
         // Lock the profile's own room and write the initial signed disclosure.
         val profileClient = profileClient(lockers)
         ensureProfileRoom(profileClient, profileId, keyPair)
-        val disclosure = Disclosures.sign(keyPair, displayNamePayload(displayName))
+        val disclosure = Disclosures.sign(keyPair, profileId, displayNamePayload(displayName))
         val profile = profileClient.updateLocker(profileId.toRoomId(), profileId.toProfileLockerId()) {
             it.copy { disclosures = listOf(disclosure) }
         } ?: Profile { disclosures = listOf(disclosure) }
@@ -159,7 +159,7 @@ class MyProfilesManagerImpl(
         val built = (getProfile(profileId) ?: Profile { }).copy(builder)
         val signed = mutableListOf<Profile.Disclosure>()
         for (disclosure in built.disclosures) {
-            signed.add(Disclosures.sign(keyPair, disclosure.payload ?: Profile.Disclosure.Payload()))
+            signed.add(Disclosures.sign(keyPair, profileId, disclosure.payload ?: Profile.Disclosure.Payload()))
         }
         val updatedProfile = built.copy { disclosures = signed }
 

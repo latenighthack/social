@@ -18,11 +18,14 @@ confidentially through a sealed invite (see [sealing.md](sealing.md)).
   contents is deferred.
 
 Room info mirrors `Profile`: `RoomInfo` is a list of `Disclosure`s (currently just a `name`), each
-signed by the **shared room key** over a truncated sha256 of its payload. Any member holds the key,
-so any member can (re)write and sign the info. `RoomsManager.updateInfo(roomId) { replaceDisclosure
-{ name { value = "…" } } }` applies the builder to the current info, re-signs every disclosure, and
-writes it back; read it with the `RoomInfo.name()` helper. Signing is redundant with the room lock
-(both require `G`) but is kept as the on-wire format, exactly as profiles do.
+signed by the **shared room key** over a truncated sha256 of its payload. Each payload also carries
+the **room id** (`room_id`), stamped in at signing time, so the signature binds the disclosure to
+this room — a signed disclosure cannot be replayed under a different room. (Profiles do the same
+with `profile_id`.) Any member holds the key, so any member can (re)write and sign the info.
+`RoomsManager.updateInfo(roomId) { replaceDisclosure { name { value = "…" } } }` applies the builder
+to the current info, re-signs every disclosure (re-stamping the room id), and writes it back; read
+it with the `RoomInfo.name()` helper. Signing is redundant with the room lock (both require `G`) but
+is kept as the on-wire format, exactly as profiles do.
 
 Membership vs member-profiles: the **membership** roster records who is in the room (presence there
 is what makes a profile a member); **member-profiles** is each member's self-declared profile

@@ -29,6 +29,10 @@ message Profile {
         DisplayName display_name = 1;
       }
 
+      // Binds this disclosure to the profile it belongs to, so a disclosure signed for one
+      // profile cannot be replayed under another. Stamped at signing time.
+      ProfileId profile_id = 2;
+
       message DisplayName {
         string value = 1;
       }

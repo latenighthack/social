@@ -314,7 +314,7 @@ class RoomsManagerImpl(
         // payload with the shared room key so signatures always match the written content.
         val built = (client.getLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER) ?: RoomInfo { }).copy(builder)
         val signed = built.disclosures.map {
-            RoomInfoDisclosures.sign(roomKey, it.payload ?: RoomInfo.Disclosure.Payload())
+            RoomInfoDisclosures.sign(roomKey, roomId, it.payload ?: RoomInfo.Disclosure.Payload())
         }
         val updated = built.copy { disclosures = signed }
         client.updateLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER) { updated }

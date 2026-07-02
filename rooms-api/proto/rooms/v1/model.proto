@@ -33,6 +33,10 @@ message RoomInfo {
         Name name = 1;
       }
 
+      // Binds this disclosure to the room it belongs to (raw room id bytes), so a disclosure
+      // signed for one room cannot be replayed under another. Stamped at signing time.
+      bytes room_id = 2;
+
       message Name {
         string value = 1;
       }

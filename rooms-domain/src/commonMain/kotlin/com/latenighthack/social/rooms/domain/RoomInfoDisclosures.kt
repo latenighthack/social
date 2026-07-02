@@ -3,6 +3,7 @@ package com.latenighthack.social.rooms.domain
 import com.latenighthack.ktcrypto.SHA256
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.ktcrypto.digest
+import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.social.rooms.v1.RoomInfo
 import com.latenighthack.social.rooms.v1.RoomInfo.Disclosure
 import com.latenighthack.social.rooms.v1.toByteArray
@@ -11,16 +12,23 @@ import com.latenighthack.social.rooms.v1.toByteArray
  * Signs the disclosures that make up a [RoomInfo]: a disclosure carries a [Payload] and a
  * shared-room-key signature over a truncated sha256 of the payload's encoded bytes — so the
  * signature is independent of which payload variant is present. Every member holds the shared
- * room key, so any member can produce a valid signature. Verification is deferred.
+ * room key, so any member can produce a valid signature. The [roomId] is stamped into the
+ * payload before signing, binding the disclosure to its room so a signature cannot be replayed
+ * under a different room. Verification is deferred.
  */
 internal object RoomInfoDisclosures {
     /** First N bytes of sha256 — the integrity check the signature commits to. */
     const val TRUNCATED_HASH_LENGTH = 16
 
-    suspend fun sign(roomKey: Secp256r1KeyPair, payload: RoomInfo.Disclosure.Payload): Disclosure {
-        val digest = SHA256.digest(payload.toByteArray()).copyOf(TRUNCATED_HASH_LENGTH)
+    suspend fun sign(
+        roomKey: Secp256r1KeyPair,
+        roomId: RoomId,
+        payload: RoomInfo.Disclosure.Payload,
+    ): Disclosure {
+        val bound = payload.copy(roomId = roomId.rawValue)
+        val digest = SHA256.digest(bound.toByteArray()).copyOf(TRUNCATED_HASH_LENGTH)
         val signature = ecdsaDerToRaw(roomKey.privateKey.sign(digest))
-        return RoomInfo.Disclosure(payload = payload, signature = signature)
+        return RoomInfo.Disclosure(payload = bound, signature = signature)
     }
 }
 
