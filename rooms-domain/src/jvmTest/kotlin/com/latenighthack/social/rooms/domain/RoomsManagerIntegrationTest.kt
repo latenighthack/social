@@ -90,9 +90,9 @@ class RoomsManagerIntegrationTest {
             assertTrue(members.contains(bobProfile))
 
             // Bob holds the shared key and can mutate the shared info; Alice sees it.
-            assertEquals("Team", bob.rooms.watchInfo(roomId).first { it?.name == "Team" }?.name)
-            bob.rooms.updateInfo(roomId, "Squad")
-            assertEquals("Squad", alice.rooms.watchInfo(roomId).first { it?.name == "Squad" }?.name)
+            assertEquals("Team", bob.rooms.watchInfo(roomId).first { it?.name() == "Team" }?.name())
+            bob.rooms.updateInfo(roomId) { replaceDisclosure { name { value = "Squad" } } }
+            assertEquals("Squad", alice.rooms.watchInfo(roomId).first { it?.name() == "Squad" }?.name())
 
             // A non-member can READ the room (server does not gate reads) ...
             val carol = newParty(server.rpcClient)
@@ -136,10 +136,10 @@ class RoomsManagerIntegrationTest {
             assertEquals(2, alice.rooms.watchMembers(roomId).first { it.size == 2 }.size)
 
             // Both hold the derived lock key, so info is mutable from either side.
-            alice.rooms.updateInfo(roomId, "hi bob")
-            assertEquals("hi bob", bob.rooms.watchInfo(roomId).first { it?.name == "hi bob" }?.name)
-            bob.rooms.updateInfo(roomId, "hi alice")
-            assertEquals("hi alice", alice.rooms.watchInfo(roomId).first { it?.name == "hi alice" }?.name)
+            alice.rooms.updateInfo(roomId) { replaceDisclosure { name { value = "hi bob" } } }
+            assertEquals("hi bob", bob.rooms.watchInfo(roomId).first { it?.name() == "hi bob" }?.name())
+            bob.rooms.updateInfo(roomId) { replaceDisclosure { name { value = "hi alice" } } }
+            assertEquals("hi alice", alice.rooms.watchInfo(roomId).first { it?.name() == "hi alice" }?.name())
 
             bob.close()
             alice.close()

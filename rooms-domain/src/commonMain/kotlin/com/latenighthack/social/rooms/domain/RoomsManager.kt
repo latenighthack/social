@@ -4,6 +4,7 @@ import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.v1.RoomInfo
+import com.latenighthack.social.rooms.v1.RoomInfoBuilder
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -32,8 +33,12 @@ interface RoomsManager {
     /** Leaves [roomId]: removes the user's own roster + profile entries and drops the local record. */
     suspend fun leave(roomId: RoomId)
 
-    /** Sets the shared room info name. */
-    suspend fun updateInfo(roomId: RoomId, name: String)
+    /**
+     * Applies [builder] to the room's current info, re-signs every resulting disclosure with the
+     * shared room key, and writes it back. The caller sets disclosure payloads via the ktproto
+     * builder (e.g. `replaceDisclosure { name { value = "…" } }`); signatures are (re)computed here.
+     */
+    suspend fun updateInfo(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit)
 
     /** The ids of the rooms the user belongs to, updated as rooms are joined or left. */
     fun watchRooms(): Flow<List<RoomId>>

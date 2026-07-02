@@ -11,10 +11,18 @@ confidentially through a sealed invite (see [sealing.md](sealing.md)).
 - `roomId = RoomKeying.publicKeyed(G.public)` — the authority is the group key.
 - Locked at **room scope** to `G` (root lock signed by `G`, as the room authority). All keyspaces
   in the room therefore require a `G` signature to write.
-- Keyspaces (all signed by `G`): room **info** (5, single locker), **membership** (6, one `Member`
-  per member keyed by profile id), **member-profiles** (7, one `MemberProfile` per member keyed by
-  profile id). Contents are cleartext — anyone who learns the room id can read them; only writes are
-  gated. Encrypting contents is deferred.
+- Keyspaces (all signed by `G`): room **info** (5, a single locker of signed disclosures — like a
+  profile, but for a room), **membership** (6, one `Member` per member keyed by profile id),
+  **member-profiles** (7, one `MemberProfile` per member keyed by profile id). Contents are
+  cleartext — anyone who learns the room id can read them; only writes are gated. Encrypting
+  contents is deferred.
+
+Room info mirrors `Profile`: `RoomInfo` is a list of `Disclosure`s (currently just a `name`), each
+signed by the **shared room key** over a truncated sha256 of its payload. Any member holds the key,
+so any member can (re)write and sign the info. `RoomsManager.updateInfo(roomId) { replaceDisclosure
+{ name { value = "…" } } }` applies the builder to the current info, re-signs every disclosure, and
+writes it back; read it with the `RoomInfo.name()` helper. Signing is redundant with the room lock
+(both require `G`) but is kept as the on-wire format, exactly as profiles do.
 
 Membership vs member-profiles: the **membership** roster records who is in the room (presence there
 is what makes a profile a member); **member-profiles** is each member's self-declared profile
@@ -29,7 +37,7 @@ RoomsManager.createGroup(name):
   roomId  = RoomKeying.publicKeyed(G.public)
   persist RoomRecord(GROUP, G.private, myProfile)          # device-local, never synced
   lockLocker(roomId, ROOM scope, G, parent = G)            # public-keyed root lock
-  write RoomInfo{name}                                     # signed by G
+  write RoomInfo with a signed 'name' disclosure           # signed by G
   write Member + MemberProfile for myProfile               # signed by G
 ```
 

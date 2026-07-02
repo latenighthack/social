@@ -14,10 +14,30 @@ enum RoomKind {
   ROOM_KIND_GROUP = 2;
 }
 
-// Shared, mutable room metadata, held as a single locker in the room-info keyspace and
-// writable by any member (signed by the shared room key). Like a profile, but for a room.
+// Shared, mutable room metadata as a list of disclosures, each signed by the shared room key
+// over a truncated sha256 of the disclosed element — so the signature is independent of which
+// content variant is present. Like a profile, but for a room: held as a single locker in the
+// room-info keyspace and writable by any member. Starts with just a name.
 message RoomInfo {
-  string name = 1;
+  repeated Disclosure disclosures = 1;
+
+  message Disclosure {
+    // The disclosed content. The signature is computed over this payload's encoded bytes.
+    Payload payload = 1;
+
+    // Shared-room-key signature over the truncated sha256 of the encoded payload.
+    bytes signature = 2;
+
+    message Payload {
+      oneof content {
+        Name name = 1;
+      }
+
+      message Name {
+        string value = 1;
+      }
+    }
+  }
 }
 
 // A roster entry in the membership keyspace, one locker per member keyed by the member's

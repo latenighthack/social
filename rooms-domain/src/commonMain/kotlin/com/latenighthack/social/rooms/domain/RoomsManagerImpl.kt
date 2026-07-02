@@ -21,9 +21,11 @@ import com.latenighthack.social.rooms.v1.Invite
 import com.latenighthack.social.rooms.v1.Member
 import com.latenighthack.social.rooms.v1.MemberProfile
 import com.latenighthack.social.rooms.v1.RoomInfo
+import com.latenighthack.social.rooms.v1.RoomInfoBuilder
 import com.latenighthack.social.rooms.v1.RoomKind
 import com.latenighthack.social.rooms.v1.RoomRecord
 import com.latenighthack.social.rooms.v1.SealedEnvelope
+import com.latenighthack.social.rooms.v1.copy
 import com.latenighthack.social.rooms.v1.fromByteArray
 import com.latenighthack.social.rooms.v1.toByteArray
 import kotlinx.coroutines.CompletableDeferred
@@ -128,7 +130,8 @@ class RoomsManagerImpl(
             groupKey,
             parentKeyPair = groupKey,
         )
-        writeInfo(lockers, roomId, name)
+        val groupName = name
+        writeInfo(lockers, roomId, groupKey) { replaceDisclosure { name { value = groupName } } }
         writeMembership(lockers, roomId, me)
         return roomId
     }
@@ -193,9 +196,10 @@ class RoomsManagerImpl(
         _rooms.value = records.keys.toList()
     }
 
-    override suspend fun updateInfo(roomId: RoomId, name: String) {
+    override suspend fun updateInfo(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit) {
         val lockers = lockers ?: error("updateInfo requires start(lockers) first")
-        writeInfo(lockers, roomId, name)
+        val roomKey = keyPairs[roomId] ?: error("not a member of this room")
+        writeInfo(lockers, roomId, roomKey, builder)
     }
 
     override fun watchRooms(): Flow<List<RoomId>> = _rooms
@@ -299,8 +303,21 @@ class RoomsManagerImpl(
         _rooms.value = records.keys.toList()
     }
 
-    private suspend fun writeInfo(lockers: LockersClient, roomId: RoomId, name: String) {
-        infoClient(lockers).updateLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER) { RoomInfo(name = name) }
+    private suspend fun writeInfo(
+        lockers: LockersClient,
+        roomId: RoomId,
+        roomKey: Secp256r1KeyPair,
+        builder: RoomInfoBuilder.() -> Unit,
+    ) {
+        val client = infoClient(lockers)
+        // Apply the caller's builder to the current info, then re-sign every disclosure over its
+        // payload with the shared room key so signatures always match the written content.
+        val built = (client.getLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER) ?: RoomInfo { }).copy(builder)
+        val signed = built.disclosures.map {
+            RoomInfoDisclosures.sign(roomKey, it.payload ?: RoomInfo.Disclosure.Payload())
+        }
+        val updated = built.copy { disclosures = signed }
+        client.updateLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER) { updated }
     }
 
     private suspend fun writeMembership(lockers: LockersClient, roomId: RoomId, profileId: ProfileId) {
