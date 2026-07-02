@@ -14,7 +14,6 @@ kotlin {
                 api(libs.lockers.api)
                 api(libs.lockers.connector)
                 api(libs.ktcrypto.library)
-                api(libs.ktstore.library)
                 implementation(libs.kotlinx.datetime)
             }
         }

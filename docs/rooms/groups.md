@@ -38,7 +38,7 @@ member writes both for itself on join. (This split is a deliberate modeling choi
 RoomsManager.createGroup(name):
   G       = Secp256r1KeyPair.generate()
   roomId  = RoomKeying.publicKeyed(G.public)
-  persist RoomRecord(GROUP, G.private, myProfile)          # device-local, never synced
+  record RoomRecord(GROUP, G.private, myProfile) in the account room (keyspace 8, signed by account key)
   lockLocker(roomId, ROOM scope, G, parent = G)            # public-keyed root lock
   write RoomInfo with a signed 'name' disclosure           # signed by G
   write Member + MemberProfile for myProfile               # signed by G
@@ -69,7 +69,8 @@ same sealed `G`.
 ```
 RoomsManager.leave(roomId):
   delete this member's Member (keyspace 6) and MemberProfile (keyspace 7)   # signed by G, still held
-  drop the local RoomRecord and shared key
+  drop the in-memory RoomRecord and shared key
+  delete the RoomRecord from the account room (keyspace 8)                  # signed by account key
 ```
 
 The order matters: the entries are deleted while `G` is still routed for the room, then the local

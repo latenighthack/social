@@ -20,6 +20,15 @@ internal object RoomsKeyspaces {
     /** One [com.latenighthack.social.rooms.v1.MemberProfile] locker per member, keyed by profile id. */
     val MEMBER_PROFILES = LockerKeyspace { value = 7L }
 
+    /**
+     * The synced list of rooms the user belongs to, stored inside the user's own account room, one
+     * [com.latenighthack.social.rooms.v1.RoomRecord] locker per room keyed by room id. This is the
+     * durable, restorable source of truth (the account room is locked to the account key and synced),
+     * so a freshly restored account recovers its rooms and shared keys from here. Mirrors how profile
+     * sources live in the account room.
+     */
+    val ACCOUNT_ROOMS = LockerKeyspace { value = 8L }
+
     /** The room-info locker's fixed id (one per room). */
     val ROOM_INFO_LOCKER = LockerId(ByteArray(32), ROOM_INFO)
 }

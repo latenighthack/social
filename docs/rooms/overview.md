@@ -39,15 +39,28 @@ Mirrors the `account` / `profiles` slices:
 
 - `rooms-api` — protos (`SealedEnvelope`, `Invite`, `RoomInfo`, `Member`, `MemberProfile`,
   `RoomRecord`, `RoomKind`).
-- `rooms-domain` — `RoomsManager` + `RoomsManagerImpl` (owns shared key material, persists it
-  device-locally in `RoomStore`, routes it via `RoomsKeySource`, watches profile inboxes),
+- `rooms-domain` — `RoomsManager` + `RoomsManagerImpl` (owns shared key material, persists the room
+  list in the user's account room, routes keys via `RoomsKeySource`, watches profile inboxes),
   `RoomSealing`, `RoomsKeyspaces`.
 - `rooms-usecase` — thin use cases (`CreateGroup`, `OpenRendezvous`, `InviteToGroup`, `LeaveRoom`,
   `UpdateRoomInfo`, `WatchRoomInfo`, `WatchMembers`, `WatchRooms`).
 
-`rooms-domain` depends on `profiles-domain`: it enumerates the user's profiles and asks
-`MyProfilesManager.deriveSharedSecret(...)` to do ECDH (rendezvous derivation and inbox unsealing)
-without ever holding a profile's private key.
+`rooms-domain` depends on `account-domain` (to read the account's private room and enforce the
+account key on the room-list writes) and `profiles-domain` (to enumerate the user's profiles and ask
+`MyProfilesManager.deriveSharedSecret(...)` for ECDH — rendezvous derivation and inbox unsealing —
+without ever holding a profile's private key).
+
+## Persistence & restore
+
+The room list is the source of truth for which rooms the user is in and the shared key for each. It
+is stored as `RoomRecord` lockers (room id, kind, shared key, the profile the user is in as) in the
+**user's own account room** under the `account-rooms` keyspace (8) — written on join/create, deleted
+on leave. Because the account room is synced and write-locked to the account key, this is what lets a
+**freshly restored account recover its rooms**: at start, once the account is `Ready`,
+`RoomsManagerImpl` loads every `RoomRecord` from there, rebuilds its in-memory key map, and
+resubscribes to each room. (This mirrors how `MyProfilesManager` keeps profile sources in the account
+room; there is no separate device-local store.) The shared keys live here in the clear, exactly like
+profile private keys already do — safe by the account room id being unguessable, not by read gating.
 
 ## Keyspaces (global allocation)
 
@@ -59,6 +72,7 @@ Numbering is a cross-feature concern: account = 1, profile-source = 2, profile =
 | 5 | room **info** | a room | shared room key |
 | 6 | **membership** (roster) | a room | shared room key |
 | 7 | **member-profiles** | a room | shared room key |
+| 8 | **account-rooms** (the user's room list) | the account room | account key |
 
 To make keyspace 4 writable while keeping profile content private, `profiles-domain` now locks the
 profile room at **keyspace scope** (keyspace 3 only) instead of room scope, leaving the inbox

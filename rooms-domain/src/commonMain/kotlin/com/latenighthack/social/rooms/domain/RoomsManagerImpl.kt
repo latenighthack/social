@@ -6,7 +6,6 @@ import com.latenighthack.ktcrypto.digest
 import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.fromPrivateKey
 import com.latenighthack.ktcrypto.generate
-import com.latenighthack.ktstore.StoreDelegate
 import com.latenighthack.lockers.common.RoomKeying
 import com.latenighthack.lockers.common.v1.LockScope
 import com.latenighthack.lockers.common.v1.LockScopeKind
@@ -15,6 +14,7 @@ import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.lockers.connector.TypedLockerUpdate
+import com.latenighthack.social.account.domain.AccountManager
 import com.latenighthack.social.profiles.domain.MyProfilesManager
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.v1.Invite
@@ -28,7 +28,6 @@ import com.latenighthack.social.rooms.v1.SealedEnvelope
 import com.latenighthack.social.rooms.v1.copy
 import com.latenighthack.social.rooms.v1.fromByteArray
 import com.latenighthack.social.rooms.v1.toByteArray
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,9 +41,15 @@ import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
 
 /**
- * Owns the shared key material for every room the user belongs to (persisted device-locally in its
- * own [RoomStore], never synced) and drives every room operation over the lockers client passed to
- * [start]. Its key material reaches the client through a [RoomsKeySource] wrapping this manager.
+ * Owns the shared key material for every room the user belongs to and drives every room operation
+ * over the lockers client passed to [start]. Its key material reaches the client through a
+ * [RoomsKeySource] wrapping this manager.
+ *
+ * The room list — each [RoomRecord] (room id, kind, shared key, the profile the user is in as) — is
+ * persisted as lockers in the user's own account room under the [RoomsKeyspaces.ACCOUNT_ROOMS]
+ * keyspace, written on join/create and deleted on leave. Because the account room is synced and
+ * locked to the account key, this is what lets a freshly restored account recover its rooms and
+ * keys: at start, once the account is ready, the list is loaded from there.
  *
  * A rendezvous room's id and lock key are both derived from the ECDH of two profiles, so no key is
  * transmitted; a group's shared key is generated once and handed to invitees through a sealed
@@ -52,12 +57,10 @@ import kotlinx.datetime.Clock
  * profile's key via [MyProfilesManager.deriveSharedSecret].
  */
 class RoomsManagerImpl(
+    private val account: AccountManager,
     private val myProfiles: MyProfilesManager,
-    private val delegate: StoreDelegate,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : RoomsManager {
-
-    private val store = RoomStore(delegate)
 
     // Room shared keys (immutable-swap for consistent reads from writeKey).
     private var keyPairs: Map<RoomId, Secp256r1KeyPair> = emptyMap()
@@ -69,8 +72,6 @@ class RoomsManagerImpl(
 
     private var job: Job? = null
     private var lockers: LockersClient? = null
-    private var storesInitialized = false
-    private val ready = CompletableDeferred<Unit>()
 
     override fun start(lockers: LockersClient) {
         this.lockers = lockers
@@ -87,16 +88,10 @@ class RoomsManagerImpl(
     internal fun writeKey(roomId: RoomId): Secp256r1KeyPair? = keyPairs[roomId]
 
     private suspend fun run(lockers: LockersClient) {
-        if (!storesInitialized) {
-            store.prepare()
-            delegate.createStores()
-            storesInitialized = true
-        }
-
-        // Load persisted rooms, rebuild key material, resubscribe.
-        val cached = store.getAllRecords()
-        for (record in cached) restore(lockers, record)
-        if (!ready.isCompleted) ready.complete(Unit)
+        // Restore the room list from the synced account room once the account is ready — this is
+        // what makes a freshly restored account recover its rooms and shared keys.
+        val ready = account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
+        loadRooms(lockers, (ready as AccountManager.Lifecycle.Ready).privateRoom)
 
         // Watch each of the user's profile inboxes for sealed invites, as profiles appear.
         myProfiles.getProfileList().collect { profileIds ->
@@ -186,14 +181,16 @@ class RoomsManagerImpl(
         val lockers = lockers ?: return
         val record = records[roomId] ?: return
         val me = ProfileId { rawValue = record.localProfileId }
-        // Delete while the shared key is still routed for this room, then drop it locally.
+        // Delete the in-room entries while the shared key is still routed for this room, then drop
+        // it locally and from the synced account-room list (the latter signed by the account key).
         membershipClient(lockers).deleteLocker(roomId, LockerId(me.rawValue, RoomsKeyspaces.MEMBERSHIP))
         memberProfileClient(lockers).deleteLocker(roomId, LockerId(me.rawValue, RoomsKeyspaces.MEMBER_PROFILES))
         records = records - roomId
         keyPairs = keyPairs - roomId
-        ready.await()
-        store.removeRecord(roomId.rawValue)
         _rooms.value = records.keys.toList()
+        accountRoom()?.let { accountRoom ->
+            accountRoomsClient(lockers).deleteLocker(accountRoom, LockerId(roomId.rawValue, RoomsKeyspaces.ACCOUNT_ROOMS))
+        }
     }
 
     override suspend fun updateInfo(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit) {
@@ -281,27 +278,42 @@ class RoomsManagerImpl(
 
     // --- shared helpers ---
 
-    /** Add a room to memory + persistence and (re)subscribe. Key material is set before any write. */
+    /** Load the synced room list from the account room and rebuild in-memory state for each. */
+    private suspend fun loadRooms(lockers: LockersClient, accountRoom: RoomId) {
+        val client = accountRoomsClient(lockers)
+        client.subscribeToRoom(accountRoom)
+        for ((_, record) in client.getAllLockers(accountRoom)) {
+            remember(lockers, record)
+        }
+    }
+
+    /**
+     * Take on a room the user is now in: set its key material and record in memory, (re)subscribe,
+     * and record it in the synced account-room list so a fresh restore recovers it. Key material is
+     * set before any write so [RoomsKeySource] can sign for the room.
+     */
     private suspend fun adopt(lockers: LockersClient, record: RoomRecord) {
+        remember(lockers, record)
+        accountRoom()?.let { accountRoom ->
+            accountRoomsClient(lockers).updateLocker(
+                accountRoom,
+                LockerId(record.roomId, RoomsKeyspaces.ACCOUNT_ROOMS),
+            ) { record }
+        }
+    }
+
+    /** Set in-memory key material + record and (re)subscribe. Idempotent; no account-room write. */
+    private suspend fun remember(lockers: LockersClient, record: RoomRecord) {
         val roomId = RoomId(rawValue = record.roomId)
         val keyPair = Secp256r1KeyPair.fromPrivateKey(record.sharedPrivateKey) ?: return
         keyPairs = keyPairs + (roomId to keyPair)
         records = records + (roomId to record)
-        ready.await()
-        store.saveRecord(record)
         infoClient(lockers).subscribeToRoom(roomId)
         _rooms.value = records.keys.toList()
     }
 
-    /** Rebuild in-memory state for a persisted room at start (no re-write, just re-subscribe). */
-    private suspend fun restore(lockers: LockersClient, record: RoomRecord) {
-        val roomId = RoomId(rawValue = record.roomId)
-        val keyPair = Secp256r1KeyPair.fromPrivateKey(record.sharedPrivateKey) ?: return
-        keyPairs = keyPairs + (roomId to keyPair)
-        records = records + (roomId to record)
-        infoClient(lockers).subscribeToRoom(roomId)
-        _rooms.value = records.keys.toList()
-    }
+    private fun accountRoom(): RoomId? =
+        (account.lifecycle.value as? AccountManager.Lifecycle.Ready)?.privateRoom
 
     private suspend fun writeInfo(
         lockers: LockersClient,
@@ -352,6 +364,9 @@ class RoomsManagerImpl(
 
     private fun inboxClient(lockers: LockersClient): TypedLockerClient<SealedEnvelope> =
         lockers.typed(RoomsKeyspaces.INBOX, SealedEnvelope::toByteArray, SealedEnvelope.Companion::fromByteArray)
+
+    private fun accountRoomsClient(lockers: LockersClient): TypedLockerClient<RoomRecord> =
+        lockers.typed(RoomsKeyspaces.ACCOUNT_ROOMS, RoomRecord::toByteArray, RoomRecord.Companion::fromByteArray)
 
     private companion object {
         // Domain-separated KDF prefixes so the rendezvous room id and lock key are independent.

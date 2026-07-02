@@ -36,7 +36,7 @@ profile private key never leaves that module.
 Alice.openRendezvous(bobProfileId):
   S       = deriveSharedSecret(aliceProfile, bobProfileId)
   roomId  = sha256(ROOM_DOMAIN ‖ S);  lockKey = fromPrivateKey(sha256(LOCK_DOMAIN ‖ S))
-  persist RoomRecord(RENDEZVOUS, lockKey, aliceProfile)   # device-local, never synced
+  record RoomRecord(RENDEZVOUS, lockKey, aliceProfile) in the account room (keyspace 8)
   lockLocker(roomId, ROOM scope, lockKey, parent = null)  # TOFU root
   write Member + MemberProfile for aliceProfile
   seal Invite{kind: RENDEZVOUS, inviter_profile_id: aliceProfile} into Bob's inbox
@@ -44,7 +44,7 @@ Alice.openRendezvous(bobProfileId):
 Bob (inbox watcher unseals the invite):
   S       = deriveSharedSecret(bobProfile, invite.inviter_profile_id)
   roomId  = sha256(ROOM_DOMAIN ‖ S);  lockKey = fromPrivateKey(sha256(LOCK_DOMAIN ‖ S))
-  persist RoomRecord(RENDEZVOUS, lockKey, bobProfile)
+  record RoomRecord(RENDEZVOUS, lockKey, bobProfile) in the account room (keyspace 8)
   lockLocker(roomId, ROOM scope, lockKey, parent = null)  # no-op, already locked
   write Member + MemberProfile for bobProfile
 ```

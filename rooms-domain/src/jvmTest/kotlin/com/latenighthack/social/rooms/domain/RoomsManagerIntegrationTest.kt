@@ -47,12 +47,15 @@ class RoomsManagerIntegrationTest {
         }
     }
 
-    private suspend fun newParty(rpcClient: RpcClient): Party {
-        val account = AccountManagerImpl(KeyValueStore(InMemoryKeyValueStoreDelegate()))
+    private suspend fun newParty(
+        rpcClient: RpcClient,
+        accountStore: KeyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
+    ): Party {
+        val account = AccountManagerImpl(accountStore)
         val accountKeySource = AccountKeySource(account)
         val myProfiles = MyProfilesManagerImpl(account)
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
-        val rooms = RoomsManagerImpl(myProfiles, InMemoryStoreDelegate())
+        val rooms = RoomsManagerImpl(account, myProfiles)
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
@@ -116,6 +119,32 @@ class RoomsManagerIntegrationTest {
             carol.close()
             bob.close()
             alice.close()
+        }
+
+    @Test(timeout = 60_000)
+    fun `a restored account recovers its rooms and shared keys from the account room`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            // Device 1 creates an account, a profile, and a group room.
+            val accountStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
+            val device1 = newParty(server.rpcClient, accountStore)
+            device1.myProfiles.createProfile("Alice")
+            val roomId = device1.rooms.createGroup("Team")
+            // Let the record + info sync to the account room before the device goes away.
+            device1.rooms.watchRooms().first { it.contains(roomId) }
+            device1.rooms.watchInfo(roomId).first { it?.name() == "Team" }
+            device1.close()
+
+            // A fresh device restoring the same account identity (shared account store, but empty
+            // room + lockers caches) recovers the room list and its shared key from the account room.
+            val device2 = newParty(server.rpcClient, accountStore)
+            assertTrue(device2.rooms.watchRooms().first { it.contains(roomId) }.isNotEmpty())
+            assertEquals("Team", device2.rooms.watchInfo(roomId).first { it?.name() == "Team" }?.name())
+
+            // The shared key was restored too, so the restored device can still write to the room.
+            device2.rooms.updateInfo(roomId) { replaceDisclosure { name { value = "Renamed" } } }
+            assertEquals("Renamed", device2.rooms.watchInfo(roomId).first { it?.name() == "Renamed" }?.name())
+
+            device2.close()
         }
 
     @Test(timeout = 60_000)
