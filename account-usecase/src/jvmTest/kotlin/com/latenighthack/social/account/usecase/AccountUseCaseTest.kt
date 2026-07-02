@@ -22,6 +22,7 @@ private class FakeAccountManager : AccountManager {
     override fun start(lockers: LockersClient) {}
     override fun stop() {}
     override suspend fun createAccount(): ByteArray { hasAccount = true; return ByteArray(33) }
+    override suspend fun restoreAccount(privateKey: ByteArray): ByteArray { hasAccount = true; return ByteArray(33) }
     override suspend fun signOut() { hasAccount = false }
 }
 

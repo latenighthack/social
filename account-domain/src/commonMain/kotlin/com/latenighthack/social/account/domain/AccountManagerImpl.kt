@@ -109,6 +109,7 @@ class AccountManagerImpl(
     private var job: Job? = null
     private var everReady = false
     private var roomInitialized = false
+    private var lockers: LockersClient? = null
 
     override suspend fun createAccount(): ByteArray {
         if (!hasSessionKey()) {
@@ -117,9 +118,49 @@ class AccountManagerImpl(
         return accountId()
     }
 
+    override suspend fun restoreAccount(privateKeyBytes: ByteArray): ByteArray {
+        if (hasSessionKey()) throw IllegalStateException("an account already exists on this device")
+        val keyPair = Secp256r1KeyPair.fromPrivateKey(privateKeyBytes)
+            ?: throw IllegalArgumentException("invalid private key")
+        val client = lockers ?: error("restoreAccount requires start(lockers) first")
+
+        // Let the connector open a session with this identity WITHOUT committing it: hasKey
+        // stays false, so the lifecycle collector won't initialize (and create) the room yet.
+        cachedKeyPair = keyPair
+        pendingKeyPair.complete(keyPair)
+        client.awaitConnected()
+
+        val account = client.typed(
+            AccountKeyspaces.ACCOUNT_STATE, AccountState::toByteArray, AccountState.Companion::fromByteArray,
+        )
+        val roomId = RoomKeying.publicKeyed(keyPair.publicKey.encode())
+
+        // Authoritative existence check — getLocker fetches from the server on a cold cache
+        // and performs no write.
+        if (account.getLocker(roomId, AccountKeyspaces.ACCOUNT_STATE_LOCKER) == null) {
+            cachedKeyPair = null
+            pendingKeyPair = CompletableDeferred()
+            throw NoAccountToRestoreException()
+        }
+
+        // Commit the supplied identity; the collector drives → Ready and initializePrivateRoom
+        // loads (does not recreate) the existing AccountState.
+        keyValueStore.save(
+            ACCOUNT_RECORD_KEY,
+            AccountRecord {
+                privateKey = keyPair.privateKey.encode()
+                createdAtMillis = Clock.System.now().toEpochMilliseconds()
+            },
+            AccountRecord::toByteArray,
+        )
+        hasKey.value = true
+        return keyPair.publicKey.encode()
+    }
+
     override suspend fun signOut() = revokeSession()
 
     override fun start(lockers: LockersClient) {
+        this.lockers = lockers
         if (job?.isActive == true) return
         roomInitialized = false
         job = scope.launch { run(lockers) }
@@ -189,7 +230,7 @@ class AccountManagerImpl(
 
     private data class Inputs(val hasKey: Boolean, val connected: Boolean, val fatal: StreamFatalError?)
 
-    private companion object {
+    internal companion object {
         const val SCHEMA_VERSION = 1
         const val ACCOUNT_RECORD_KEY = "account_record"
     }

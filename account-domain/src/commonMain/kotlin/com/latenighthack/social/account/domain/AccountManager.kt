@@ -23,6 +23,13 @@ interface AccountManager {
     /** Create the identity if none exists; returns the 33-byte compressed account id. */
     suspend fun createAccount(): ByteArray
 
+    /**
+     * Adopt [privateKey] as the identity and restore the account from its private room,
+     * returning the 33-byte compressed account id. Throws [NoAccountToRestoreException] if the
+     * room has no account state to restore, or [IllegalArgumentException] if the key is invalid.
+     */
+    suspend fun restoreAccount(privateKey: ByteArray): ByteArray
+
     /** Revoke the identity and sign out. */
     suspend fun signOut()
 
@@ -44,3 +51,8 @@ interface AccountManager {
         data object SignedOut : Lifecycle
     }
 }
+
+/** Thrown by [AccountManager.restoreAccount] when the key's private room holds no account state. */
+class NoAccountToRestoreException(
+    message: String = "no account state in the private room to restore",
+) : Exception(message)
