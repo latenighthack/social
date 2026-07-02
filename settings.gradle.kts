@@ -34,3 +34,4 @@ include(":account-usecase")  // plugins { id("social.kmp-library") } — CreateA
 // live as locked lockers in the account room; each profile has its own key-locked room.
 include(":profiles-api")     // plugins { id("social.kmp-proto") }   — ProfileId / Profile / ProfileSource / LocalProfile
 include(":profiles-domain")  // plugins { id("social.kmp-library") } — My/ProfilesManager over the lockers client
+include(":profiles-usecase") // plugins { id("social.kmp-library") } — display-name watch / update use cases

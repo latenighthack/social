@@ -90,8 +90,3 @@ class MyProfilesManagerIntegrationTest {
             lockers.close()
         }
 }
-
-internal fun Profile.displayName(): String? =
-    disclosures.firstNotNullOfOrNull {
-        (it.payload?.content as? Profile.Disclosure.Payload.OneOfContent.displayName)?.value?.value
-    }
