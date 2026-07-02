@@ -56,10 +56,13 @@ sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqliteJdbc" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 logstash-logback-encoder = { module = "net.logstash.logback:logstash-logback-encoder", version.ref = "logstashEncoder" }
 
-# lockers artifacts (client-facing). `server` is not published yet — the -service
-# plug-in mechanism is deferred; add lockers-server here once that is resolved.
+# lockers artifacts. api/connector are the client-facing libraries. server/server-test
+# are published to mavenLocal for integration tests (boot the real monolith in-process);
+# they are not consumed by production feature code.
 lockers-api = { module = "com.latenighthack.lockers:lockers-api", version.ref = "lockers" }
 lockers-connector = { module = "com.latenighthack.lockers:lockers-connector", version.ref = "lockers" }
+lockers-server = { module = "com.latenighthack.lockers:lockers-server", version.ref = "lockers" }
+lockers-server-test = { module = "com.latenighthack.lockers:lockers-server-test", version.ref = "lockers" }
 
 # Gradle plugin artifacts, referenced from build-logic so convention plugins can apply them.
 plugin-kotlin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }

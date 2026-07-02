@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package com.latenighthack.social.account.v1;
+
+option java_package = "com.latenighthack.social.account.v1";
+
+// The account's private state, stored as a single locker in the account's
+// public-key-locked private room. Intentionally minimal — the private room's
+// value is the mechanism; fields grow as the account feature does.
+message AccountState {
+  int64 created_at_millis = 1;
+  int32 schema_version = 2;
+
+  // Mirror of the current lockers session id (read from LockersClient.sessionId).
+  // Synced for record / multi-device visibility.
+  bytes session_id = 3;
+}
+
+// The account's device-local record, persisted in the account-owned KeyValueStore.
+// Holds the identity secret and NEVER leaves the device (not synced).
+message AccountRecord {
+  bytes private_key = 1;
+  int64 created_at_millis = 2;
+}

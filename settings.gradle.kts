@@ -24,8 +24,8 @@ dependencyResolutionManagement {
     }
 }
 
-// Feature modules are added here as they land, one vertical slice per feature, e.g.:
-//   include(":account-api")      // plugins { id("social.kmp-proto") }   — proto/ + generated Kotlin
-//   include(":account-domain")   // plugins { id("social.kmp-library") } — repository over lockers-connector
-//   include(":account-usecase")  // plugins { id("social.kmp-library") } — use cases over -domain
-//   include(":account-service")  // plugins { id("social.jvm-service") } — JVM backend (agent / gRPC + ktstore)
+// Feature modules, one vertical slice per feature. account has no -service module:
+// its public-key private-room lock is enforced by the lockers server's LockVerifier.
+include(":account-api")      // plugins { id("social.kmp-proto") }   — proto/ + generated Kotlin
+include(":account-domain")   // plugins { id("social.kmp-library") } — identity + private-room session mgmt
+include(":account-usecase")  // plugins { id("social.kmp-library") } — CreateAccount / SignOut use cases
