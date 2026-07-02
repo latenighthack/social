@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package com.latenighthack.social.rooms.v1;
+
+option java_package = "com.latenighthack.social.rooms.v1";
+
+// The two kinds of room, carried in an invite so the recipient knows how to join.
+enum RoomKind {
+  ROOM_KIND_UNSPECIFIED = 0;
+  // A 1:1 room whose id is sha256(ECDH(the two profiles' keys)); no shared key is
+  // transmitted — both sides derive it independently from the exchange.
+  ROOM_KIND_RENDEZVOUS = 1;
+  // A many-member room keyed by a group key pair; membership is a shared-key-locked list.
+  ROOM_KIND_GROUP = 2;
+}
+
+// Shared, mutable room metadata, held as a single locker in the room-info keyspace and
+// writable by any member (signed by the shared room key). Like a profile, but for a room.
+message RoomInfo {
+  string name = 1;
+}
+
+// A roster entry in the membership keyspace, one locker per member keyed by the member's
+// profile id. Presence in this list is what makes a profile a member of the room.
+message Member {
+  int64 joined_at_millis = 1;
+}
+
+// A member's self-declared profile association in the member-profiles keyspace, one locker
+// per member keyed by the member's profile id. Consumers resolve the profile for display.
+message MemberProfile {
+  // Compressed secp256r1 public key of the profile this member presents in the room.
+  bytes profile_id = 1;
+}
+
+// An ECIES-style sealed envelope: a random AES content key encrypts the payload, and the
+// content key itself is wrapped under an AES key derived from the ECDH of an ephemeral key
+// and the recipient's profile key. Only the recipient's profile private key can unwrap it.
+message SealedEnvelope {
+  // Ephemeral compressed secp256r1 public key generated per seal.
+  bytes ephemeral_public_key = 1;
+  // AES-GCM( sha256(ECDH(ephemeral_private, recipient_public)), content_key_bytes ).
+  bytes wrapped_key = 2;
+  // AES-GCM( content_key, payload_bytes ).
+  bytes ciphertext = 3;
+}
+
+// The cleartext payload of an invite, sealed inside a SealedEnvelope written to the invitee's
+// profile inbox. For a rendezvous invite the invitee derives the room from inviter_profile_id;
+// for a group invite the room id and the shared group key that grants write access are carried.
+message Invite {
+  RoomKind kind = 1;
+  // Rendezvous: the inviter's profile id (compressed public key) so the invitee can ECDH.
+  bytes inviter_profile_id = 2;
+  // Group: the group room id.
+  bytes room_id = 3;
+  // Group: the shared group private key that grants membership write access.
+  bytes group_private_key = 4;
+}
+
+// Device-local record of a room the user belongs to. Holds the shared write key and is NEVER
+// synced — it lives only in the rooms manager's own key-value/store, like the account record.
+message RoomRecord {
+  bytes room_id = 1;
+  RoomKind kind = 2;
+  // Group G's private key, or the rendezvous-derived lock key L's private key.
+  bytes shared_private_key = 3;
+  // Which of the user's profiles is the member here (compressed public key).
+  bytes local_profile_id = 4;
+}

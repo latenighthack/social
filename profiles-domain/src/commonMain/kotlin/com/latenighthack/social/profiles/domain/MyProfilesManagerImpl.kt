@@ -1,6 +1,10 @@
 package com.latenighthack.social.profiles.domain
 
+import com.latenighthack.ktcrypto.ECDH
+import com.latenighthack.ktcrypto.Secp256r1
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
+import com.latenighthack.ktcrypto.Secp256r1PublicKey
+import com.latenighthack.ktcrypto.decode
 import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.fromPrivateKey
 import com.latenighthack.ktcrypto.generate
@@ -59,6 +63,12 @@ class MyProfilesManagerImpl(
     override fun stop() {
         job?.cancel()
         job = null
+    }
+
+    override suspend fun deriveSharedSecret(profileId: ProfileId, peerPublicKey: ByteArray): ByteArray? {
+        val keyPair = keyPairs[profileId] ?: return null
+        val peer = Secp256r1PublicKey.decode(peerPublicKey)
+        return Secp256r1.ECDH.sharedSecret(keyPair.privateKey, peer)
     }
 
     override fun getProfileList(): Flow<List<ProfileId>> =
@@ -166,11 +176,13 @@ class MyProfilesManagerImpl(
     ) {
         val roomId = profileId.toRoomId()
         profileClient.subscribeToRoom(roomId)
-        // Lock the whole profile room to the profile key (self-signed root lock; a no-op if
-        // already locked). Mirrors AccountManagerImpl.initializePrivateRoom.
+        // Lock only the profile-content keyspace to the profile key (grant signed by the room
+        // authority — the same profile key — so it is accepted on a public-keyed room without a
+        // room-scope lock). Leaving the room otherwise open lets others drop sealed invites into
+        // the unlocked inbox keyspace; a re-lock is a no-op.
         profileClient.lockLocker(
             roomId,
-            LockScope(kind = LockScopeKind.LOCK_SCOPE_ROOM),
+            LockScope(kind = LockScopeKind.LOCK_SCOPE_KEYSPACE, keyspace = ProfileKeyspaces.PROFILE),
             keyPair,
             parentKeyPair = keyPair,
         )

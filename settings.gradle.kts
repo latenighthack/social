@@ -35,3 +35,10 @@ include(":account-usecase")  // plugins { id("social.kmp-library") } — CreateA
 include(":profiles-api")     // plugins { id("social.kmp-proto") }   — ProfileId / Profile / ProfileSource / LocalProfile
 include(":profiles-domain")  // plugins { id("social.kmp-library") } — My/ProfilesManager over the lockers client
 include(":profiles-usecase") // plugins { id("social.kmp-library") } — display-name watch / update use cases
+
+// rooms: shared, mutable, multi-participant spaces (not chat). Rendezvous rooms meet at the
+// sha256 of an ECDH between two profiles; groups keep a shared-key-locked membership list.
+// Invites are sealed and dropped in the invitee's open profile inbox keyspace.
+include(":rooms-api")        // plugins { id("social.kmp-proto") }   — SealedEnvelope / Invite / RoomInfo / Member / RoomRecord
+include(":rooms-domain")     // plugins { id("social.kmp-library") } — RoomsManager over the lockers client
+include(":rooms-usecase")    // plugins { id("social.kmp-library") } — create / invite / leave / info use cases

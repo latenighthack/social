@@ -26,6 +26,14 @@ interface MyProfilesManager {
      */
     suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit)
 
+    /**
+     * The ECDH shared secret between the owned profile [profileId] and [peerPublicKey] (a 33-byte
+     * compressed secp256r1 key), or null if [profileId] is not one of the user's profiles. Used by
+     * the rooms feature to derive rendezvous rooms and to unseal invites addressed to a profile —
+     * the profile's private key never leaves this manager.
+     */
+    suspend fun deriveSharedSecret(profileId: ProfileId, peerPublicKey: ByteArray): ByteArray?
+
     /** The ids of the user's profiles, updated as profiles are added. */
     fun getProfileList(): Flow<List<ProfileId>>
 
