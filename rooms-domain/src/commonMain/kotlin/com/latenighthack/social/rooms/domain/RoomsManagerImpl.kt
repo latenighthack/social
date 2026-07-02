@@ -187,7 +187,7 @@ class RoomsManagerImpl(
         memberProfileClient(lockers).deleteLocker(roomId, LockerId(me.rawValue, RoomsKeyspaces.MEMBER_PROFILES))
         records = records - roomId
         keyPairs = keyPairs - roomId
-        _rooms.value = records.keys.toList()
+        _rooms.value = sortedRoomIds()
         accountRoom()?.let { accountRoom ->
             accountRoomsClient(lockers).deleteLocker(accountRoom, LockerId(roomId.rawValue, RoomsKeyspaces.ACCOUNT_ROOMS))
         }
@@ -197,6 +197,20 @@ class RoomsManagerImpl(
         val lockers = lockers ?: error("updateInfo requires start(lockers) first")
         val roomKey = keyPairs[roomId] ?: error("not a member of this room")
         writeInfo(lockers, roomId, roomKey, builder)
+    }
+
+    override suspend fun markUpdated(roomId: RoomId) {
+        val lockers = lockers ?: return
+        val record = records[roomId] ?: return
+        val bumped = record.copy(updatedAtMillis = Clock.System.now().toEpochMilliseconds())
+        records = records + (roomId to bumped)
+        _rooms.value = sortedRoomIds()
+        accountRoom()?.let { accountRoom ->
+            accountRoomsClient(lockers).updateLocker(
+                accountRoom,
+                LockerId(roomId.rawValue, RoomsKeyspaces.ACCOUNT_ROOMS),
+            ) { bumped }
+        }
     }
 
     override fun watchRooms(): Flow<List<RoomId>> = _rooms
@@ -293,12 +307,14 @@ class RoomsManagerImpl(
      * set before any write so [RoomsKeySource] can sign for the room.
      */
     private suspend fun adopt(lockers: LockersClient, record: RoomRecord) {
-        remember(lockers, record)
+        // Stamp the join/create time so a newly adopted room sorts to the front of the list.
+        val stamped = record.copy(updatedAtMillis = Clock.System.now().toEpochMilliseconds())
+        remember(lockers, stamped)
         accountRoom()?.let { accountRoom ->
             accountRoomsClient(lockers).updateLocker(
                 accountRoom,
-                LockerId(record.roomId, RoomsKeyspaces.ACCOUNT_ROOMS),
-            ) { record }
+                LockerId(stamped.roomId, RoomsKeyspaces.ACCOUNT_ROOMS),
+            ) { stamped }
         }
     }
 
@@ -309,8 +325,12 @@ class RoomsManagerImpl(
         keyPairs = keyPairs + (roomId to keyPair)
         records = records + (roomId to record)
         infoClient(lockers).subscribeToRoom(roomId)
-        _rooms.value = records.keys.toList()
+        _rooms.value = sortedRoomIds()
     }
+
+    /** The user's room ids ordered by `updated_at`, newest first. */
+    private fun sortedRoomIds(): List<RoomId> =
+        records.entries.sortedByDescending { it.value.updatedAtMillis }.map { it.key }
 
     private fun accountRoom(): RoomId? =
         (account.lifecycle.value as? AccountManager.Lifecycle.Ready)?.privateRoom

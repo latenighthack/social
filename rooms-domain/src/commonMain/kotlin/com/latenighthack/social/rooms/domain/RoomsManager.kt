@@ -34,13 +34,22 @@ interface RoomsManager {
     suspend fun leave(roomId: RoomId)
 
     /**
+     * Bumps [roomId]'s personal `updated_at` to now, moving it to the front of [watchRooms]. Other
+     * systems call this for various reasons (e.g. new activity in a room). No-op if not a member.
+     */
+    suspend fun markUpdated(roomId: RoomId)
+
+    /**
      * Applies [builder] to the room's current info, re-signs every resulting disclosure with the
      * shared room key, and writes it back. The caller sets disclosure payloads via the ktproto
      * builder (e.g. `replaceDisclosure { name { value = "…" } }`); signatures are (re)computed here.
      */
     suspend fun updateInfo(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit)
 
-    /** The ids of the rooms the user belongs to, updated as rooms are joined or left. */
+    /**
+     * The ids of the rooms the user belongs to, ordered by `updated_at` newest-first, updated as
+     * rooms are joined, left, or bumped via [markUpdated].
+     */
     fun watchRooms(): Flow<List<RoomId>>
 
     fun watchInfo(roomId: RoomId): Flow<RoomInfo?>

@@ -148,6 +148,28 @@ class RoomsManagerIntegrationTest {
         }
 
     @Test(timeout = 60_000)
+    fun `watchRooms is ordered newest-first and markUpdated moves a room to the front`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            val party = newParty(server.rpcClient)
+            party.myProfiles.createProfile("Alice")
+            val a = party.rooms.createGroup("A")
+            val b = party.rooms.createGroup("B")
+
+            // Both rooms are present in the list.
+            party.rooms.watchRooms().first { it.toSet() == setOf(a, b) }
+
+            // Touching A bumps its updated_at, moving it to the front.
+            party.rooms.markUpdated(a)
+            assertEquals(a, party.rooms.watchRooms().first { it.firstOrNull() == a }.first())
+
+            // Touching B moves it back to the front.
+            party.rooms.markUpdated(b)
+            assertEquals(b, party.rooms.watchRooms().first { it.firstOrNull() == b }.first())
+
+            party.close()
+        }
+
+    @Test(timeout = 60_000)
     fun `rendezvous rooms converge on the same id and both profiles can write`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val alice = newParty(server.rpcClient)

@@ -82,8 +82,8 @@ message Invite {
   bytes group_private_key = 4;
 }
 
-// Device-local record of a room the user belongs to. Holds the shared write key and is NEVER
-// synced — it lives only in the rooms manager's own key-value/store, like the account record.
+// A record of a room the user belongs to, stored in the user's own account room (so a restored
+// account recovers its rooms and shared keys). Holds the shared write key.
 message RoomRecord {
   bytes room_id = 1;
   RoomKind kind = 2;
@@ -91,4 +91,7 @@ message RoomRecord {
   bytes shared_private_key = 3;
   // Which of the user's profiles is the member here (compressed public key).
   bytes local_profile_id = 4;
+  // Personal, local ordering signal: when this room was last created/joined or bumped via
+  // markUpdated(). Drives the newest-first order of the room list; not shared room state.
+  int64 updated_at_millis = 5;
 }
