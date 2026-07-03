@@ -10,6 +10,8 @@ kotlin {
                 api(projects.profilesApi)
                 // AccountManager is a constructor dependency of MyProfilesManagerImpl.
                 api(projects.accountDomain)
+                // DomainLifecycle (a manager supertype) + @SocialScope appear in the public API.
+                api(projects.socialRuntime)
                 api(libs.lockers.api)
                 api(libs.lockers.connector)
                 api(libs.ktcrypto.library)

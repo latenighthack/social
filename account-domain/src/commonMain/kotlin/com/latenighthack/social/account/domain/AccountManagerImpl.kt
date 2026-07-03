@@ -14,6 +14,7 @@ import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.StreamFatalError
 import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.social.account.domain.AccountManager.Lifecycle
+import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.account.v1.AccountRecord
 import com.latenighthack.social.account.v1.AccountState
 import com.latenighthack.social.account.v1.copy
@@ -40,7 +41,7 @@ import kotlinx.datetime.Clock
 class AccountManagerImpl(
     private val keyValueStore: KeyValueStore,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-) : AccountManager {
+) : AccountManager, DomainLifecycle {
 
     // --- key material (owned here; AccountKeySource forwards to these) ---
 

@@ -30,6 +30,10 @@ kotlin {
             dependencies {
                 implementation(libs.kotlin.stdlib)
                 implementation(libs.coroutines.core)
+                // Every -domain/-usecase module ships a kotlin-inject @Provides interface; the
+                // consuming app's @Component (which runs the KSP compiler) needs the annotations
+                // on the compile classpath, so expose the runtime as `api`.
+                api(libs.kotlin.inject.runtime)
             }
         }
     }

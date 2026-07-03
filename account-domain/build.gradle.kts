@@ -7,6 +7,8 @@ kotlin {
         val commonMain by getting {
             dependencies {
                 implementation(projects.accountApi)
+                // DomainLifecycle (a manager supertype) + @SocialScope appear in the public API.
+                api(projects.socialRuntime)
                 // Exposed in account-domain's public API (identity supertypes, RoomId,
                 // LockersClient, StreamFatalError, KeyValueStore ctor params), so `api`.
                 api(libs.lockers.api)

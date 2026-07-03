@@ -16,6 +16,7 @@ import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.lockers.connector.TypedLockerUpdate
 import com.latenighthack.social.account.domain.AccountManager
 import com.latenighthack.social.profiles.domain.MyProfilesManager
+import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.v1.Invite
 import com.latenighthack.social.rooms.v1.Member
@@ -60,7 +61,7 @@ class RoomsManagerImpl(
     private val account: AccountManager,
     private val myProfiles: MyProfilesManager,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-) : RoomsManager {
+) : RoomsManager, DomainLifecycle {
 
     // Room shared keys (immutable-swap for consistent reads from writeKey).
     private var keyPairs: Map<RoomId, Secp256r1KeyPair> = emptyMap()

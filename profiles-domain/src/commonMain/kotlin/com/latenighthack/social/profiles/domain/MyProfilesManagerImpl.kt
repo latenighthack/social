@@ -16,6 +16,7 @@ import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.social.account.domain.AccountManager
+import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.profiles.v1.Profile
 import com.latenighthack.social.profiles.v1.ProfileBuilder
 import com.latenighthack.social.profiles.v1.ProfileId
@@ -42,7 +43,7 @@ import kotlinx.coroutines.launch
 class MyProfilesManagerImpl(
     private val account: AccountManager,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-) : MyProfilesManager {
+) : MyProfilesManager, DomainLifecycle {
 
     // In-memory profile keys (immutable-swap for consistent reads from writeKey).
     private var keyPairs: Map<ProfileId, Secp256r1KeyPair> = emptyMap()

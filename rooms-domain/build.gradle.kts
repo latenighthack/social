@@ -11,6 +11,8 @@ kotlin {
                 // MyProfilesManager is a constructor dependency (profile keys + ECDH); ProfileId
                 // appears in the public API. account-domain comes transitively via profiles-domain.
                 api(projects.profilesDomain)
+                // DomainLifecycle (a manager supertype) + @SocialScope appear in the public API.
+                api(projects.socialRuntime)
                 api(libs.lockers.api)
                 api(libs.lockers.connector)
                 api(libs.ktcrypto.library)

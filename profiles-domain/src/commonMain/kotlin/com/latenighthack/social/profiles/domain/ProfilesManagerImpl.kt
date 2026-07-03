@@ -5,6 +5,7 @@ import com.latenighthack.lockers.common.RoomKeying
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.lockers.connector.TypedLockerUpdate
+import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.profiles.v1.LocalProfile
 import com.latenighthack.social.profiles.v1.Profile
 import com.latenighthack.social.profiles.v1.ProfileId
@@ -29,7 +30,7 @@ import kotlinx.coroutines.launch
 class ProfilesManagerImpl(
     private val delegate: StoreDelegate,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-) : ProfilesManager {
+) : ProfilesManager, DomainLifecycle {
 
     private val store = ProfileStore(delegate)
 
