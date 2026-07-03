@@ -3,6 +3,7 @@ package com.latenighthack.social.messages.domain
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.common.v1.SignedContent
+import com.latenighthack.social.messages.v1.Draft
 import com.latenighthack.social.messages.v1.MessagePayload
 import kotlinx.coroutines.flow.Flow
 
@@ -18,8 +19,8 @@ interface MessagesManager {
     fun start(lockers: LockersClient)
     fun stop()
 
-    /** Sends a text message to [roomId], authored by the profile the user is in that room as. */
-    suspend fun send(roomId: RoomId, text: String)
+    /** Sends [draft] to [roomId], authored by the profile the user is in that room as. */
+    suspend fun send(roomId: RoomId, draft: Draft)
 
     /** The verified messages in [roomId], oldest first. */
     fun watchMessages(roomId: RoomId): Flow<List<MessagePayload>>

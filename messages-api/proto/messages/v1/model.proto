@@ -30,3 +30,15 @@ message LocalMessage {
   MessageId message_id = 2;
   com.latenighthack.social.common.v1.SignedContent message = 3;
 }
+
+// A room's composed-but-unsent content. Local-only, never written to a locker. Just text for now;
+// grows later (attachments, reply target, ...).
+message Draft {
+  string text = 1;
+}
+
+// Device-local ktstore cache wrapper for a room's single draft. Keyed by room_id (one per room).
+message LocalDraft {
+  bytes room_id = 1;
+  Draft draft = 2;
+}

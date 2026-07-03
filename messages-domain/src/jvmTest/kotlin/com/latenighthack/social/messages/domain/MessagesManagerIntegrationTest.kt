@@ -21,6 +21,7 @@ import com.latenighthack.social.common.domain.sign
 import com.latenighthack.social.common.v1.SignedContent
 import com.latenighthack.social.common.v1.fromByteArray
 import com.latenighthack.social.common.v1.toByteArray
+import com.latenighthack.social.messages.v1.Draft
 import com.latenighthack.social.messages.v1.MessagePayload
 import com.latenighthack.social.messages.v1.toByteArray
 import com.latenighthack.social.profiles.domain.MyProfilesManagerImpl
@@ -40,9 +41,11 @@ class MessagesManagerIntegrationTest {
         val myProfiles: MyProfilesManagerImpl,
         val rooms: RoomsManagerImpl,
         val messages: MessagesManagerImpl,
+        val drafts: DraftsManagerImpl,
         val lockers: LockersClient,
     ) {
         fun close() {
+            drafts.stop()
             messages.stop()
             rooms.stop()
             myProfiles.stop()
@@ -61,6 +64,7 @@ class MessagesManagerIntegrationTest {
         val rooms = RoomsManagerImpl(account, myProfiles)
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         val messages = MessagesManagerImpl(rooms, myProfiles, InMemoryStoreDelegate())
+        val drafts = DraftsManagerImpl(InMemoryStoreDelegate())
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
             storeDelegate = InMemoryStoreDelegate(),
@@ -73,9 +77,10 @@ class MessagesManagerIntegrationTest {
         myProfiles.start(lockers)
         rooms.start(lockers)
         messages.start(lockers)
+        drafts.start(lockers)
         account.createAccount()
         account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
-        return Party(myProfiles, rooms, messages, lockers)
+        return Party(myProfiles, rooms, messages, drafts, lockers)
     }
 
     @Test(timeout = 60_000)
@@ -90,7 +95,7 @@ class MessagesManagerIntegrationTest {
             alice.rooms.invite(roomId, listOf(bobProfile))
             bob.rooms.watchRooms().first { it.contains(roomId) }
 
-            alice.messages.send(roomId, "hello bob")
+            alice.messages.send(roomId, Draft { text = "hello bob" })
 
             val delivered = bob.messages.watchMessages(roomId).first { list -> list.any { it.text == "hello bob" } }
             val message = delivered.first { it.text == "hello bob" }
@@ -111,10 +116,10 @@ class MessagesManagerIntegrationTest {
             val roomId = alice.rooms.openRendezvous(bobProfile)
             bob.rooms.watchRooms().first { it.contains(roomId) }
 
-            alice.messages.send(roomId, "hi bob")
+            alice.messages.send(roomId, Draft { text = "hi bob" })
             bob.messages.watchMessages(roomId).first { list -> list.any { it.text == "hi bob" } }
 
-            bob.messages.send(roomId, "hi alice")
+            bob.messages.send(roomId, Draft { text = "hi alice" })
             alice.messages.watchMessages(roomId).first { list -> list.any { it.text == "hi alice" } }
 
             bob.close()
@@ -136,7 +141,7 @@ class MessagesManagerIntegrationTest {
             bob.rooms.watchRooms().first { it.containsAll(listOf(roomA, roomB)) }
 
             // A message into room A moves it to the front of Bob's room list.
-            alice.messages.send(roomA, "ping")
+            alice.messages.send(roomA, Draft { text = "ping" })
             assertTrue(bob.rooms.watchRooms().first { it.firstOrNull() == roomA }.isNotEmpty())
 
             bob.close()
@@ -169,7 +174,7 @@ class MessagesManagerIntegrationTest {
                 .updateLocker(roomId, LockerId(Random.nextBytes(32), MessagesKeyspaces.MESSAGES)) { forged }
 
             // A genuine message posted after it; once it arrives the forged one has been processed.
-            alice.messages.send(roomId, "genuine")
+            alice.messages.send(roomId, Draft { text = "genuine" })
             val delivered = bob.messages.watchMessages(roomId).first { list -> list.any { it.text == "genuine" } }
             assertTrue(delivered.none { it.text == "forged" })
 
@@ -197,7 +202,7 @@ class MessagesManagerIntegrationTest {
             device1.myProfiles.createProfile("Alice")
             val roomId = device1.rooms.createGroup("Team")
             device1.rooms.watchRooms().first { it.contains(roomId) }
-            device1.messages.send(roomId, "note to self")
+            device1.messages.send(roomId, Draft { text = "note to self" })
             device1.messages.watchMessages(roomId).first { list -> list.any { it.text == "note to self" } }
             device1.close()
 

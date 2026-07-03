@@ -28,4 +28,15 @@ interface MessagesProviders {
     @Provides
     @IntoSet
     fun messagesLifecycle(impl: MessagesManagerImpl): DomainLifecycle = impl
+
+    @Provides
+    @SocialScope
+    fun draftsManagerImpl(delegate: StoreDelegate): DraftsManagerImpl = DraftsManagerImpl(delegate)
+
+    @Provides
+    fun draftsManager(impl: DraftsManagerImpl): DraftsManager = impl
+
+    @Provides
+    @IntoSet
+    fun draftsLifecycle(impl: DraftsManagerImpl): DomainLifecycle = impl
 }

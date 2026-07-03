@@ -10,6 +10,7 @@ import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.social.common.v1.SignedContent
 import com.latenighthack.social.common.v1.fromByteArray
 import com.latenighthack.social.common.v1.toByteArray
+import com.latenighthack.social.messages.v1.Draft
 import com.latenighthack.social.messages.v1.LocalMessage
 import com.latenighthack.social.messages.v1.MessageId
 import com.latenighthack.social.messages.v1.MessagePayload
@@ -167,14 +168,14 @@ class MessagesManagerImpl(
         if (stored) rooms.markUpdated(roomId)
     }
 
-    override suspend fun send(roomId: RoomId, text: String) {
+    override suspend fun send(roomId: RoomId, draft: Draft) {
         val lockers = lockers ?: error("send requires start(lockers) first")
         val senderId = rooms.localProfile(roomId) ?: error("not a member of this room")
         val payload = MessagePayload(
             roomId = roomId.rawValue,
             senderProfileId = senderId.rawValue,
             sentAtMillis = Clock.System.now().toEpochMilliseconds(),
-            text = text,
+            text = draft.text,
         )
         val signed = myProfiles.sign(senderId, MessageSigning.LABEL, payload.toByteArray())
             ?: error("no signing key for the room's profile")
