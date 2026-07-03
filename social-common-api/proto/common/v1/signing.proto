@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package com.latenighthack.social.common.v1;
+
+option java_package = "com.latenighthack.social.common.v1";
+
+// Public-key-signed bytes: a standard envelope for content that a secp256r1 key vouches for.
+// `content` is the opaque, already-serialized inner payload — this envelope never parses or
+// interprets it. One or more `signatures` ladder over it: signature[i] is computed over a
+// transcript that folds in signature[i-1], so each signature commits to the one before it
+// ("each signs the last"). A single signer produces exactly one signature.
+//
+// The signing transcript is a length-prefixed encoding of (domain label, content, previous
+// signature); the domain label is a per-use-site constant, not carried on the wire, since the
+// content is always read in a typed context that knows its label.
+message SignedContent {
+  bytes content = 1;
+  repeated Signature signatures = 2;
+
+  message Signature {
+    // First 16 bytes of sha256(compressed signer public key). An identification HINT ONLY: the
+    // verifier resolves the real key from context and checks the signature against it; the hash
+    // never authorizes on its own (cf. OpenPGP short-key-id collisions).
+    bytes signer_key_hash = 1;
+
+    // Raw r‖s (64 bytes) secp256r1 signature over the signing transcript.
+    bytes signature = 2;
+  }
+}

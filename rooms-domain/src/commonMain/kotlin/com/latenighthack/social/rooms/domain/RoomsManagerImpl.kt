@@ -219,10 +219,17 @@ class RoomsManagerImpl(
     override fun watchInfo(roomId: RoomId): Flow<RoomInfo?> =
         infoClient(requireLockers()).watch(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER).map {
             when (it) {
-                is TypedLockerUpdate.Present -> it.value
+                is TypedLockerUpdate.Present -> verifyInfo(roomId, it.value)
                 is TypedLockerUpdate.Deleted -> null
             }
         }.distinctUntilChanged()
+
+    /** Keep only info disclosures carrying a valid signature by the shared room key we hold. */
+    private suspend fun verifyInfo(roomId: RoomId, info: RoomInfo): RoomInfo {
+        val roomKey = keyPairs[roomId] ?: return info
+        val kept = info.disclosures.filter { RoomInfoDisclosures.verify(it, roomKey.publicKey) }
+        return info.copy { disclosures = kept }
+    }
 
     override fun watchMembers(roomId: RoomId): Flow<List<ProfileId>> =
         membershipClient(requireLockers()).watchAll(roomId, RoomsKeyspaces.MEMBERSHIP).map { members ->
@@ -347,7 +354,7 @@ class RoomsManagerImpl(
         // payload with the shared room key so signatures always match the written content.
         val built = (client.getLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER) ?: RoomInfo { }).copy(builder)
         val signed = built.disclosures.map {
-            RoomInfoDisclosures.sign(roomKey, roomId, it.payload ?: RoomInfo.Disclosure.Payload())
+            RoomInfoDisclosures.sign(roomKey, roomId, RoomInfo.DisclosurePayload.fromByteArray(it.content))
         }
         val updated = built.copy { disclosures = signed }
         client.updateLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER) { updated }

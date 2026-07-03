@@ -4,6 +4,8 @@ package com.latenighthack.social.rooms.v1;
 
 option java_package = "com.latenighthack.social.rooms.v1";
 
+import "common/v1/signing.proto";
+
 // The two kinds of room, carried in an invite so the recipient knows how to join.
 enum RoomKind {
   ROOM_KIND_UNSPECIFIED = 0;
@@ -14,32 +16,25 @@ enum RoomKind {
   ROOM_KIND_GROUP = 2;
 }
 
-// Shared, mutable room metadata as a list of disclosures, each signed by the shared room key
-// over a truncated sha256 of the disclosed element — so the signature is independent of which
-// content variant is present. Like a profile, but for a room: held as a single locker in the
-// room-info keyspace and writable by any member. Starts with just a name.
+// Shared, mutable room metadata as a list of disclosures, each a SignedContent whose `content` is
+// an encoded DisclosurePayload signed by the shared room key. Like a profile, but for a room: held
+// as a single locker in the room-info keyspace and writable by any member. Starts with just a name.
 message RoomInfo {
-  repeated Disclosure disclosures = 1;
+  repeated com.latenighthack.social.common.v1.SignedContent disclosures = 1;
 
-  message Disclosure {
-    // The disclosed content. The signature is computed over this payload's encoded bytes.
-    Payload payload = 1;
+  // The disclosed content wrapped by each SignedContent. Read a value with the typed helper,
+  // which parses a SignedContent's content back to a DisclosurePayload.
+  message DisclosurePayload {
+    oneof content {
+      Name name = 1;
+    }
 
-    // Shared-room-key signature over the truncated sha256 of the encoded payload.
-    bytes signature = 2;
+    // Binds this disclosure to the room it belongs to (raw room id bytes), so a disclosure
+    // signed for one room cannot be replayed under another. Stamped at signing time.
+    bytes room_id = 2;
 
-    message Payload {
-      oneof content {
-        Name name = 1;
-      }
-
-      // Binds this disclosure to the room it belongs to (raw room id bytes), so a disclosure
-      // signed for one room cannot be replayed under another. Stamped at signing time.
-      bytes room_id = 2;
-
-      message Name {
-        string value = 1;
-      }
+    message Name {
+      string value = 1;
     }
   }
 }

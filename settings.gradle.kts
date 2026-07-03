@@ -6,6 +6,11 @@ enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 // DomainLifecycle interface every feature manager implements. Depended on by the -domain modules.
 include(":social-runtime") // plugins { id("social.kmp-library") }
 
+// Shared primitives reused across features. social-common-api owns the standard SignedContent
+// (public-key-signed bytes) proto; social-common-domain owns its one sign/verify helper.
+include(":social-common-api")    // plugins { id("social.kmp-proto") }   — common/v1/signing.proto
+include(":social-common-domain") // plugins { id("social.kmp-library") } — sign/verify over SignedContent
+
 pluginManagement {
     // Convention plugins (social.kmp-library / social.kmp-proto / social.jvm-service)
     // live in the build-logic included build.

@@ -4,38 +4,33 @@ package com.latenighthack.social.profiles.v1;
 
 option java_package = "com.latenighthack.social.profiles.v1";
 
+import "common/v1/signing.proto";
+
 // A profile's public identity: the compressed secp256r1 public key of the profile's
 // key pair. The same raw value derives the profile's room and its lockers.
 message ProfileId {
   bytes raw_value = 1;
 }
 
-// A profile as presented publicly: a list of disclosures, each signed by the profile
-// key over a truncated sha256 of the disclosed element. Stored as a single locker in
-// the profile's own room. Starts with just display name.
+// A profile as presented publicly: a list of disclosures, each a SignedContent whose `content`
+// is an encoded DisclosurePayload signed by the profile key. Stored as a single locker in the
+// profile's own room. Starts with just display name.
 message Profile {
-  repeated Disclosure disclosures = 1;
+  repeated com.latenighthack.social.common.v1.SignedContent disclosures = 1;
 
-  message Disclosure {
-    // The disclosed content. The signature is computed over this payload's encoded bytes,
-    // so it is independent of which content variant is present.
-    Payload payload = 1;
+  // The disclosed content wrapped by each SignedContent. Read a value with the typed helper,
+  // which parses a SignedContent's content back to a DisclosurePayload.
+  message DisclosurePayload {
+    oneof content {
+      DisplayName display_name = 1;
+    }
 
-    // Profile-key signature over the truncated sha256 of the encoded payload.
-    bytes signature = 2;
+    // Binds this disclosure to the profile it belongs to, so a disclosure signed for one
+    // profile cannot be replayed under another. Stamped at signing time.
+    ProfileId profile_id = 2;
 
-    message Payload {
-      oneof content {
-        DisplayName display_name = 1;
-      }
-
-      // Binds this disclosure to the profile it belongs to, so a disclosure signed for one
-      // profile cannot be replayed under another. Stamped at signing time.
-      ProfileId profile_id = 2;
-
-      message DisplayName {
-        string value = 1;
-      }
+    message DisplayName {
+      string value = 1;
     }
   }
 }

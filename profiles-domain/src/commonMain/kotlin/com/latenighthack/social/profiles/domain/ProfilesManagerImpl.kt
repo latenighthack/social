@@ -1,5 +1,7 @@
 package com.latenighthack.social.profiles.domain
 
+import com.latenighthack.ktcrypto.Secp256r1PublicKey
+import com.latenighthack.ktcrypto.decode
 import com.latenighthack.ktstore.StoreDelegate
 import com.latenighthack.lockers.common.RoomKeying
 import com.latenighthack.lockers.connector.LockersClient
@@ -9,6 +11,7 @@ import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.profiles.v1.LocalProfile
 import com.latenighthack.social.profiles.v1.Profile
 import com.latenighthack.social.profiles.v1.ProfileId
+import com.latenighthack.social.profiles.v1.copy
 import com.latenighthack.social.profiles.v1.fromByteArray
 import com.latenighthack.social.profiles.v1.toByteArray
 import kotlinx.coroutines.CompletableDeferred
@@ -104,11 +107,19 @@ class ProfilesManagerImpl(
 
     private suspend fun ingest(profileId: ProfileId, profile: Profile) {
         ready.await()
-        _profiles.value = _profiles.value + (profileId to profile)
+        val verified = verifyDisclosures(profileId, profile)
+        _profiles.value = _profiles.value + (profileId to verified)
         store.saveProfile(LocalProfile {
             this.profileId = profileId
-            this.profile = profile
+            this.profile = verified
         })
+    }
+
+    /** Keep only disclosures carrying a valid signature by the profile's own key (its id). */
+    private suspend fun verifyDisclosures(profileId: ProfileId, profile: Profile): Profile {
+        val key = Secp256r1PublicKey.decode(profileId.rawValue)
+        val kept = profile.disclosures.filter { Disclosures.verify(it, key) }
+        return profile.copy { disclosures = kept }
     }
 
     private fun profileClient(lockers: LockersClient): TypedLockerClient<Profile> =

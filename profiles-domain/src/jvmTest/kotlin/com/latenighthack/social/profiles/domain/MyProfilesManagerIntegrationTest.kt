@@ -66,7 +66,7 @@ class MyProfilesManagerIntegrationTest {
             assertNotNull(profile)
             assertEquals(1, profile.disclosures.size)
             assertEquals("Alice", profile.displayName())
-            assertTrue(profile.disclosures.first().signature.isNotEmpty())
+            assertTrue(profile.disclosures.first().signatures.first().signature.isNotEmpty())
 
             // Updating via the builder replaces (and re-signs) the display-name disclosure.
             myProfiles.updateProfile(profileId) {
@@ -75,7 +75,7 @@ class MyProfilesManagerIntegrationTest {
             val updated = profileClient.getLocker(profileId.toRoomId(), profileId.toProfileLockerId())
             assertEquals("Bob", updated?.displayName())
             assertEquals(1, updated!!.disclosures.size)
-            assertTrue(updated.disclosures.first().signature.isNotEmpty())
+            assertTrue(updated.disclosures.first().signatures.first().signature.isNotEmpty())
 
             // A fresh manager over the same account loads the profile proactively from sources.
             val reloaded = MyProfilesManagerImpl(account)

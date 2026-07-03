@@ -16,6 +16,7 @@ import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.social.account.domain.AccountManager
+import com.latenighthack.social.common.v1.SignedContent
 import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.profiles.v1.Profile
 import com.latenighthack.social.profiles.v1.ProfileBuilder
@@ -158,9 +159,10 @@ class MyProfilesManagerImpl(
         // Apply the caller's builder to the current profile, then re-sign every disclosure over
         // its payload so signatures always match the written content.
         val built = (getProfile(profileId) ?: Profile { }).copy(builder)
-        val signed = mutableListOf<Profile.Disclosure>()
+        val signed = mutableListOf<SignedContent>()
         for (disclosure in built.disclosures) {
-            signed.add(Disclosures.sign(keyPair, profileId, disclosure.payload ?: Profile.Disclosure.Payload()))
+            val payload = Profile.DisclosurePayload.fromByteArray(disclosure.content)
+            signed.add(Disclosures.sign(keyPair, profileId, payload))
         }
         val updatedProfile = built.copy { disclosures = signed }
 
@@ -189,9 +191,9 @@ class MyProfilesManagerImpl(
         )
     }
 
-    private fun displayNamePayload(name: String) = Profile.Disclosure.Payload(
-        content = Profile.Disclosure.Payload.OneOfContent.displayName(
-            Profile.Disclosure.Payload.DisplayName(value = name),
+    private fun displayNamePayload(name: String) = Profile.DisclosurePayload(
+        content = Profile.DisclosurePayload.OneOfContent.displayName(
+            Profile.DisclosurePayload.DisplayName(value = name),
         ),
     )
 

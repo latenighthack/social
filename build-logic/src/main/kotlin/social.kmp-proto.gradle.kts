@@ -47,15 +47,28 @@ val protocGenKt: File = run {
     onPath ?: File(System.getProperty("user.home"), "go/bin/protoc-gen-kt")
 }
 
+// Extra proto source roots to expose on protoc's import path (-I) so this module can
+// `import` messages defined in a dependency -api module. Set from a consumer build via
+//   extra["protoImportProjects"] = listOf(":social-common-api")
+// Files under these roots are parsed to resolve imports but NOT code-generated here (only the
+// files passed on the command line are), so the imported type is referenced, never duplicated.
+val protoImportDirs = provider {
+    @Suppress("UNCHECKED_CAST")
+    (project.findProperty("protoImportProjects") as? List<String>).orEmpty()
+        .map { project.project(it).layout.projectDirectory.dir("proto").asFile }
+}
+
 val generateProto by tasks.registering(Exec::class) {
     group = "build"
     description = "Generate Kotlin protobuf sources via protoc-gen-kt"
 
     val protoRoot = layout.projectDirectory.dir("proto").asFile
     val protoFiles = fileTree(protoRoot) { include("**/*.proto") }
+    val importDirs = protoImportDirs
     val outDir = layout.buildDirectory.dir("generated/ktproto/kotlin")
 
     inputs.files(protoFiles)
+    inputs.files(importDirs.map { dirs -> dirs.map { fileTree(it) { include("**/*.proto") } } })
     inputs.file(protocGenKt)
     outputs.dir(outDir)
 
@@ -72,6 +85,10 @@ val generateProto by tasks.registering(Exec::class) {
                 add("--kt_out=${out.absolutePath}")
                 add("-I")
                 add(protoRoot.absolutePath)
+                importDirs.get().forEach {
+                    add("-I")
+                    add(it.absolutePath)
+                }
                 addAll(protoFiles.files.map { it.absolutePath })
             },
         )

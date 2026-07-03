@@ -8,6 +8,8 @@ kotlin {
             dependencies {
                 // ProfileId / Profile appear in the managers' public API, so `api`.
                 api(projects.profilesApi)
+                // The shared SignedContent sign/verify helper backs disclosure signing.
+                implementation(projects.socialCommonDomain)
                 // AccountManager is a constructor dependency of MyProfilesManagerImpl.
                 api(projects.accountDomain)
                 // DomainLifecycle (a manager supertype) + @SocialScope appear in the public API.

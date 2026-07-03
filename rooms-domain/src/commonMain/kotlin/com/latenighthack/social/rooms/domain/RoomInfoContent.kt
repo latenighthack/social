@@ -1,9 +1,11 @@
 package com.latenighthack.social.rooms.domain
 
 import com.latenighthack.social.rooms.v1.RoomInfo
+import com.latenighthack.social.rooms.v1.fromByteArray
 
 /** The room's current name, or null if none has been disclosed. */
 fun RoomInfo.name(): String? =
-    disclosures.firstNotNullOfOrNull {
-        (it.payload?.content as? RoomInfo.Disclosure.Payload.OneOfContent.name)?.value?.value
+    disclosures.firstNotNullOfOrNull { signed ->
+        val payload = RoomInfo.DisclosurePayload.fromByteArray(signed.content)
+        (payload.content as? RoomInfo.DisclosurePayload.OneOfContent.name)?.value?.value
     }

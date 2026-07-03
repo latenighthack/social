@@ -8,6 +8,8 @@ kotlin {
             dependencies {
                 // RoomInfo / RoomId appear in the manager's public API, so `api`.
                 api(projects.roomsApi)
+                // The shared SignedContent sign/verify helper backs disclosure signing.
+                implementation(projects.socialCommonDomain)
                 // MyProfilesManager is a constructor dependency (profile keys + ECDH); ProfileId
                 // appears in the public API. account-domain comes transitively via profiles-domain.
                 api(projects.profilesDomain)
