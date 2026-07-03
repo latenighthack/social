@@ -29,6 +29,7 @@ import com.latenighthack.social.rooms.v1.SealedEnvelope
 import com.latenighthack.social.rooms.v1.copy
 import com.latenighthack.social.rooms.v1.fromByteArray
 import com.latenighthack.social.rooms.v1.toByteArray
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,6 +40,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.Clock
 
 /**
@@ -63,10 +67,13 @@ class RoomsManagerImpl(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : RoomsManager, DomainLifecycle {
 
-    // Room shared keys (immutable-swap for consistent reads from writeKey).
+    // Room shared keys (immutable-swap for consistent reads from writeKey). The swaps themselves are
+    // guarded by [stateMutex] so concurrent inbox collectors and callers don't lose each other's
+    // updates; reads stay lock-free (each read sees a complete immutable snapshot).
     private var keyPairs: Map<RoomId, Secp256r1KeyPair> = emptyMap()
     private var records: Map<RoomId, RoomRecord> = emptyMap()
     private val _rooms = MutableStateFlow<List<RoomId>>(emptyList())
+    private val stateMutex = Mutex()
 
     private val watchedInboxes = mutableSetOf<ProfileId>()
     private val processedInvites = mutableSetOf<LockerId>()
@@ -89,16 +96,25 @@ class RoomsManagerImpl(
     internal fun writeKey(roomId: RoomId): Secp256r1KeyPair? = keyPairs[roomId]
 
     private suspend fun run(lockers: LockersClient) {
+        // A prior stop() cancelled the inbox collectors, so forget which inboxes were being watched
+        // and re-establish them below (the processedInvites dedup cache is deliberately retained).
+        watchedInboxes.clear()
+
         // Restore the room list from the synced account room once the account is ready — this is
         // what makes a freshly restored account recover its rooms and shared keys.
         val ready = account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
         loadRooms(lockers, (ready as AccountManager.Lifecycle.Ready).privateRoom)
 
-        // Watch each of the user's profile inboxes for sealed invites, as profiles appear.
-        myProfiles.getProfileList().collect { profileIds ->
-            for (profileId in profileIds) {
-                if (watchedInboxes.add(profileId)) {
-                    scope.launch { watchInbox(lockers, profileId) }
+        // Watch each of the user's profile inboxes for sealed invites, as profiles appear. The
+        // per-inbox collectors are launched as children of this coroutine (not the retained scope)
+        // so stop() — which cancels this job — tears them down too; supervisorScope keeps one
+        // collector's failure from cancelling the others.
+        supervisorScope {
+            myProfiles.getProfileList().collect { profileIds ->
+                for (profileId in profileIds) {
+                    if (watchedInboxes.add(profileId)) {
+                        launch { watchInbox(lockers, profileId) }
+                    }
                 }
             }
         }
@@ -186,9 +202,11 @@ class RoomsManagerImpl(
         // it locally and from the synced account-room list (the latter signed by the account key).
         membershipClient(lockers).deleteLocker(roomId, LockerId(me.rawValue, RoomsKeyspaces.MEMBERSHIP))
         memberProfileClient(lockers).deleteLocker(roomId, LockerId(me.rawValue, RoomsKeyspaces.MEMBER_PROFILES))
-        records = records - roomId
-        keyPairs = keyPairs - roomId
-        _rooms.value = sortedRoomIds()
+        stateMutex.withLock {
+            records = records - roomId
+            keyPairs = keyPairs - roomId
+            _rooms.value = sortedRoomIds()
+        }
         accountRoom()?.let { accountRoom ->
             accountRoomsClient(lockers).deleteLocker(accountRoom, LockerId(roomId.rawValue, RoomsKeyspaces.ACCOUNT_ROOMS))
         }
@@ -202,10 +220,13 @@ class RoomsManagerImpl(
 
     override suspend fun markUpdated(roomId: RoomId) {
         val lockers = lockers ?: return
-        val record = records[roomId] ?: return
-        val bumped = record.copy(updatedAtMillis = Clock.System.now().toEpochMilliseconds())
-        records = records + (roomId to bumped)
-        _rooms.value = sortedRoomIds()
+        val bumped = stateMutex.withLock {
+            val record = records[roomId] ?: return
+            record.copy(updatedAtMillis = Clock.System.now().toEpochMilliseconds()).also {
+                records = records + (roomId to it)
+                _rooms.value = sortedRoomIds()
+            }
+        }
         accountRoom()?.let { accountRoom ->
             accountRoomsClient(lockers).updateLocker(
                 accountRoom,
@@ -256,8 +277,17 @@ class RoomsManagerImpl(
         val inboxRoom = RoomKeying.publicKeyed(profileId.rawValue)
         inboxClient(lockers).watchAll(inboxRoom, RoomsKeyspaces.INBOX).collect { envelopes ->
             for ((lockerId, envelope) in envelopes) {
-                if (!processedInvites.add(lockerId)) continue
-                processInvite(lockers, profileId, envelope)
+                if (stateMutex.withLock { lockerId in processedInvites }) continue
+                // Mark the invite processed only once it is fully handled, and never let a malformed or
+                // transiently-failing invite (e.g. a write lost to shutdown) tear down this collector —
+                // leaving it unprocessed lets a later emission retry it. processInvite is idempotent.
+                try {
+                    processInvite(lockers, profileId, envelope)
+                    stateMutex.withLock { processedInvites.add(lockerId) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                }
             }
         }
     }
@@ -265,7 +295,9 @@ class RoomsManagerImpl(
     private suspend fun processInvite(lockers: LockersClient, profileId: ProfileId, envelope: SealedEnvelope) {
         val secret = myProfiles.deriveSharedSecret(profileId, envelope.ephemeralPublicKey) ?: return
         val payload = RoomSealing.unsealWith(secret, envelope) ?: return
-        val invite = Invite.fromByteArray(payload)
+        // The plaintext is attacker-chosen (anyone can seal to our inbox), so a malformed invite must
+        // be skipped rather than allowed to crash this inbox collector.
+        val invite = runCatching { Invite.fromByteArray(payload) }.getOrNull() ?: return
         when (invite.kind) {
             RoomKind.ROOM_KIND_GROUP -> {
                 val roomId = RoomId(rawValue = invite.roomId)
@@ -333,10 +365,12 @@ class RoomsManagerImpl(
     private suspend fun remember(lockers: LockersClient, record: RoomRecord) {
         val roomId = RoomId(rawValue = record.roomId)
         val keyPair = Secp256r1KeyPair.fromPrivateKey(record.sharedPrivateKey) ?: return
-        keyPairs = keyPairs + (roomId to keyPair)
-        records = records + (roomId to record)
+        stateMutex.withLock {
+            keyPairs = keyPairs + (roomId to keyPair)
+            records = records + (roomId to record)
+            _rooms.value = sortedRoomIds()
+        }
         infoClient(lockers).subscribeToRoom(roomId)
-        _rooms.value = sortedRoomIds()
     }
 
     /** The user's room ids ordered by `updated_at`, newest first. */

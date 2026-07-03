@@ -16,17 +16,23 @@ import com.latenighthack.social.messages.v1.MessagePayload
 import com.latenighthack.social.messages.v1.fromByteArray
 import com.latenighthack.social.messages.v1.toByteArray
 import com.latenighthack.social.profiles.domain.MyProfilesManager
+import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.domain.RoomsManager
 import com.latenighthack.social.runtime.DomainLifecycle
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.Clock
 import kotlin.random.Random
 
@@ -49,6 +55,10 @@ class MessagesManagerImpl(
 
     private val _messages = MutableStateFlow<Map<RoomId, List<MessagePayload>>>(emptyMap())
 
+    // Guards the read-modify-write of processed + _messages, which the per-room collectors run
+    // concurrently on a multi-threaded dispatcher.
+    private val mutex = Mutex()
+
     // Locker ids already ingested (seeded from the cache at start), so replays don't re-store/re-bump.
     private val processed = mutableSetOf<LockerId>()
     private val watchedRooms = mutableSetOf<RoomId>()
@@ -69,6 +79,10 @@ class MessagesManagerImpl(
     }
 
     private suspend fun run(lockers: LockersClient) {
+        // A prior stop() cancelled the per-room collectors, so forget which rooms were being watched
+        // and re-establish them below (processed is re-seeded from the cache just after).
+        watchedRooms.clear()
+
         if (!storesInitialized) {
             store.prepare()
             delegate.createStores()
@@ -76,53 +90,81 @@ class MessagesManagerImpl(
         }
 
         // Hydrate from the local cache and seed the processed set BEFORE subscribing, so replayed
-        // history isn't counted as newly received (which would re-bump every room's updated_at).
+        // history isn't counted as newly received (which would re-bump every room's updated_at). This
+        // runs before any collector launches, so it needs no locking.
         val grouped = mutableMapOf<RoomId, MutableList<MessagePayload>>()
         for (local in store.getAllMessages()) {
             val messageId = local.messageId ?: continue
             val signed = local.message ?: continue
+            val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull() ?: continue
             processed.add(LockerId(messageId.rawValue, MessagesKeyspaces.MESSAGES))
             val roomId = RoomId(rawValue = local.roomId)
-            grouped.getOrPut(roomId) { mutableListOf() }.add(MessagePayload.fromByteArray(signed.content))
+            grouped.getOrPut(roomId) { mutableListOf() }.add(payload)
         }
         _messages.value = grouped.mapValues { (_, list) -> list.sortedBy { it.sentAtMillis } }
 
-        // Watch each room the user belongs to for new messages, as rooms appear.
-        rooms.watchRooms().collect { roomIds ->
-            for (roomId in roomIds) {
-                if (watchedRooms.add(roomId)) {
-                    scope.launch { watchRoom(lockers, roomId) }
+        // Watch each room the user belongs to for new messages, as rooms appear. The per-room
+        // collectors are launched as children of this coroutine (not the retained scope) so stop() —
+        // which cancels this job — tears them down too; supervisorScope keeps one collector's failure
+        // from cancelling the others.
+        supervisorScope {
+            rooms.watchRooms().collect { roomIds ->
+                for (roomId in roomIds) {
+                    if (watchedRooms.add(roomId)) {
+                        launch { watchRoom(lockers, roomId) }
+                    }
                 }
             }
         }
     }
 
     private suspend fun watchRoom(lockers: LockersClient, roomId: RoomId) {
-        messageClient(lockers).watchAll(roomId, MessagesKeyspaces.MESSAGES).collect { messages ->
+        // Combine the message stream with the room's membership so ingestion re-runs when either
+        // changes: a message that arrives just before its sender's membership syncs is re-evaluated
+        // (not lost) once the member set catches up, without polling the network per message.
+        combine(
+            messageClient(lockers).watchAll(roomId, MessagesKeyspaces.MESSAGES),
+            rooms.watchMembers(roomId),
+        ) { messages, members -> messages to members.toSet() }.collect { (messages, members) ->
             for ((lockerId, signed) in messages) {
-                if (lockerId in processed) continue
-                ingest(roomId, lockerId, signed)
+                if (mutex.withLock { lockerId in processed }) continue
+                // One malformed or transiently-failing message (e.g. a best-effort room bump lost to a
+                // shutdown/network error) must not tear down this room's collector.
+                try {
+                    ingest(roomId, lockerId, signed, members)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                }
             }
         }
     }
 
-    private suspend fun ingest(roomId: RoomId, lockerId: LockerId, signed: SignedContent) {
-        val payload = MessagePayload.fromByteArray(signed.content)
-        // Reject a message whose bound room doesn't match, or whose signature doesn't verify against
-        // the sender it claims — so a member can't forge another member's authorship.
+    private suspend fun ingest(roomId: RoomId, lockerId: LockerId, signed: SignedContent, members: Set<ProfileId>) {
+        // Parse the envelope and resolve the claimed signer before trusting anything. The content is
+        // attacker-chosen (any member can write to the messages keyspace), so a malformed payload or
+        // an undecodable sender key must be skipped, not allowed to crash this room's collector.
+        val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull() ?: return
         if (!payload.roomId.contentEquals(roomId.rawValue)) return
-        val senderKey = Secp256r1PublicKey.decode(payload.senderProfileId)
+        // The signature proves the author controls senderProfileId; requiring that profile to be a
+        // current member is what stops a member posting under a profile that isn't in the room.
+        val senderId = ProfileId { rawValue = payload.senderProfileId }
+        if (senderId !in members) return
+        val senderKey = runCatching { Secp256r1PublicKey.decode(payload.senderProfileId) }.getOrNull() ?: return
         if (!MessageSigning.verify(signed, senderKey)) return
-        if (!processed.add(lockerId)) return
 
-        store.saveMessage(LocalMessage(
-            roomId = roomId.rawValue,
-            messageId = MessageId(rawValue = lockerId.rawValue),
-            message = signed,
-        ))
-        val updated = (_messages.value[roomId].orEmpty() + payload).sortedBy { it.sentAtMillis }
-        _messages.value = _messages.value + (roomId to updated)
-        rooms.markUpdated(roomId)
+        val stored = mutex.withLock {
+            if (!processed.add(lockerId)) return@withLock false
+            store.saveMessage(LocalMessage(
+                roomId = roomId.rawValue,
+                messageId = MessageId(rawValue = lockerId.rawValue),
+                message = signed,
+            ))
+            val updated = (_messages.value[roomId].orEmpty() + payload).sortedBy { it.sentAtMillis }
+            _messages.value = _messages.value + (roomId to updated)
+            true
+        }
+        if (stored) rooms.markUpdated(roomId)
     }
 
     override suspend fun send(roomId: RoomId, text: String) {
