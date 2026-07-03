@@ -51,3 +51,9 @@ include(":profiles-usecase") // plugins { id("social.kmp-library") } — display
 include(":rooms-api")        // plugins { id("social.kmp-proto") }   — SealedEnvelope / Invite / RoomInfo / Member / RoomRecord
 include(":rooms-domain")     // plugins { id("social.kmp-library") } — RoomsManager over the lockers client
 include(":rooms-usecase")    // plugins { id("social.kmp-library") } — create / invite / leave / info use cases
+
+// messages: a chat layer over rooms. Each message is a SignedContent locker (signed by the sender's
+// profile key) in a member room's messages keyspace, observed and cached locally per room.
+include(":messages-api")     // plugins { id("social.kmp-proto") }   — MessageId / MessagePayload / LocalMessage
+include(":messages-domain")  // plugins { id("social.kmp-library") } — MessagesManager over the lockers client
+include(":messages-usecase") // plugins { id("social.kmp-library") } — send / watch message use cases

@@ -1,6 +1,7 @@
 package com.latenighthack.social.profiles.domain
 
 import com.latenighthack.lockers.connector.LockersClient
+import com.latenighthack.social.common.v1.SignedContent
 import com.latenighthack.social.profiles.v1.Profile
 import com.latenighthack.social.profiles.v1.ProfileBuilder
 import com.latenighthack.social.profiles.v1.ProfileId
@@ -33,6 +34,14 @@ interface MyProfilesManager {
      * the profile's private key never leaves this manager.
      */
     suspend fun deriveSharedSecret(profileId: ProfileId, peerPublicKey: ByteArray): ByteArray?
+
+    /**
+     * Signs [content] with the owned profile [profileId]'s key under the domain-separation [label],
+     * returning a standard [SignedContent] envelope, or null if [profileId] is not one of the user's
+     * profiles. Lets other features vouch content as one of the user's profiles without the profile
+     * private key ever leaving this manager (e.g. the messages feature signs each message).
+     */
+    suspend fun sign(profileId: ProfileId, label: Long, content: ByteArray): SignedContent?
 
     /** The ids of the user's profiles, updated as profiles are added. */
     fun getProfileList(): Flow<List<ProfileId>>

@@ -16,6 +16,7 @@ import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.social.account.domain.AccountManager
+import com.latenighthack.social.common.domain.sign as signContent
 import com.latenighthack.social.common.v1.SignedContent
 import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.profiles.v1.Profile
@@ -72,6 +73,9 @@ class MyProfilesManagerImpl(
         val peer = Secp256r1PublicKey.decode(peerPublicKey)
         return Secp256r1.ECDH.sharedSecret(keyPair.privateKey, peer)
     }
+
+    override suspend fun sign(profileId: ProfileId, label: Long, content: ByteArray): SignedContent? =
+        keyPairs[profileId]?.let { signContent(it, label, content) }
 
     override fun getProfileList(): Flow<List<ProfileId>> =
         _profiles.map { it.keys.toList() }.distinctUntilChanged()

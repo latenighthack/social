@@ -56,4 +56,7 @@ interface RoomsManager {
 
     /** The profile ids of the room's current members. */
     fun watchMembers(roomId: RoomId): Flow<List<ProfileId>>
+
+    /** Which of the user's profiles they belong to [roomId] as, or null if not a member. */
+    fun localProfile(roomId: RoomId): ProfileId?
 }

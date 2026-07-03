@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package com.latenighthack.social.messages.v1;
+
+option java_package = "com.latenighthack.social.messages.v1";
+
+import "common/v1/signing.proto";
+
+// A message's unique id, which is also its locker id in the room's messages keyspace. A wrapper
+// type (rather than raw bytes) so the local store's index writer is MessageId::toByteArray.
+message MessageId {
+  bytes raw_value = 1;
+}
+
+// The inner content a message's SignedContent envelope wraps and the sender's profile key signs.
+// room_id binds the message to its room (a signature can't be replayed under another room);
+// sender_profile_id is the sender's compressed secp256r1 profile key — the signer, and the key a
+// verifier resolves the signature against. Cross-feature ids are raw bytes, as in rooms' Member.
+message MessagePayload {
+  bytes room_id = 1;
+  bytes sender_profile_id = 2;
+  int64 sent_at_millis = 3;
+  string text = 4;
+}
+
+// Device-local ktstore cache wrapper for an observed message. `message` is the signed envelope as
+// written to the locker; message_id mirrors its locker id and is the store's primary key.
+message LocalMessage {
+  bytes room_id = 1;
+  MessageId message_id = 2;
+  com.latenighthack.social.common.v1.SignedContent message = 3;
+}

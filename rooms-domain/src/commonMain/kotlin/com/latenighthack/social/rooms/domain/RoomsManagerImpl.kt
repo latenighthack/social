@@ -236,6 +236,9 @@ class RoomsManagerImpl(
             members.keys.map { ProfileId { rawValue = it.rawValue } }
         }.distinctUntilChanged()
 
+    override fun localProfile(roomId: RoomId): ProfileId? =
+        records[roomId]?.let { ProfileId { rawValue = it.localProfileId } }
+
     // --- invite delivery + inbox ---
 
     private suspend fun sendInvite(lockers: LockersClient, recipient: ProfileId, invite: Invite) {
