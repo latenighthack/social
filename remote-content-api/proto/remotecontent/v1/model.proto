@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package com.latenighthack.social.remotecontent.v1;
+
+option java_package = "com.latenighthack.social.remotecontent.v1";
+
+// An opaque, server-minted identifier for a piece of remote content.
+message ContentId {
+  bytes raw_value = 1;
+}
+
+message CreateContentRequest {
+  // Optional MIME type; echoed as the Content-Type when the content is downloaded.
+  string mime_type = 1;
+}
+
+message CreateContentResponse {
+  ContentId content_id = 1;
+  // URL the client PUTs the raw bytes to.
+  string upload_url = 2;
+  // URL the content is served from once it has been uploaded.
+  string download_url = 3;
+}
+
+// Uploads and hosts opaque content. The client calls CreateContent to reserve an
+// id and receive an upload URL + a download URL; it then performs a standard HTTP
+// PUT of the raw bytes to the upload URL, after which the bytes are served from
+// the download URL with the MIME type supplied on the request.
+service RemoteContent {
+  rpc CreateContent(CreateContentRequest) returns (CreateContentResponse);
+}

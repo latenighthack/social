@@ -57,3 +57,11 @@ include(":rooms-usecase")    // plugins { id("social.kmp-library") } — create 
 include(":messages-api")     // plugins { id("social.kmp-proto") }   — MessageId / MessagePayload / LocalMessage
 include(":messages-domain")  // plugins { id("social.kmp-library") } — MessagesManager over the lockers client
 include(":messages-usecase") // plugins { id("social.kmp-library") } — send / watch message use cases
+
+// remote-content: a server-side upload/hosting add-on (the first -service). A client makes one gRPC
+// call to get a content id + upload/download URLs, PUTs raw bytes to the upload URL, and later fetches
+// them (with the create-time mime type) from the download URL. Attaches to the lockers server via the
+// ServerExtension seam; storage is behind a pluggable ContentStore (filesystem + in-memory).
+include(":remote-content-api")     // plugins { id("social.kmp-proto") }   — RemoteContent service + ContentId
+include(":remote-content-domain")  // plugins { id("social.kmp-library") } — RemoteContentClient (gRPC call + HTTP up/download)
+include(":remote-content-service") // plugins { id("social.jvm-service") } — ContentStore + gRPC impl + HTTP routes + extension

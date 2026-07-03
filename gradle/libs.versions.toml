@@ -41,6 +41,10 @@ kotlin-inject-ksp = { module = "me.tatarka.inject:kotlin-inject-compiler-ksp", v
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
 ktor-server-cio = { module = "io.ktor:ktor-server-cio", version.ref = "ktor" }
 ktor-server-websockets = { module = "io.ktor:ktor-server-websockets", version.ref = "ktor" }
+# ktor client — used by remote-content-domain's helper to perform the HTTP upload/download
+# (the engine is injected/supplied by the app or tests, so only -core is a library dep).
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
 
 ktstore-library = { module = "com.latenighthack.ktstore:ktstore-library", version.ref = "ktstore" }
 ktcrypto-library = { module = "com.latenighthack.ktcrypto:ktcrypto-library", version.ref = "ktcrypto" }
