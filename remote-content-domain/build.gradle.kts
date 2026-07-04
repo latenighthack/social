@@ -28,6 +28,12 @@ kotlin {
                 implementation(libs.coroutines.core)
                 implementation(libs.assertk)
                 implementation(libs.ktstore.library)
+                // Real end-to-end transfer-progress test: boot a tiny inline PUT/GET server and
+                // transfer over a real ktor client, asserting watchTransfer(url) reports progress.
+                implementation(libs.ktbuf.rpc)
+                implementation(libs.ktor.server.core)
+                implementation(libs.ktor.server.cio)
+                implementation(libs.ktor.client.cio)
             }
         }
     }

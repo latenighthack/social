@@ -6,12 +6,16 @@ import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.remotecontent.domain.RemoteContentUploader
+import com.latenighthack.social.remotecontent.domain.Upload
+import com.latenighthack.social.remotecontent.domain.UploadStatus
+import com.latenighthack.social.remotecontent.v1.ContentId
 import com.latenighthack.social.rooms.domain.RoomsManager
 import com.latenighthack.social.rooms.domain.avatar
 import com.latenighthack.social.rooms.v1.RoomInfo
 import com.latenighthack.social.rooms.v1.RoomInfoBuilder
 import com.latenighthack.social.rooms.v1.copy
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -20,10 +24,13 @@ class SetRoomAvatarUseCaseTest {
 
     private class FakeUploader(private val url: String) : RemoteContentUploader {
         var uploadedBytes: ByteArray? = null
-        override suspend fun upload(bytes: ByteArray, mimeType: String?): String {
+        override suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload {
             uploadedBytes = bytes
-            return url
+            return Upload(ContentId { rawValue = byteArrayOf(0) }, url, UploadStatus.Queued)
         }
+
+        override fun watchUploads(): Flow<List<Upload>> = flowOf(emptyList())
+        override fun watchUpload(contentId: ContentId): Flow<Upload?> = flowOf(null)
     }
 
     private class FakeRooms : RoomsManager {

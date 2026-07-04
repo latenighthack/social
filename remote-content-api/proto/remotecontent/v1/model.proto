@@ -33,6 +33,9 @@ message PendingUpload {
   bytes bytes = 3;
   // When this upload was enqueued; drives oldest-first draining.
   int64 created_at_millis = 4;
+  // URL the content is served from; kept so an upload resumed after a restart can still be observed
+  // with its download URL.
+  string download_url = 5;
 }
 
 // Uploads and hosts opaque content. The client calls CreateContent to reserve an

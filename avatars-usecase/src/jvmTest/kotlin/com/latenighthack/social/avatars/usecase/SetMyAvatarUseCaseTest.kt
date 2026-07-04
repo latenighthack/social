@@ -11,6 +11,9 @@ import com.latenighthack.social.profiles.v1.ProfileBuilder
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.profiles.v1.copy
 import com.latenighthack.social.remotecontent.domain.RemoteContentUploader
+import com.latenighthack.social.remotecontent.domain.Upload
+import com.latenighthack.social.remotecontent.domain.UploadStatus
+import com.latenighthack.social.remotecontent.v1.ContentId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
@@ -22,11 +25,14 @@ class SetMyAvatarUseCaseTest {
     private class FakeUploader(private val url: String) : RemoteContentUploader {
         var uploadedBytes: ByteArray? = null
         var uploadedMime: String? = null
-        override suspend fun upload(bytes: ByteArray, mimeType: String?): String {
+        override suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload {
             uploadedBytes = bytes
             uploadedMime = mimeType
-            return url
+            return Upload(ContentId { rawValue = byteArrayOf(0) }, url, UploadStatus.Queued)
         }
+
+        override fun watchUploads(): Flow<List<Upload>> = flowOf(emptyList())
+        override fun watchUpload(contentId: ContentId): Flow<Upload?> = flowOf(null)
     }
 
     private class FakeMyProfiles(private val profileId: ProfileId?) : MyProfilesManager {

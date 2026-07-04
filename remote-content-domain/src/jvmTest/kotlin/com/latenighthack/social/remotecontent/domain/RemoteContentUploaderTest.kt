@@ -3,12 +3,16 @@ package com.latenighthack.social.remotecontent.domain
 import assertk.assertThat
 import assertk.assertions.isEmpty
 import assertk.assertions.isEqualTo
+import assertk.assertions.isNotNull
 import assertk.assertions.hasSize
 import com.latenighthack.ktstore.InMemoryStoreDelegate
 import com.latenighthack.ktstore.StoreDelegate
 import com.latenighthack.social.remotecontent.v1.ContentId
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -44,23 +48,28 @@ class RemoteContentUploaderTest {
 
         override suspend fun download(downloadUrl: String): DownloadedContent = error("unused")
         override suspend fun upload(bytes: ByteArray, mimeType: String?): CreatedContent = error("unused")
+        override fun watchUpload(uploadUrl: String): Flow<TransferProgress?> = flowOf(null)
+        override fun watchDownload(downloadUrl: String): Flow<TransferProgress?> = flowOf(null)
     }
 
     private suspend fun awaitUntil(condition: suspend () -> Boolean) =
         withTimeout(10_000) { while (!condition()) delay(10) }
 
     @Test
-    fun `upload returns the download URL immediately and durably queues the bytes before transfer`() =
+    fun `enqueue returns the download URL immediately and durably queues the bytes before transfer`() =
         runBlocking {
             val delegate: StoreDelegate = InMemoryStoreDelegate()
             val fake = FakeRemoteContentClient()
             // Not started: no drain loop runs, so the bytes stay queued and are never PUT.
             val uploader = RemoteContentUploaderImpl(fake, delegate)
 
-            val url = uploader.upload(byteArrayOf(1, 2, 3), "image/png")
+            val upload = uploader.enqueue(byteArrayOf(1, 2, 3), "image/png")
 
-            assertThat(url).isEqualTo("download/0")
+            assertThat(upload.downloadUrl).isEqualTo("download/0")
+            assertThat(upload.status).isEqualTo(UploadStatus.Queued)
             assertThat(fake.uploaded.keys.toList()).isEmpty()
+            // The freshly enqueued upload is observable as queued.
+            assertThat(uploader.watchUpload(upload.contentId).first()?.status).isEqualTo(UploadStatus.Queued)
             val pending = PendingUploadStore(delegate).getAllPending()
             assertThat(pending).hasSize(1)
             assertThat(pending.single().uploadUrl).isEqualTo("upload/0")
@@ -68,17 +77,19 @@ class RemoteContentUploaderTest {
         }
 
     @Test
-    fun `a started uploader transfers the bytes and drains the queue`() = runBlocking {
+    fun `a started uploader transfers the bytes, drains the queue, and reports completion`() = runBlocking {
         val delegate = InMemoryStoreDelegate()
         val fake = FakeRemoteContentClient()
         val uploader = RemoteContentUploaderImpl(fake, delegate)
         uploader.start()
 
-        uploader.upload(byteArrayOf(9, 8, 7), "image/jpeg")
+        val upload = uploader.enqueue(byteArrayOf(9, 8, 7), "image/jpeg")
 
         awaitUntil { fake.uploaded.containsKey("upload/0") }
         assertContentEquals(byteArrayOf(9, 8, 7), fake.uploaded["upload/0"])
         awaitUntil { PendingUploadStore(delegate).getAllPending().isEmpty() }
+        // The upload is observable as completed once the transfer lands.
+        awaitUntil { uploader.watchUpload(upload.contentId).first()?.status == UploadStatus.Completed }
 
         uploader.stop()
     }
@@ -91,23 +102,24 @@ class RemoteContentUploaderTest {
         val uploader = RemoteContentUploaderImpl(fake, delegate, retryIntervalMillis = 50)
         uploader.start()
 
-        uploader.upload(byteArrayOf(4, 2), "image/png")
+        val upload = uploader.enqueue(byteArrayOf(4, 2), "image/png")
 
         awaitUntil { fake.uploaded.containsKey("upload/0") }
         assertContentEquals(byteArrayOf(4, 2), fake.uploaded["upload/0"])
         awaitUntil { PendingUploadStore(delegate).getAllPending().isEmpty() }
+        awaitUntil { uploader.watchUpload(upload.contentId).first()?.status == UploadStatus.Completed }
 
         uploader.stop()
     }
 
     @Test
-    fun `a persistently failing upload stays durably queued for later retry`() = runBlocking {
+    fun `a persistently failing upload stays durably queued and observable as not completed`() = runBlocking {
         val delegate = InMemoryStoreDelegate()
         val fake = FakeRemoteContentClient(failuresBeforeSuccess = Int.MAX_VALUE)
         val uploader = RemoteContentUploaderImpl(fake, delegate, retryIntervalMillis = 50)
         uploader.start()
 
-        uploader.upload(byteArrayOf(5, 5, 5), "image/png")
+        val upload = uploader.enqueue(byteArrayOf(5, 5, 5), "image/png")
 
         // Let the loop attempt (and fail) a few times, then confirm the entry survives — the durable
         // queue is what lets a real restart resume the transfer.
@@ -116,6 +128,10 @@ class RemoteContentUploaderTest {
         val pending = PendingUploadStore(delegate).getAllPending()
         assertThat(pending).hasSize(1)
         assertContentEquals(byteArrayOf(5, 5, 5), pending.single().bytes)
+        // Still tracked, and never completed while it keeps failing (queued or mid-attempt).
+        val observed = uploader.watchUpload(upload.contentId).first()
+        assertThat(observed).isNotNull()
+        assertThat(observed!!.status == UploadStatus.Completed).isEqualTo(false)
 
         uploader.stop()
     }
