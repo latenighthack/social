@@ -21,7 +21,9 @@ import com.latenighthack.social.common.domain.sign
 import com.latenighthack.social.common.v1.SignedContent
 import com.latenighthack.social.common.v1.fromByteArray
 import com.latenighthack.social.common.v1.toByteArray
+import com.latenighthack.social.messages.v1.Component
 import com.latenighthack.social.messages.v1.Draft
+import com.latenighthack.social.messages.v1.DraftAttachment
 import com.latenighthack.social.messages.v1.MessagePayload
 import com.latenighthack.social.messages.v1.toByteArray
 import com.latenighthack.social.profiles.domain.MyProfilesManagerImpl
@@ -32,6 +34,7 @@ import io.ktor.server.application.Application
 import kotlinx.coroutines.flow.first
 import kotlin.random.Random
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
@@ -97,8 +100,8 @@ class MessagesManagerIntegrationTest {
 
             alice.messages.send(roomId, Draft { text = "hello bob" })
 
-            val delivered = bob.messages.watchMessages(roomId).first { list -> list.any { it.text == "hello bob" } }
-            val message = delivered.first { it.text == "hello bob" }
+            val delivered = bob.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "hello bob" } }
+            val message = delivered.first { it.component?.text == "hello bob" }
             assertTrue(message.senderProfileId.contentEquals(aliceProfile.rawValue))
 
             bob.close()
@@ -117,10 +120,10 @@ class MessagesManagerIntegrationTest {
             bob.rooms.watchRooms().first { it.contains(roomId) }
 
             alice.messages.send(roomId, Draft { text = "hi bob" })
-            bob.messages.watchMessages(roomId).first { list -> list.any { it.text == "hi bob" } }
+            bob.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "hi bob" } }
 
             bob.messages.send(roomId, Draft { text = "hi alice" })
-            alice.messages.watchMessages(roomId).first { list -> list.any { it.text == "hi alice" } }
+            alice.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "hi alice" } }
 
             bob.close()
             alice.close()
@@ -167,7 +170,7 @@ class MessagesManagerIntegrationTest {
                 roomId = roomId.rawValue,
                 senderProfileId = bobProfile.rawValue,
                 sentAtMillis = 1L,
-                text = "forged",
+                component = Component { contents.text { text = "forged" } },
             )
             val forged = sign(forger, MessageSigning.LABEL, forgedPayload.toByteArray())
             alice.lockers.typed(MessagesKeyspaces.MESSAGES, SignedContent::toByteArray, SignedContent.Companion::fromByteArray)
@@ -175,8 +178,8 @@ class MessagesManagerIntegrationTest {
 
             // A genuine message posted after it; once it arrives the forged one has been processed.
             alice.messages.send(roomId, Draft { text = "genuine" })
-            val delivered = bob.messages.watchMessages(roomId).first { list -> list.any { it.text == "genuine" } }
-            assertTrue(delivered.none { it.text == "forged" })
+            val delivered = bob.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "genuine" } }
+            assertTrue(delivered.none { it.component?.text == "forged" })
 
             // A non-member cannot post at all: the messages keyspace is under the room lock.
             val carol = newParty(server.rpcClient)
@@ -203,13 +206,46 @@ class MessagesManagerIntegrationTest {
             val roomId = device1.rooms.createGroup("Team")
             device1.rooms.watchRooms().first { it.contains(roomId) }
             device1.messages.send(roomId, Draft { text = "note to self" })
-            device1.messages.watchMessages(roomId).first { list -> list.any { it.text == "note to self" } }
+            device1.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "note to self" } }
             device1.close()
 
             // A fresh device restoring the same account recovers the room and re-syncs the message.
             val device2 = newParty(server.rpcClient, accountStore)
-            device2.messages.watchMessages(roomId).first { list -> list.any { it.text == "note to self" } }
+            device2.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "note to self" } }
 
             device2.close()
+        }
+
+    @Test(timeout = 60_000)
+    fun `a draft with attachments and text fans out into one message per component`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            val alice = newParty(server.rpcClient)
+            val bob = newParty(server.rpcClient)
+            alice.myProfiles.createProfile("Alice")
+            val bobProfile = bob.myProfiles.createProfile("Bob")
+
+            val roomId = alice.rooms.createGroup("Team")
+            alice.rooms.invite(roomId, listOf(bobProfile))
+            bob.rooms.watchRooms().first { it.contains(roomId) }
+
+            fun photo(seed: Byte, url: String) = DraftAttachment {
+                contentId = ByteArray(16) { seed }
+                component = Component { contents.image { image { this.url = url } } }
+            }
+            alice.messages.send(roomId, Draft {
+                text = "look at these"
+                attachments = listOf(photo(1, "photo-1"), photo(2, "photo-2"))
+            })
+
+            // The draft fans out into three messages: two image components and one text component.
+            val delivered = bob.messages.watchMessages(roomId).first { it.size == 3 }
+            val urls = delivered.mapNotNull {
+                (it.component?.contents as? Component.OneOfContents.image)?.value?.image?.url
+            }
+            assertEquals(setOf("photo-1", "photo-2"), urls.toSet())
+            assertTrue(delivered.any { it.component?.text == "look at these" })
+
+            bob.close()
+            alice.close()
         }
 }

@@ -1,0 +1,188 @@
+syntax = "proto3";
+
+package com.latenighthack.social.messages.v1;
+
+option java_package = "com.latenighthack.social.messages.v1";
+
+message Action {
+  oneof action {
+    Link link = 1;
+    PrefabMessage prefab_message = 2;
+  }
+
+  message Link {
+    string url = 1;
+  }
+
+  message PrefabMessage {
+    bytes payload = 1;
+    bool is_reply = 2;
+  }
+}
+
+message Component {
+  Action action = 1;
+
+  oneof contents {
+    Container container = 2;
+
+    Button button = 101;
+    Image image = 102;
+    Divider divider = 103;
+    Text text = 104;
+    // Video video = 105;
+  }
+}
+
+message Container {
+  repeated Component children = 1;
+
+  enum VerticalAlignment {
+    TOP = 0;
+    CENTER_VERTICAL = 1;
+    BOTTOM = 2;
+  }
+
+  enum HorizontalAlignment {
+    DEFAULT = 0;
+    LEFT = 1;
+    CENTER_HORIZONTAL = 2;
+    RIGHT = 3;
+  }
+
+  oneof contents {
+    Box box = 2;
+    VerticalStack vertical_stack = 3;
+    HorizontalStack horizontal_stack = 4;
+    Grid grid = 5;
+    Bubble bubble = 6;
+    Overlay overlay = 7;
+    Quote quote = 8;
+  }
+
+  message Box {
+  }
+
+  message VerticalStack {
+    HorizontalAlignment alignment = 1;
+  }
+
+  message HorizontalStack {
+    VerticalAlignment alignment = 1;
+  }
+
+  message Grid {
+    repeated Column columns = 1;
+    message Column {
+      int32 weight = 1;
+    }
+
+    Style style = 2;
+    enum Style {
+      DEFAULT = 0;
+      STRIPED = 1;
+      BORDER = 2;
+    }
+  }
+
+  message Bubble {
+  }
+
+  message Overlay {
+  }
+
+  message Quote {
+  }
+}
+
+message Button {
+  string text = 1;
+  Style style = 2;
+  enum Style {
+    DEFAULT =0;
+    CTA = 1;
+    GROUPED = 2;
+    PILL = 3;
+  }
+}
+
+message Image {
+  ImageReference image = 1;
+  Style style = 2;
+  enum Style {
+    DEFAULT = 0;
+    SMALL = 1;
+    MEDIUM = 2;
+    SQUARE = 3;
+    CIRCULAR = 4;
+  }
+}
+
+message Divider {
+}
+
+message Text {
+  string text = 1;
+  Style style = 2;
+  enum Style {
+    DEFAULT = 0;
+    TITLE = 1;
+    SUBTITLE = 2;
+    DESCRIPTION = 3;
+  }
+  repeated Inline inlines = 3;
+}
+
+message ImageReference {
+  int32 preview_color = 1;
+  float aspect_ratio = 2;
+  bytes preview_data = 3;
+  string url = 4;
+  string alternateText = 5;
+}
+
+message Inline {
+  int32 offset = 1;
+  int32 length = 2;
+  Rule rule = 3;
+
+  message Rule {
+    oneof contents {
+      Bold bold = 1;
+      Italic italic = 2;
+      Strikethrough strikethrough = 3;
+      Tappable tappable = 4;
+      Redaction redaction = 5;
+      UserLink user_link = 6;
+      Icon icon = 7;
+    }
+
+    message Bold {
+    }
+
+    message Italic {
+    }
+
+    message Strikethrough {
+    }
+
+    message Tappable {
+      Action action = 1;
+      Style style = 2;
+      enum Style {
+        LINK = 0;
+      }
+    }
+
+    message Redaction {
+    }
+
+    message UserLink {
+      string identifier = 1;
+    }
+
+    message Icon {
+      ImageReference image = 1;
+    }
+  }
+}

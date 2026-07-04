@@ -10,6 +10,7 @@ import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.social.common.v1.SignedContent
 import com.latenighthack.social.common.v1.fromByteArray
 import com.latenighthack.social.common.v1.toByteArray
+import com.latenighthack.social.messages.v1.Component
 import com.latenighthack.social.messages.v1.Draft
 import com.latenighthack.social.messages.v1.LocalMessage
 import com.latenighthack.social.messages.v1.MessageId
@@ -171,17 +172,27 @@ class MessagesManagerImpl(
     override suspend fun send(roomId: RoomId, draft: Draft) {
         val lockers = lockers ?: error("send requires start(lockers) first")
         val senderId = rooms.localProfile(roomId) ?: error("not a member of this room")
-        val payload = MessagePayload(
-            roomId = roomId.rawValue,
-            senderProfileId = senderId.rawValue,
-            sentAtMillis = Clock.System.now().toEpochMilliseconds(),
-            text = draft.text,
-        )
-        val signed = myProfiles.sign(senderId, MessageSigning.LABEL, payload.toByteArray())
-            ?: error("no signing key for the room's profile")
-        // Written under a fresh random locker id; the room lock (shared key via the rooms key source)
-        // authorizes it. The write echoes back through watchAll and is ingested by the same path.
-        messageClient(lockers).updateLocker(roomId, LockerId(Random.nextBytes(32), MessagesKeyspaces.MESSAGES)) { signed }
+
+        // A draft fans out into one message per component: each attachment's photo component in order,
+        // then the text as a Text component (skipped when blank, so an attachment-only send is fine).
+        val components = draft.attachments.map { it.component ?: Component { } } +
+            listOfNotNull(draft.text.takeIf { it.isNotBlank() }?.let { text ->
+                Component { contents.text { this.text = text } }
+            })
+
+        for (component in components) {
+            val payload = MessagePayload(
+                roomId = roomId.rawValue,
+                senderProfileId = senderId.rawValue,
+                sentAtMillis = Clock.System.now().toEpochMilliseconds(),
+                component = component,
+            )
+            val signed = myProfiles.sign(senderId, MessageSigning.LABEL, payload.toByteArray())
+                ?: error("no signing key for the room's profile")
+            // Written under a fresh random locker id; the room lock (shared key via the rooms key source)
+            // authorizes it. The write echoes back through watchAll and is ingested by the same path.
+            messageClient(lockers).updateLocker(roomId, LockerId(Random.nextBytes(32), MessagesKeyspaces.MESSAGES)) { signed }
+        }
     }
 
     override fun watchMessages(roomId: RoomId): Flow<List<MessagePayload>> =

@@ -2,6 +2,7 @@ package com.latenighthack.social.messages.usecase
 
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.social.messages.domain.MessagesManager
+import com.latenighthack.social.messages.v1.Component
 import com.latenighthack.social.profiles.v1.ProfileId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -16,7 +17,7 @@ class WatchMessagesUseCase(
                 Message(
                     senderProfileId = ProfileId { rawValue = it.senderProfileId },
                     sentAtMillis = it.sentAtMillis,
-                    text = it.text,
+                    component = it.component ?: Component { },
                 )
             }
         }
