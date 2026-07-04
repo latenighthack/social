@@ -84,3 +84,10 @@ include(":avatars-usecase")  // plugins { id("social.kmp-library") } — set my 
 include(":typing-api")     // plugins { id("social.kmp-proto") }   — TypingPayload
 include(":typing-domain")  // plugins { id("social.kmp-library") } — TypingManager over the lockers client
 include(":typing-usecase") // plugins { id("social.kmp-library") } — set / watch typing use cases
+
+// read receipts: per-room "read up to here" pointers. Each member has one ReadReceipt locker (keyed by
+// profile id) in a room's read-receipts keyspace, whose body is the message id of the most recently
+// read message. markRead advances the pointer to the room's latest message; the reader list is folded
+// into the messages use cases (each watched Message carries the profiles that have read it).
+include(":read-receipts-api")    // plugins { id("social.kmp-proto") }   — ReadReceipt
+include(":read-receipts-domain") // plugins { id("social.kmp-library") } — ReadReceiptsManager over the lockers client

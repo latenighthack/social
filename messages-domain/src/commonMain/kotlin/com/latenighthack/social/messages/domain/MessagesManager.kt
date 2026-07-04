@@ -4,6 +4,7 @@ import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.common.v1.SignedContent
 import com.latenighthack.social.messages.v1.Draft
+import com.latenighthack.social.messages.v1.MessageId
 import com.latenighthack.social.messages.v1.MessagePayload
 import kotlinx.coroutines.flow.Flow
 
@@ -24,4 +25,7 @@ interface MessagesManager {
 
     /** The verified messages in [roomId], oldest first. */
     fun watchMessages(roomId: RoomId): Flow<List<MessagePayload>>
+
+    /** The ids of the verified messages in [roomId], oldest first — index-aligned with [watchMessages]. */
+    fun watchMessageIds(roomId: RoomId): Flow<List<MessageId>>
 }

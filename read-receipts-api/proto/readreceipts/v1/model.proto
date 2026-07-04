@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package com.latenighthack.social.readreceipts.v1;
+
+option java_package = "com.latenighthack.social.readreceipts.v1";
+
+// A member's read pointer in a room: the locker id (message id) of the most recently read message.
+// Stored as the body of the member's locker (keyed by profile id) in the room's read-receipts
+// keyspace, so it persists and syncs like the room's membership.
+message ReadReceipt {
+  bytes message_id = 1;
+}

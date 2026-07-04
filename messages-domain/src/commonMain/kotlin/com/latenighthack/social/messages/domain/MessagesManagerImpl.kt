@@ -55,7 +55,9 @@ class MessagesManagerImpl(
 
     private val store = MessageStore(delegate)
 
-    private val _messages = MutableStateFlow<Map<RoomId, List<MessagePayload>>>(emptyMap())
+    // Each room's verified messages as (id, payload) pairs, kept sorted by sentAtMillis. The id is
+    // the message's locker id; carrying it here lets read receipts resolve a message's position.
+    private val _messages = MutableStateFlow<Map<RoomId, List<Pair<MessageId, MessagePayload>>>>(emptyMap())
 
     // Guards the read-modify-write of processed + _messages, which the per-room collectors run
     // concurrently on a multi-threaded dispatcher.
@@ -94,16 +96,16 @@ class MessagesManagerImpl(
         // Hydrate from the local cache and seed the processed set BEFORE subscribing, so replayed
         // history isn't counted as newly received (which would re-bump every room's updated_at). This
         // runs before any collector launches, so it needs no locking.
-        val grouped = mutableMapOf<RoomId, MutableList<MessagePayload>>()
+        val grouped = mutableMapOf<RoomId, MutableList<Pair<MessageId, MessagePayload>>>()
         for (local in store.getAllMessages()) {
             val messageId = local.messageId ?: continue
             val signed = local.message ?: continue
             val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull() ?: continue
             processed.add(LockerId(messageId.rawValue, MessagesKeyspaces.MESSAGES))
             val roomId = RoomId(rawValue = local.roomId)
-            grouped.getOrPut(roomId) { mutableListOf() }.add(payload)
+            grouped.getOrPut(roomId) { mutableListOf() }.add(messageId to payload)
         }
-        _messages.value = grouped.mapValues { (_, list) -> list.sortedBy { it.sentAtMillis } }
+        _messages.value = grouped.mapValues { (_, list) -> list.sortedBy { it.second.sentAtMillis } }
 
         // Watch each room the user belongs to for new messages, as rooms appear. The per-room
         // collectors are launched as children of this coroutine (not the retained scope) so stop() —
@@ -155,14 +157,15 @@ class MessagesManagerImpl(
         val senderKey = runCatching { Secp256r1PublicKey.decode(payload.senderProfileId) }.getOrNull() ?: return
         if (!MessageSigning.verify(signed, senderKey)) return
 
+        val messageId = MessageId(rawValue = lockerId.rawValue)
         val stored = mutex.withLock {
             if (!processed.add(lockerId)) return@withLock false
             store.saveMessage(LocalMessage(
                 roomId = roomId.rawValue,
-                messageId = MessageId(rawValue = lockerId.rawValue),
+                messageId = messageId,
                 message = signed,
             ))
-            val updated = (_messages.value[roomId].orEmpty() + payload).sortedBy { it.sentAtMillis }
+            val updated = (_messages.value[roomId].orEmpty() + (messageId to payload)).sortedBy { it.second.sentAtMillis }
             _messages.value = _messages.value + (roomId to updated)
             true
         }
@@ -196,7 +199,10 @@ class MessagesManagerImpl(
     }
 
     override fun watchMessages(roomId: RoomId): Flow<List<MessagePayload>> =
-        _messages.map { it[roomId].orEmpty() }.distinctUntilChanged()
+        _messages.map { room -> room[roomId].orEmpty().map { it.second } }.distinctUntilChanged()
+
+    override fun watchMessageIds(roomId: RoomId): Flow<List<MessageId>> =
+        _messages.map { room -> room[roomId].orEmpty().map { it.first } }.distinctUntilChanged()
 
     private fun messageClient(lockers: LockersClient): TypedLockerClient<SignedContent> =
         lockers.typed(MessagesKeyspaces.MESSAGES, SignedContent::toByteArray, SignedContent.Companion::fromByteArray)

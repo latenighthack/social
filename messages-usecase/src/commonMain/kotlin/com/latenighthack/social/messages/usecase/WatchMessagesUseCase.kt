@@ -4,20 +4,33 @@ import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.social.messages.domain.MessagesManager
 import com.latenighthack.social.messages.v1.Component
 import com.latenighthack.social.profiles.v1.ProfileId
+import com.latenighthack.social.readreceipts.domain.ReadReceiptsManager
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 
-/** Watches the messages in a room, oldest first, as view models. */
+/** Watches the messages in a room, oldest first, each annotated with the profiles that have read it. */
 class WatchMessagesUseCase(
     private val messages: MessagesManager,
+    private val readReceipts: ReadReceiptsManager,
 ) {
     fun watch(roomId: RoomId): Flow<List<Message>> =
-        messages.watchMessages(roomId).map { payloads ->
-            payloads.map {
+        combine(
+            messages.watchMessages(roomId),
+            messages.watchMessageIds(roomId),
+            readReceipts.watchReadReceipts(roomId),
+        ) { payloads, orderedIds, receipts ->
+            // Each receipt is a member's "read up to here" pointer; a message at index i is read by a
+            // member whose pointer resolves to index >= i. A pointer to a not-yet-synced message
+            // resolves to -1 and counts as unread until that message arrives (eventually consistent).
+            val readerIndices = receipts.mapValues { (_, pointer) ->
+                orderedIds.indexOfFirst { it.rawValue.contentEquals(pointer.rawValue) }
+            }
+            payloads.mapIndexed { index, payload ->
                 Message(
-                    senderProfileId = ProfileId { rawValue = it.senderProfileId },
-                    sentAtMillis = it.sentAtMillis,
-                    component = it.component ?: Component { },
+                    senderProfileId = ProfileId { rawValue = payload.senderProfileId },
+                    sentAtMillis = payload.sentAtMillis,
+                    component = payload.component ?: Component { },
+                    readBy = readerIndices.filterValues { it >= index }.keys,
                 )
             }
         }
