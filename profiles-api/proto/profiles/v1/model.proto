@@ -23,6 +23,7 @@ message Profile {
   message DisclosurePayload {
     oneof content {
       DisplayName display_name = 1;
+      Avatar avatar = 3;
     }
 
     // Binds this disclosure to the profile it belongs to, so a disclosure signed for one
@@ -31,6 +32,11 @@ message Profile {
 
     message DisplayName {
       string value = 1;
+    }
+
+    // The profile's avatar photo, carried as the URL the uploaded bytes are served from.
+    message Avatar {
+      string download_url = 1;
     }
   }
 }

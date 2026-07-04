@@ -9,3 +9,10 @@ fun Profile.displayName(): String? =
         val payload = Profile.DisclosurePayload.fromByteArray(signed.content)
         (payload.content as? Profile.DisclosurePayload.OneOfContent.displayName)?.value?.value
     }
+
+/** The URL the profile's avatar photo is served from, or null if none has been disclosed. */
+fun Profile.avatar(): String? =
+    disclosures.firstNotNullOfOrNull { signed ->
+        val payload = Profile.DisclosurePayload.fromByteArray(signed.content)
+        (payload.content as? Profile.DisclosurePayload.OneOfContent.avatar)?.value?.downloadUrl
+    }

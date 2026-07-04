@@ -27,6 +27,7 @@ message RoomInfo {
   message DisclosurePayload {
     oneof content {
       Name name = 1;
+      Avatar avatar = 3;
     }
 
     // Binds this disclosure to the room it belongs to (raw room id bytes), so a disclosure
@@ -35,6 +36,11 @@ message RoomInfo {
 
     message Name {
       string value = 1;
+    }
+
+    // The room's avatar photo, carried as the URL the uploaded bytes are served from.
+    message Avatar {
+      string download_url = 1;
     }
   }
 }

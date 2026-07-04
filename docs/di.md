@@ -15,7 +15,10 @@ KSP compiler** — you do not need KSP configured in the feature modules.
 The interfaces reference a few types they don't provide; the app binds them:
 
 - `KeyValueStore` — the device-local store `AccountManagerImpl` persists the identity key in.
-- `StoreDelegate` — the store the observed-profiles cache (`ProfilesManagerImpl`) is created from.
+- `StoreDelegate` — the store the observed-profiles cache (`ProfilesManagerImpl`), the messages
+  cache, and the remote-content upload queue are created from.
+- `HttpClient` — a ktor client (with a platform engine) the remote-content transport uses to PUT/GET
+  raw content bytes.
 - The client's own `rpcClient`, `appVersion`, and its *own* `StoreDelegate` + `KeyValueStore` — the
   connector persists its session state separately from the managers, so these are distinct instances
   (keep them out of the graph as plain fields to avoid ambiguous `KeyValueStore`/`StoreDelegate`
@@ -48,6 +51,10 @@ import com.latenighthack.social.profiles.usecase.ProfilesUseCaseProviders
 import com.latenighthack.social.rooms.domain.RoomsProviders
 import com.latenighthack.social.rooms.domain.RoomsKeySource
 import com.latenighthack.social.rooms.usecase.RoomsUseCaseProviders
+import com.latenighthack.social.remotecontent.domain.RemoteContentProviders
+import com.latenighthack.social.avatars.usecase.AvatarsUseCaseProviders
+import com.latenighthack.social.avatars.usecase.SetMyAvatarUseCase
+import io.ktor.client.HttpClient
 import com.latenighthack.lockers.connector.AuthenticationKeySource
 import com.latenighthack.lockers.connector.LockKeySource
 import com.latenighthack.lockers.connector.LockersClient
@@ -60,8 +67,12 @@ abstract class SocialComponent(
     // Manager-owned stores enter the graph.
     @get:Provides protected val keyValueStore: KeyValueStore,
     @get:Provides protected val storeDelegate: StoreDelegate,
-    // Connector-owned dependencies: plain fields, NOT @Provides (distinct from the manager stores).
-    private val rpcClient: RpcClient,
+    // The ktor client the remote-content transport uploads/downloads bytes with.
+    @get:Provides protected val httpClient: HttpClient,
+    // The gRPC channel. Shared: the connector uses it, and the remote-content client makes its
+    // CreateContent call over it, so unlike the stores it enters the graph (no ambiguity — one RpcClient).
+    @get:Provides protected val rpcClient: RpcClient,
+    // Connector-owned stores: plain fields, NOT @Provides (distinct from the manager stores).
     private val appVersion: Version,
     private val connectorStoreDelegate: StoreDelegate,
     private val connectorKeyValueStore: KeyValueStore,
@@ -70,7 +81,9 @@ abstract class SocialComponent(
     ProfilesProviders,
     ProfilesUseCaseProviders,
     RoomsProviders,
-    RoomsUseCaseProviders {
+    RoomsUseCaseProviders,
+    RemoteContentProviders,
+    AvatarsUseCaseProviders {
 
     // This app includes rooms, so the room key source is the top of the lock chain.
     @Provides
@@ -92,16 +105,18 @@ abstract class SocialComponent(
     abstract val createAccount: CreateAccountUseCase
     abstract val watchRooms: WatchRoomsUseCase
     abstract val createGroup: CreateGroupUseCase
+    abstract val setMyAvatar: SetMyAvatarUseCase
     // …the rest as needed.
 
-    // Everything to drive over the client.
+    // Everything to drive over the client. The remote-content uploader is contributed @IntoSet like
+    // every manager, so it starts and stops with this same set (its start ignores the client).
     abstract val client: LockersClient
     abstract val lifecycles: Set<DomainLifecycle>
 }
 
 // Bootstrap:
 val component = SocialComponent::class.create(
-    keyValueStore, storeDelegate, rpcClient, appVersion, connectorStoreDelegate, connectorKeyValueStore,
+    keyValueStore, storeDelegate, httpClient, rpcClient, appVersion, connectorStoreDelegate, connectorKeyValueStore,
 )
 val client = component.client
 component.lifecycles.forEach { it.start(client) }

@@ -13,6 +13,21 @@ kotlin {
                 api(libs.ktor.client.core)
                 // GrpcService supertype of the generated RpcClient stub.
                 implementation(libs.ktbuf.library)
+                // DomainLifecycle (the durable uploader's supertype) + @SocialScope; brings
+                // LockersClient (in DomainLifecycle's signature) transitively.
+                api(projects.socialRuntime)
+                // Durable pending-upload queue.
+                api(libs.ktstore.library)
+                // Clock for enqueue timestamps.
+                implementation(libs.kotlinx.datetime)
+            }
+        }
+        val jvmTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.coroutines.core)
+                implementation(libs.assertk)
+                implementation(libs.ktstore.library)
             }
         }
     }

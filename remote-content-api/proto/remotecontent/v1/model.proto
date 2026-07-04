@@ -22,6 +22,19 @@ message CreateContentResponse {
   string download_url = 3;
 }
 
+// A durably queued upload awaiting (or retrying) its HTTP PUT. The client mints the id and URL up
+// front via CreateContent, then records the bytes here so a background loop can PUT them until it
+// succeeds, surviving restarts. Removed once the bytes have landed. Keyed by content id.
+message PendingUpload {
+  ContentId content_id = 1;
+  // URL the bytes are PUT to (returned by CreateContent).
+  string upload_url = 2;
+  // The raw bytes still to be uploaded.
+  bytes bytes = 3;
+  // When this upload was enqueued; drives oldest-first draining.
+  int64 created_at_millis = 4;
+}
+
 // Uploads and hosts opaque content. The client calls CreateContent to reserve an
 // id and receive an upload URL + a download URL; it then performs a standard HTTP
 // PUT of the raw bytes to the upload URL, after which the bytes are served from

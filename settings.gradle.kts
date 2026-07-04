@@ -72,3 +72,8 @@ include(":contacts-usecase") // plugins { id("social.kmp-library") } — add / b
 include(":remote-content-api")     // plugins { id("social.kmp-proto") }   — RemoteContent service + ContentId
 include(":remote-content-domain")  // plugins { id("social.kmp-library") } — RemoteContentClient (gRPC call + HTTP up/download)
 include(":remote-content-service") // plugins { id("social.jvm-service") } — ContentStore + gRPC impl + HTTP routes + extension
+
+// avatars: upload a chosen photo and bind its download URL onto the user's profile or a room they
+// belong to. Orchestration only — the durable uploader lives in remote-content-domain and the URL
+// rides an avatar disclosure on the existing Profile / RoomInfo.
+include(":avatars-usecase")  // plugins { id("social.kmp-library") } — set my / room avatar use cases

@@ -9,3 +9,10 @@ fun RoomInfo.name(): String? =
         val payload = RoomInfo.DisclosurePayload.fromByteArray(signed.content)
         (payload.content as? RoomInfo.DisclosurePayload.OneOfContent.name)?.value?.value
     }
+
+/** The URL the room's avatar photo is served from, or null if none has been disclosed. */
+fun RoomInfo.avatar(): String? =
+    disclosures.firstNotNullOfOrNull { signed ->
+        val payload = RoomInfo.DisclosurePayload.fromByteArray(signed.content)
+        (payload.content as? RoomInfo.DisclosurePayload.OneOfContent.avatar)?.value?.downloadUrl
+    }
