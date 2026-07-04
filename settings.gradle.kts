@@ -77,3 +77,10 @@ include(":remote-content-service") // plugins { id("social.jvm-service") } — C
 // belong to. Orchestration only — the durable uploader lives in remote-content-domain and the URL
 // rides an avatar disclosure on the existing Profile / RoomInfo.
 include(":avatars-usecase")  // plugins { id("social.kmp-library") } — set my / room avatar use cases
+
+// typing: "someone is typing" indicators for rooms. Each member has a placeholder locker (keyed by
+// profile id) in a room's typing keyspace; the start/stop signal rides as an ephemeral event attached
+// to an update. Sends are debounced; receivers time a member out 15s after their last signal.
+include(":typing-api")     // plugins { id("social.kmp-proto") }   — TypingPayload
+include(":typing-domain")  // plugins { id("social.kmp-library") } — TypingManager over the lockers client
+include(":typing-usecase") // plugins { id("social.kmp-library") } — set / watch typing use cases

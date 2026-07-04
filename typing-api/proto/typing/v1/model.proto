@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package com.latenighthack.social.typing.v1;
+
+option java_package = "com.latenighthack.social.typing.v1";
+
+// The typing signal, carried in the locker event (Notification.payload) attached to an update of a
+// member's typing locker. started_typing_millis is the wall-clock time the member started typing
+// while they are typing, and 0 (unset) when they stop. An empty instance is also written as the
+// locker's placeholder body — the keys hold nothing meaningful; the event is the whole signal.
+message TypingPayload {
+  int64 started_typing_millis = 1;
+}
