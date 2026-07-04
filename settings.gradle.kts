@@ -58,6 +58,13 @@ include(":messages-api")     // plugins { id("social.kmp-proto") }   — Message
 include(":messages-domain")  // plugins { id("social.kmp-library") } — MessagesManager over the lockers client
 include(":messages-usecase") // plugins { id("social.kmp-library") } — send / watch message use cases
 
+// contacts: the user's friend and block lists. One ContactRecord locker per contact, keyed by
+// profile id, in the user's own account room (authorized by the account key, so no key source of
+// its own). Friend and block are independent — a profile may be both.
+include(":contacts-api")     // plugins { id("social.kmp-proto") }   — ContactRecord(friend, block)
+include(":contacts-domain")  // plugins { id("social.kmp-library") } — ContactsManager over the account room
+include(":contacts-usecase") // plugins { id("social.kmp-library") } — add / block / unfriend / unblock / watch
+
 // remote-content: a server-side upload/hosting add-on (the first -service). A client makes one gRPC
 // call to get a content id + upload/download URLs, PUTs raw bytes to the upload URL, and later fetches
 // them (with the create-time mime type) from the download URL. Attaches to the lockers server via the

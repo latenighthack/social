@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package com.latenighthack.social.contacts.v1;
+
+option java_package = "com.latenighthack.social.contacts.v1";
+
+// One entry in the user's own account room, keyed by the contact's profile id. Friend and block are
+// independent — a profile may be both at once. Absence of a field means "not that"; a record with
+// neither is never stored (the manager deletes the locker instead).
+message ContactRecord {
+  Friend friend = 1;
+  Block block = 2;
+
+  message Friend {
+    int64 added_at_millis = 1;
+  }
+
+  message Block {
+    int64 blocked_at_millis = 1;
+  }
+}
