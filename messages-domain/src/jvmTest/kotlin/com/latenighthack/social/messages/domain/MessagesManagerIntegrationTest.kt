@@ -147,6 +147,12 @@ class MessagesManagerIntegrationTest {
             val roomId = alice.rooms.openRendezvous(bobProfile)
             bob.rooms.watchRooms().first { it.contains(roomId) }
 
+            // Both sessions must be subscribed to the room before either sends: a message rides as a
+            // transient notification with no server-side backlog, so a not-yet-subscribed peer would
+            // miss it. Awaiting membership sync forces each side's subscribeToRoom to complete.
+            alice.rooms.watchMembers(roomId).first { it.size == 2 }
+            bob.rooms.watchMembers(roomId).first { it.size == 2 }
+
             alice.messages.send(roomId, Draft { text = "hi bob" })
             bob.messages.watchMessages(roomId).first { list -> list.any { it.payload.component?.text == "hi bob" } }
 
@@ -170,10 +176,16 @@ class MessagesManagerIntegrationTest {
             bob.rooms.joinByCode(alice.rooms.createInviteCode(roomA))
             bob.rooms.joinByCode(alice.rooms.createInviteCode(roomB))
             bob.rooms.watchRooms().first { it.containsAll(listOf(roomA, roomB)) }
+            bob.rooms.watchMembers(roomA).first { it.size == 2 }
 
-            // A message into room A moves it to the front of Bob's room list.
+            // Bob never watches room A's messages, so it stays unloaded in memory. The incoming message
+            // moves it to the front of Bob's room list (persisted + bumped without loading the room).
             alice.messages.send(roomA, Draft { text = "ping" })
             assertTrue(bob.rooms.watchRooms().first { it.firstOrNull() == roomA }.isNotEmpty())
+
+            // Watching room A's messages for the first time loads "ping" lazily from the store.
+            val loaded = bob.messages.watchMessages(roomA).first { list -> list.any { it.payload.component?.text == "ping" } }
+            assertTrue(loaded.any { it.payload.component?.text == "ping" })
 
             bob.close()
             alice.close()
