@@ -52,9 +52,10 @@ import kotlin.random.Random
  * signature, deduplicated against the persistent [MessageStore], and mirrored into memory for any
  * room that is loaded. A room's history is loaded lazily — a [RoomMessageList] is populated the first
  * time the room is watched (or a message is composed for it) and cached from there — so the manager
- * never loads every room's messages up front. A newly stored message bumps its room's `updated_at`
- * through [RoomsManager.markUpdated]. Resumable: [start] launches the loops and resumes the outbox,
- * [stop] cancels them and leaves the manager (and its cached rooms) reusable.
+ * never loads every room's messages up front. A room's `updated_at` is bumped through
+ * [RoomsManager.markUpdated] the moment a message is sent (at enqueue, reflecting the user's intent)
+ * and when one is received. Resumable: [start] launches the loops and resumes the outbox, [stop]
+ * cancels them and leaves the manager (and its cached rooms) reusable.
  */
 class MessagesManagerImpl(
     private val rooms: RoomsManager,
@@ -223,6 +224,10 @@ class MessagesManagerImpl(
             })
         }
         wake.trySend(Unit)
+        // Bump the room to the front the moment the user sends, reflecting their intent — not when the
+        // message eventually lands. Launched (not awaited) and best-effort: markUpdated reorders the
+        // room list locally first, so the send neither blocks on nor fails from the synced write.
+        scope.launch { bestEffortBump(roomId) }
     }
 
     override suspend fun retry(roomId: RoomId, messageId: MessageId) {
@@ -262,7 +267,6 @@ class MessagesManagerImpl(
             ) { it }
             pending.deletePending(roomId, messageId)
             roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT)
-            bestEffortBump(roomId)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {

@@ -192,6 +192,25 @@ class MessagesManagerIntegrationTest {
         }
 
     @Test(timeout = 60_000)
+    fun `sending a message bumps the sender's own room to the front at send time`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            val alice = newParty(server.rpcClient)
+            alice.myProfiles.createProfile("Alice")
+
+            val roomA = alice.rooms.createGroup("A")
+            val roomB = alice.rooms.createGroup("B")
+            // B was created last, so it starts at the front of Alice's room list.
+            alice.rooms.watchRooms().first { it.firstOrNull() == roomB }
+
+            // Sending into A bumps it to the front of Alice's own list at send time — the message need
+            // not be delivered for this to happen.
+            alice.messages.send(roomA, Draft { text = "hi" })
+            assertTrue(alice.rooms.watchRooms().first { it.firstOrNull() == roomA }.isNotEmpty())
+
+            alice.close()
+        }
+
+    @Test(timeout = 60_000)
     fun `a forged-authorship message is dropped and non-members cannot post`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val alice = newParty(server.rpcClient)
