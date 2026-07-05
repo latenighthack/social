@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package com.latenighthack.social.common.v1;
+
+option java_package = "com.latenighthack.social.common.v1";
+
+// An ECIES-style sealed envelope: a random AES content key encrypts the payload, and the
+// content key itself is wrapped under an AES key derived from the ECDH of an ephemeral key
+// and the recipient's public key. Only the recipient's private key can unwrap it. Because
+// the lockers server does not gate reads, this is what keeps sealed material (e.g. the key
+// carried in a room invite) secret from anyone but the intended recipient.
+message SealedEnvelope {
+  // Ephemeral compressed secp256r1 public key generated per seal.
+  bytes ephemeral_public_key = 1;
+  // AES-GCM( sha256(ECDH(ephemeral_private, recipient_public)), content_key_bytes ).
+  bytes wrapped_key = 2;
+  // AES-GCM( content_key, payload_bytes ).
+  bytes ciphertext = 3;
+}

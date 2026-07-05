@@ -47,10 +47,12 @@ include(":profiles-usecase") // plugins { id("social.kmp-library") } — display
 
 // rooms: shared, mutable, multi-participant spaces (not chat). Rendezvous rooms meet at the
 // sha256 of an ECDH between two profiles; groups keep a shared-key-locked membership list.
-// Invites are sealed and dropped in the invitee's open profile inbox keyspace.
-include(":rooms-api")        // plugins { id("social.kmp-proto") }   — SealedEnvelope / Invite / RoomInfo / Member / RoomRecord
-include(":rooms-domain")     // plugins { id("social.kmp-library") } — RoomsManager over the lockers client
-include(":rooms-usecase")    // plugins { id("social.kmp-library") } — create / invite / leave / info use cases
+// Group access is granted via server-mediated, revocable invite codes (rooms-service); rendezvous
+// still bootstraps through a sealed invite in the invitee's open profile inbox keyspace.
+include(":rooms-api")        // plugins { id("social.kmp-proto") }   — Invite / RoomInfo / Member / RoomRecord + Join service
+include(":rooms-domain")     // plugins { id("social.kmp-library") } — RoomsManager over the lockers client + JoinClient
+include(":rooms-usecase")    // plugins { id("social.kmp-library") } — create / invite-code / join / leave / info use cases
+include(":rooms-service")    // plugins { id("social.jvm-service") } — JoinService: holds room keys, mints revocable join codes
 
 // messages: a chat layer over rooms. Each message is a SignedContent locker (signed by the sender's
 // profile key) in a member room's messages keyspace, observed and cached locally per room.

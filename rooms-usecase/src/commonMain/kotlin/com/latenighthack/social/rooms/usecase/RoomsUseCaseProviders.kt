@@ -13,7 +13,13 @@ interface RoomsUseCaseProviders {
     fun openRendezvousUseCase(rooms: RoomsManager): OpenRendezvousUseCase = OpenRendezvousUseCase(rooms)
 
     @Provides
-    fun inviteToGroupUseCase(rooms: RoomsManager): InviteToGroupUseCase = InviteToGroupUseCase(rooms)
+    fun createInviteCodeUseCase(rooms: RoomsManager): CreateInviteCodeUseCase = CreateInviteCodeUseCase(rooms)
+
+    @Provides
+    fun revokeInviteCodeUseCase(rooms: RoomsManager): RevokeInviteCodeUseCase = RevokeInviteCodeUseCase(rooms)
+
+    @Provides
+    fun joinByCodeUseCase(rooms: RoomsManager): JoinByCodeUseCase = JoinByCodeUseCase(rooms)
 
     @Provides
     fun leaveRoomUseCase(rooms: RoomsManager): LeaveRoomUseCase = LeaveRoomUseCase(rooms)

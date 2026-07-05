@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package com.latenighthack.social.rooms.v1;
+
+option java_package = "com.latenighthack.social.rooms.v1";
+
+import "common/v1/sealing.proto";
+
+// Server-mediated, revocable join codes for group rooms. A member creates a code, handing the
+// server the room's shared key so the server can admit joiners; anyone holding the code redeems it
+// for a per-joiner sealed grant. The code is the shareable "byte blob" (e.g. put on a website);
+// revoking it stops future joins. Membership on create/revoke is proven by presenting the room's
+// private key (whoever holds it is already a member); the join grant is scoped by sealing to the
+// joiner's own profile key, so an intercepted code is useless to anyone else.
+
+// A high-entropy, opaque code minted by the server. This is the shareable invitation blob.
+message InviteCode {
+  bytes value = 1;
+}
+
+// Constraints the server enforces before admitting a joiner. Every field is optional.
+message CodePolicy {
+  // Absolute expiry in epoch milliseconds; 0 means the code never expires.
+  int64 expiry_millis = 1;
+  // Maximum number of successful joins; 0 means unlimited (a public link).
+  int64 max_uses = 2;
+  // If non-empty, only this profile id (compressed secp256r1 public key) may join — a code
+  // restricted to a single known invitee (a direct 1:1 invite).
+  bytes allowed_profile_id = 3;
+}
+
+enum JoinResult {
+  JOIN_RESULT_UNSPECIFIED = 0;
+  JOIN_RESULT_OK = 1;
+  // The code is unknown or has been revoked.
+  JOIN_RESULT_INVALID_CODE = 2;
+  JOIN_RESULT_EXPIRED = 3;
+  JOIN_RESULT_EXHAUSTED = 4;
+  // The presented profile is not the one the code is restricted to.
+  JOIN_RESULT_NOT_ALLOWED = 5;
+  // The presented private key does not match the room (create/revoke), so the caller is not a member.
+  JOIN_RESULT_UNAUTHORIZED = 6;
+}
+
+message CreateInviteCodeRequest {
+  // The group room id (a public-keyed room; room_id encodes the group public key).
+  bytes room_id = 1;
+  // The room's shared private key. Proves membership (it must match room_id) and is retained
+  // server-side so the server can seal per-joiner grants. Sent over the TLS transport.
+  bytes group_private_key = 2;
+  CodePolicy policy = 3;
+}
+
+message CreateInviteCodeResponse {
+  JoinResult result = 1;
+  InviteCode code = 2;
+}
+
+message JoinRequest {
+  InviteCode code = 1;
+  // The joiner's profile id (compressed secp256r1 public key); the returned grant is sealed to it.
+  bytes invitee_profile_id = 2;
+}
+
+message JoinResponse {
+  JoinResult result = 1;
+  // On OK: an Invite (kind=GROUP, room_id, group_private_key) sealed to invitee_profile_id.
+  com.latenighthack.social.common.v1.SealedEnvelope sealed_invite = 2;
+}
+
+message RevokeInviteCodeRequest {
+  InviteCode code = 1;
+  // The room's shared private key, proving the caller is a member authorized to revoke.
+  bytes group_private_key = 2;
+}
+
+message RevokeInviteCodeResponse {
+  JoinResult result = 1;
+}
+
+// Holds room keys for code-enabled rooms and mints per-joiner grants. Runs as a lockers
+// ServerExtension alongside the room/session services. (Generates JoinServer / JoinServiceRpc.)
+service Join {
+  rpc CreateInviteCode(CreateInviteCodeRequest) returns (CreateInviteCodeResponse);
+  rpc Join(JoinRequest) returns (JoinResponse);
+  rpc RevokeInviteCode(RevokeInviteCodeRequest) returns (RevokeInviteCodeResponse);
+}

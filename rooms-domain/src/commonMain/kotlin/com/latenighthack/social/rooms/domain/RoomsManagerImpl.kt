@@ -15,17 +15,25 @@ import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.lockers.connector.TypedLockerUpdate
 import com.latenighthack.social.account.domain.AccountManager
+import com.latenighthack.social.common.domain.Sealing
+import com.latenighthack.social.common.v1.SealedEnvelope
+import com.latenighthack.social.common.v1.fromByteArray
+import com.latenighthack.social.common.v1.toByteArray
 import com.latenighthack.social.profiles.domain.MyProfilesManager
 import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.profiles.v1.ProfileId
+import com.latenighthack.social.rooms.v1.CreateInviteCodeRequest
 import com.latenighthack.social.rooms.v1.Invite
+import com.latenighthack.social.rooms.v1.InviteCode
+import com.latenighthack.social.rooms.v1.JoinRequest
+import com.latenighthack.social.rooms.v1.JoinResult
 import com.latenighthack.social.rooms.v1.Member
 import com.latenighthack.social.rooms.v1.MemberProfile
+import com.latenighthack.social.rooms.v1.RevokeInviteCodeRequest
 import com.latenighthack.social.rooms.v1.RoomInfo
 import com.latenighthack.social.rooms.v1.RoomInfoBuilder
 import com.latenighthack.social.rooms.v1.RoomKind
 import com.latenighthack.social.rooms.v1.RoomRecord
-import com.latenighthack.social.rooms.v1.SealedEnvelope
 import com.latenighthack.social.rooms.v1.copy
 import com.latenighthack.social.rooms.v1.fromByteArray
 import com.latenighthack.social.rooms.v1.toByteArray
@@ -57,13 +65,15 @@ import kotlinx.datetime.Clock
  * keys: at start, once the account is ready, the list is loaded from there.
  *
  * A rendezvous room's id and lock key are both derived from the ECDH of two profiles, so no key is
- * transmitted; a group's shared key is generated once and handed to invitees through a sealed
- * invite. Invites arrive in each profile's open, unlocked inbox keyspace and are unsealed with that
- * profile's key via [MyProfilesManager.deriveSharedSecret].
+ * transmitted; its bootstrap invite arrives in the peer's open, unlocked inbox keyspace and is
+ * unsealed with that profile's key via [MyProfilesManager.deriveSharedSecret]. Group access instead
+ * goes through the server-mediated [JoinClient]: a member mints a revocable invite code (handing the
+ * server the group key), and a joiner redeems it for a grant sealed to their own profile.
  */
 class RoomsManagerImpl(
     private val account: AccountManager,
     private val myProfiles: MyProfilesManager,
+    private val joinClient: JoinClient,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : RoomsManager, DomainLifecycle {
 
@@ -179,19 +189,58 @@ class RoomsManagerImpl(
         return roomId
     }
 
-    override suspend fun invite(roomId: RoomId, inviteeProfileIds: List<ProfileId>) {
-        val lockers = lockers ?: error("invite requires start(lockers) first")
+    override suspend fun createInviteCode(roomId: RoomId): InviteCode {
         val record = records[roomId] ?: error("not a member of this room")
-        require(record.kind == RoomKind.ROOM_KIND_GROUP) { "only group rooms are invited to; rendezvous is 1:1" }
-        val invite = Invite(
-            kind = RoomKind.ROOM_KIND_GROUP,
-            roomId = roomId.rawValue,
-            groupPrivateKey = record.sharedPrivateKey,
-        )
-        // Each recipient gets its own envelope, sealed to that profile's key.
-        for (inviteeProfileId in inviteeProfileIds) {
-            sendInvite(lockers, inviteeProfileId, invite)
+        require(record.kind == RoomKind.ROOM_KIND_GROUP) { "invite codes are for group rooms; rendezvous is 1:1" }
+        // Hand the server the shared key so it can seal per-joiner grants; whoever holds the key is a
+        // member, and the server checks it really belongs to this room before retaining it.
+        val response = joinClient.createInviteCode(CreateInviteCodeRequest {
+            this.roomId = roomId.rawValue
+            groupPrivateKey = record.sharedPrivateKey
+        })
+        check(response.result == JoinResult.JOIN_RESULT_OK) { "invite code creation failed: ${response.result}" }
+        return response.code ?: error("invite code creation returned no code")
+    }
+
+    override suspend fun revokeInviteCode(roomId: RoomId, code: InviteCode) {
+        val record = records[roomId] ?: return
+        joinClient.revokeInviteCode(RevokeInviteCodeRequest {
+            this.code = code
+            groupPrivateKey = record.sharedPrivateKey
+        })
+    }
+
+    override suspend fun joinByCode(code: InviteCode): RoomId {
+        val lockers = lockers ?: error("joinByCode requires start(lockers) first")
+        val me = primaryProfileId()
+        val response = joinClient.join(JoinRequest {
+            this.code = code
+            inviteeProfileId = me.rawValue
+        })
+        check(response.result == JoinResult.JOIN_RESULT_OK) { "join failed: ${response.result}" }
+        val sealed = response.sealedInvite ?: error("join returned no grant")
+
+        // Only our profile key can unseal the grant the server sealed to us.
+        val secret = myProfiles.deriveSharedSecret(me, sealed.ephemeralPublicKey) ?: error("cannot unseal grant")
+        val invite = Invite.fromByteArray(Sealing.unsealWith(secret, sealed) ?: error("cannot unseal grant"))
+        require(invite.kind == RoomKind.ROOM_KIND_GROUP) { "unexpected grant kind: ${invite.kind}" }
+
+        // Bind the sealed key to its claimed room so a grant can't be re-pointed at another room.
+        val groupKey = Secp256r1KeyPair.fromPrivateKey(invite.groupPrivateKey) ?: error("grant carries an invalid key")
+        require(RoomKeying.publicKeyed(groupKey.publicKey.encode()).rawValue.contentEquals(invite.roomId)) {
+            "grant key does not match its room"
         }
+
+        val roomId = RoomId(rawValue = invite.roomId)
+        if (records.containsKey(roomId)) return roomId
+        adopt(lockers, RoomRecord(
+            roomId = invite.roomId,
+            kind = RoomKind.ROOM_KIND_GROUP,
+            sharedPrivateKey = invite.groupPrivateKey,
+            localProfileId = me.rawValue,
+        ))
+        writeMembership(lockers, roomId, me)
+        return roomId
     }
 
     override suspend fun leave(roomId: RoomId) {
@@ -263,7 +312,7 @@ class RoomsManagerImpl(
     // --- invite delivery + inbox ---
 
     private suspend fun sendInvite(lockers: LockersClient, recipient: ProfileId, invite: Invite) {
-        val envelope = RoomSealing.seal(recipient.rawValue, invite.toByteArray())
+        val envelope = Sealing.seal(recipient.rawValue, invite.toByteArray())
         val inboxRoom = RoomKeying.publicKeyed(recipient.rawValue)
         // The inbox keyspace is unlocked, so this write stays open (no signing key is routed for it).
         // The locker id is sha256 of the random ephemeral key: unlinkable and unique per invite.
@@ -294,22 +343,11 @@ class RoomsManagerImpl(
 
     private suspend fun processInvite(lockers: LockersClient, profileId: ProfileId, envelope: SealedEnvelope) {
         val secret = myProfiles.deriveSharedSecret(profileId, envelope.ephemeralPublicKey) ?: return
-        val payload = RoomSealing.unsealWith(secret, envelope) ?: return
+        val payload = Sealing.unsealWith(secret, envelope) ?: return
         // The plaintext is attacker-chosen (anyone can seal to our inbox), so a malformed invite must
         // be skipped rather than allowed to crash this inbox collector.
         val invite = runCatching { Invite.fromByteArray(payload) }.getOrNull() ?: return
         when (invite.kind) {
-            RoomKind.ROOM_KIND_GROUP -> {
-                val roomId = RoomId(rawValue = invite.roomId)
-                if (records.containsKey(roomId)) return
-                adopt(lockers, RoomRecord(
-                    roomId = invite.roomId,
-                    kind = RoomKind.ROOM_KIND_GROUP,
-                    sharedPrivateKey = invite.groupPrivateKey,
-                    localProfileId = profileId.rawValue,
-                ))
-                writeMembership(lockers, roomId, profileId)
-            }
             RoomKind.ROOM_KIND_RENDEZVOUS -> {
                 val secretWithInviter = myProfiles.deriveSharedSecret(profileId, invite.inviterProfileId) ?: return
                 val roomId = rendezvousRoomId(secretWithInviter)

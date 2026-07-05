@@ -3,7 +3,10 @@ package com.latenighthack.social.rooms.domain
 import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.ktbuf.test.server.runTestWithServer
 import com.latenighthack.ktcrypto.SHA256
+import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.ktcrypto.digest
+import com.latenighthack.ktcrypto.encode
+import com.latenighthack.ktcrypto.fromPrivateKey
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
 import com.latenighthack.ktstore.InMemoryStoreDelegate
 import com.latenighthack.ktstore.KeyValueStore
@@ -19,15 +22,29 @@ import com.latenighthack.lockers.server.rpcClient
 import com.latenighthack.social.account.domain.AccountKeySource
 import com.latenighthack.social.account.domain.AccountManager
 import com.latenighthack.social.account.domain.AccountManagerImpl
+import com.latenighthack.social.common.domain.Sealing
+import com.latenighthack.social.common.v1.SealedEnvelope
 import com.latenighthack.social.profiles.domain.MyProfilesManagerImpl
 import com.latenighthack.social.profiles.domain.ProfileKeySource
 import com.latenighthack.social.profiles.v1.ProfileId
+import com.latenighthack.social.rooms.v1.CreateInviteCodeRequest
+import com.latenighthack.social.rooms.v1.CreateInviteCodeResponse
+import com.latenighthack.social.rooms.v1.Invite
+import com.latenighthack.social.rooms.v1.InviteCode
+import com.latenighthack.social.rooms.v1.JoinRequest
+import com.latenighthack.social.rooms.v1.JoinResponse
+import com.latenighthack.social.rooms.v1.JoinResult
 import com.latenighthack.social.rooms.v1.Member
-import com.latenighthack.social.rooms.v1.SealedEnvelope
+import com.latenighthack.social.rooms.v1.RevokeInviteCodeRequest
+import com.latenighthack.social.rooms.v1.RevokeInviteCodeResponse
+import com.latenighthack.social.rooms.v1.RoomKind
+import com.latenighthack.social.common.v1.fromByteArray
+import com.latenighthack.social.common.v1.toByteArray
 import com.latenighthack.social.rooms.v1.fromByteArray
 import com.latenighthack.social.rooms.v1.toByteArray
 import io.ktor.server.application.Application
 import kotlinx.coroutines.flow.first
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -50,12 +67,13 @@ class RoomsManagerIntegrationTest {
     private suspend fun newParty(
         rpcClient: RpcClient,
         accountStore: KeyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
+        joinClient: JoinClient = FakeJoinClient(),
     ): Party {
         val account = AccountManagerImpl(accountStore)
         val accountKeySource = AccountKeySource(account)
         val myProfiles = MyProfilesManagerImpl(account)
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
-        val rooms = RoomsManagerImpl(account, myProfiles)
+        val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
@@ -74,17 +92,20 @@ class RoomsManagerIntegrationTest {
     }
 
     @Test(timeout = 60_000)
-    fun `group invite shares the key, both become members, non-member can read but not write`() =
+    fun `an invite code grants group access and a revoked code cannot`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
-            val alice = newParty(server.rpcClient)
-            val bob = newParty(server.rpcClient)
+            val join = FakeJoinClient()
+            val alice = newParty(server.rpcClient, joinClient = join)
+            val bob = newParty(server.rpcClient, joinClient = join)
             val aliceProfile = alice.myProfiles.createProfile("Alice")
             val bobProfile = bob.myProfiles.createProfile("Bob")
 
             val roomId = alice.rooms.createGroup("Team")
-            alice.rooms.invite(roomId, listOf(bobProfile))
+            val code = alice.rooms.createInviteCode(roomId)
 
-            // Bob unseals the invite from his inbox, adopts the group key, and joins.
+            // Bob redeems the code: the server seals the group grant to his profile, he unseals it,
+            // adopts the key, and writes his own membership.
+            assertEquals(roomId, bob.rooms.joinByCode(code))
             assertTrue(bob.rooms.watchRooms().first { it.contains(roomId) }.isNotEmpty())
 
             // Both sides converge on a two-member roster.
@@ -112,10 +133,17 @@ class RoomsManagerIntegrationTest {
                 }
             }
 
+            // Revoking the code stops a later joiner: the server no longer honors it.
+            alice.rooms.revokeInviteCode(roomId, code)
+            val dave = newParty(server.rpcClient, joinClient = join)
+            dave.myProfiles.createProfile("Dave")
+            assertFailsWith<IllegalStateException> { dave.rooms.joinByCode(code) }
+
             // Leaving removes Bob's own roster entry.
             bob.rooms.leave(roomId)
             assertEquals(listOf(aliceProfile), alice.rooms.watchMembers(roomId).first { it.size == 1 })
 
+            dave.close()
             carol.close()
             bob.close()
             alice.close()
@@ -208,7 +236,7 @@ class RoomsManagerIntegrationTest {
             val bobProfileRoom = RoomKeying.publicKeyed(bobProfile.rawValue)
 
             // An outsider can drop a sealed envelope into Bob's open inbox keyspace (4).
-            val envelope = RoomSealing.seal(bobProfile.rawValue, byteArrayOf(1, 2, 3))
+            val envelope = Sealing.seal(bobProfile.rawValue, byteArrayOf(1, 2, 3))
             val inbox = outsider.lockers.typed(
                 RoomsKeyspaces.INBOX, SealedEnvelope::toByteArray, SealedEnvelope.Companion::fromByteArray,
             )
@@ -230,4 +258,57 @@ class RoomsManagerIntegrationTest {
             outsider.close()
             bob.close()
         }
+}
+
+/**
+ * In-process stand-in for the server-side Join service, contract-faithful for the client paths under
+ * test (key↔room check on create/revoke, seal the group grant to the joiner on join). The real
+ * server logic — expiry, use limits, allowed-profile — is covered by rooms-service's own tests.
+ */
+private class FakeJoinClient : JoinClient {
+    private class Stored(val roomId: ByteArray, val groupPrivateKey: ByteArray)
+
+    private val codes = mutableMapOf<List<Byte>, Stored>()
+
+    override suspend fun createInviteCode(request: CreateInviteCodeRequest): CreateInviteCodeResponse {
+        if (!keyMatchesRoom(request.groupPrivateKey, request.roomId)) {
+            return CreateInviteCodeResponse { result = JoinResult.JOIN_RESULT_UNAUTHORIZED }
+        }
+        val code = Random.nextBytes(32)
+        codes[code.toList()] = Stored(request.roomId, request.groupPrivateKey)
+        return CreateInviteCodeResponse {
+            result = JoinResult.JOIN_RESULT_OK
+            this.code = InviteCode { value = code }
+        }
+    }
+
+    override suspend fun join(request: JoinRequest): JoinResponse {
+        val stored = codes[request.code?.value?.toList()]
+            ?: return JoinResponse { result = JoinResult.JOIN_RESULT_INVALID_CODE }
+        val invite = Invite {
+            kind = RoomKind.ROOM_KIND_GROUP
+            roomId = stored.roomId
+            groupPrivateKey = stored.groupPrivateKey
+        }
+        return JoinResponse {
+            result = JoinResult.JOIN_RESULT_OK
+            sealedInvite = Sealing.seal(request.inviteeProfileId, invite.toByteArray())
+        }
+    }
+
+    override suspend fun revokeInviteCode(request: RevokeInviteCodeRequest): RevokeInviteCodeResponse {
+        val key = request.code?.value?.toList()
+        val stored = key?.let { codes[it] }
+            ?: return RevokeInviteCodeResponse { result = JoinResult.JOIN_RESULT_INVALID_CODE }
+        if (!keyMatchesRoom(request.groupPrivateKey, stored.roomId)) {
+            return RevokeInviteCodeResponse { result = JoinResult.JOIN_RESULT_UNAUTHORIZED }
+        }
+        codes.remove(key)
+        return RevokeInviteCodeResponse { result = JoinResult.JOIN_RESULT_OK }
+    }
+
+    private suspend fun keyMatchesRoom(privateKey: ByteArray, roomId: ByteArray): Boolean {
+        val keyPair = Secp256r1KeyPair.fromPrivateKey(privateKey) ?: return false
+        return RoomKeying.publicKeyed(keyPair.publicKey.encode()).rawValue.contentEquals(roomId)
+    }
 }

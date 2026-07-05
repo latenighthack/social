@@ -1,4 +1,4 @@
-package com.latenighthack.social.rooms.domain
+package com.latenighthack.social.common.domain
 
 import com.latenighthack.ktcrypto.AES
 import com.latenighthack.ktcrypto.AESSymmetricKey
@@ -14,16 +14,16 @@ import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.encodePublic
 import com.latenighthack.ktcrypto.generate
 import com.latenighthack.ktcrypto.generateKey
-import com.latenighthack.social.rooms.v1.SealedEnvelope
+import com.latenighthack.social.common.v1.SealedEnvelope
 
 /**
- * ECIES-style sealing to a recipient's profile key. A fresh AES-256 content key encrypts the
+ * ECIES-style sealing to a recipient's public key. A fresh AES-256 content key encrypts the
  * payload; the content key is wrapped under an AES key derived from `sha256(ECDH(ephemeral,
- * recipient))`. Only the recipient's profile private key reproduces the ECDH secret, so only
- * they can unwrap. The server does not gate reads, so this — not the room — provides secrecy
- * for the one thing that must stay secret: the key material carried in an invite.
+ * recipient))`. Only the recipient's private key reproduces the ECDH secret, so only they can
+ * unwrap. The lockers server does not gate reads, so this — not any room lock — provides secrecy
+ * for material that must stay secret, such as the key carried in a room invite.
  */
-internal object RoomSealing {
+object Sealing {
     private const val CONTENT_KEY_BITS = 256
 
     /** Seal [payload] to [recipientPublicKey] (a 33-byte compressed secp256r1 public key). */
@@ -41,7 +41,7 @@ internal object RoomSealing {
 
     /**
      * Unseal [envelope] given the recipient side's ECDH secret with the envelope's ephemeral key
-     * (produced by the profile that owns the inbox). Returns null if the envelope is not for us.
+     * (produced by the key that owns the recipient side). Returns null if the envelope is not for us.
      */
     suspend fun unsealWith(sharedSecret: ByteArray, envelope: SealedEnvelope): ByteArray? =
         try {

@@ -11,6 +11,7 @@ import com.latenighthack.social.remotecontent.domain.UploadStatus
 import com.latenighthack.social.remotecontent.v1.ContentId
 import com.latenighthack.social.rooms.domain.RoomsManager
 import com.latenighthack.social.rooms.domain.avatar
+import com.latenighthack.social.rooms.v1.InviteCode
 import com.latenighthack.social.rooms.v1.RoomInfo
 import com.latenighthack.social.rooms.v1.RoomInfoBuilder
 import com.latenighthack.social.rooms.v1.copy
@@ -43,7 +44,9 @@ class SetRoomAvatarUseCaseTest {
         override fun stop() = error("unused")
         override suspend fun createGroup(name: String): RoomId = error("unused")
         override suspend fun openRendezvous(peerProfileId: ProfileId): RoomId = error("unused")
-        override suspend fun invite(roomId: RoomId, inviteeProfileIds: List<ProfileId>) = error("unused")
+        override suspend fun createInviteCode(roomId: RoomId): InviteCode = error("unused")
+        override suspend fun revokeInviteCode(roomId: RoomId, code: InviteCode) = error("unused")
+        override suspend fun joinByCode(code: InviteCode): RoomId = error("unused")
         override suspend fun leave(roomId: RoomId) = error("unused")
         override suspend fun markUpdated(roomId: RoomId) = error("unused")
         override fun watchRooms(): Flow<List<RoomId>> = error("unused")

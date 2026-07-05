@@ -23,27 +23,33 @@ There are two kinds:
 2. **A public-keyed room's writes must be signed by the embedded authority key.** Account and
    profile rooms are `RoomKeying.publicKeyed(...)`; the lock verifier requires every locked write
    to carry a signature from that key. This is why an outsider cannot write into another profile's
-   room — and why invites are **sealed** and dropped into an intentionally **unlocked** inbox
-   keyspace rather than into a locked one. See [sealing.md](sealing.md).
+   room — and why the rendezvous bootstrap invite is **sealed** and dropped into an intentionally
+   **unlocked** inbox keyspace rather than a locked one. Group access instead flows through the
+   server-mediated `JoinService` (invite codes). See [sealing.md](sealing.md) and [groups.md](groups.md).
 
 ## Membership model (v1)
 
-Flat: every member holds the one shared room key and is equal — any member may invite others, edit
-the room info, and write the membership list. Leaving deletes only your own entries. **Deferred:**
-member removal / kick, key rotation & revocation, roles/permissions, and encrypting room *contents*
-(only invite key material is sealed today).
+Flat: every member holds the one shared room key and is equal — any member may mint invite codes,
+edit the room info, and write the membership list. Leaving deletes only your own entries. **Deferred:**
+member removal / kick, group-key rotation (so revocation only stops *future* joins, not already-joined
+members), roles/permissions, and encrypting room *contents* (only sealed key material is confidential).
 
 ## Modules
 
 Mirrors the `account` / `profiles` slices:
 
-- `rooms-api` — protos (`SealedEnvelope`, `Invite`, `RoomInfo`, `Member`, `MemberProfile`,
-  `RoomRecord`, `RoomKind`).
+- `rooms-api` — protos (`Invite`, `RoomInfo`, `Member`, `MemberProfile`, `RoomRecord`, `RoomKind`)
+  plus the `Join` gRPC service (`InviteCode`, `CodePolicy`, create/join/revoke messages). The generic
+  `SealedEnvelope` now lives in `social-common-api`.
 - `rooms-domain` — `RoomsManager` + `RoomsManagerImpl` (owns shared key material, persists the room
-  list in the user's account room, routes keys via `RoomsKeySource`, watches profile inboxes),
-  `RoomSealing`, `RoomsKeyspaces`.
-- `rooms-usecase` — thin use cases (`CreateGroup`, `OpenRendezvous`, `InviteToGroup`, `LeaveRoom`,
-  `UpdateRoomInfo`, `WatchRoomInfo`, `WatchMembers`, `WatchRooms`).
+  list in the user's account room, routes keys via `RoomsKeySource`, watches profile inboxes for
+  rendezvous), and `JoinClient` (the `JoinService` gRPC client), `RoomsKeyspaces`. Sealing itself is
+  in `social-common-domain` (`Sealing`).
+- `rooms-usecase` — thin use cases (`CreateGroup`, `OpenRendezvous`, `CreateInviteCode`,
+  `RevokeInviteCode`, `JoinByCode`, `LeaveRoom`, `UpdateRoomInfo`, `WatchRoomInfo`, `WatchMembers`,
+  `WatchRooms`).
+- `rooms-service` — the JVM-only `JoinService` (a lockers `ServerExtension`): holds room keys for
+  code-enabled rooms and mints per-joiner sealed grants. Revocable, server-mediated group access.
 
 `rooms-domain` depends on `account-domain` (to read the account's private room and enforce the
 account key on the room-list writes) and `profiles-domain` (to enumerate the user's profiles and ask

@@ -3,6 +3,7 @@ package com.latenighthack.social.rooms.domain
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.profiles.v1.ProfileId
+import com.latenighthack.social.rooms.v1.InviteCode
 import com.latenighthack.social.rooms.v1.RoomInfo
 import com.latenighthack.social.rooms.v1.RoomInfoBuilder
 import kotlinx.coroutines.flow.Flow
@@ -14,8 +15,10 @@ import kotlinx.coroutines.flow.Flow
  * room the user is in (persisted device-locally, never synced), routes it to the client as the
  * write key for those rooms, and watches each of the user's profile inboxes for sealed invites.
  *
- * All membership is flat: every member holds the shared room key and may invite others, edit the
- * room info, and write the membership list. Removal/kick and key rotation are deferred.
+ * All membership is flat: every member holds the shared room key and may edit the room info and the
+ * membership list. Group access is granted through server-mediated, revocable invite codes (a member
+ * hands the server the room key so it can admit joiners); rendezvous still bootstraps 1:1 through a
+ * sealed inbox invite. Removal/kick and key rotation are deferred.
  */
 interface RoomsManager {
     fun start(lockers: LockersClient)
@@ -27,8 +30,18 @@ interface RoomsManager {
     /** Opens the rendezvous room shared with [peerProfileId] and sends the peer a bootstrap invite. */
     suspend fun openRendezvous(peerProfileId: ProfileId): RoomId
 
-    /** Invites [inviteeProfileIds] into a group [roomId] by sealing the group key into each inbox. */
-    suspend fun invite(roomId: RoomId, inviteeProfileIds: List<ProfileId>)
+    /**
+     * Mints a shareable, revocable invite code for a group [roomId] via the Join service, handing the
+     * server the room's shared key so it can admit joiners. Anyone holding the returned code can
+     * [joinByCode]; each redeemed grant is sealed to the joiner's own profile. Fails if not a member.
+     */
+    suspend fun createInviteCode(roomId: RoomId): InviteCode
+
+    /** Revokes [code] for group [roomId] so it can no longer be used to join. No-op if not a member. */
+    suspend fun revokeInviteCode(roomId: RoomId, code: InviteCode)
+
+    /** Redeems an invite [code]: fetches the sealed group grant, joins as the user's primary profile. */
+    suspend fun joinByCode(code: InviteCode): RoomId
 
     /** Leaves [roomId]: removes the user's own roster + profile entries and drops the local record. */
     suspend fun leave(roomId: RoomId)

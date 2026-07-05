@@ -18,6 +18,9 @@ kotlin {
                 api(libs.lockers.api)
                 api(libs.lockers.connector)
                 api(libs.ktcrypto.library)
+                // RpcClient (in the JoinClient provider signature) + the generated JoinServiceRpc stub.
+                api(libs.ktbuf.rpc)
+                implementation(libs.ktbuf.library)
                 implementation(libs.kotlinx.datetime)
             }
         }

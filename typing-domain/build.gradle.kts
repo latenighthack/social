@@ -25,6 +25,8 @@ kotlin {
                 implementation(kotlin("test"))
                 implementation(libs.coroutines.test)
                 implementation(libs.assertk)
+                // Sealing — the test's in-process Join-service stand-in seals grants to joiners.
+                implementation(projects.socialCommonDomain)
                 implementation(libs.ktbuf.library)
                 implementation(libs.ktbuf.rpc)
                 implementation(libs.ktbuf.server)

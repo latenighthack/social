@@ -2,9 +2,11 @@
 
 A group is a many-member room keyed by a single shared **group key pair** `G`. The room id is
 `RoomKeying.publicKeyed(G.public)`, so the room authority is `G` and every write must be signed by
-it. Membership is flat: every member holds `G.private` and may invite others, write the membership
-roster, and edit the room info. **Sharing key material means distributing `G.private`** — done
-confidentially through a sealed invite (see [sealing.md](sealing.md)).
+it. Membership is flat: every member holds `G.private` and may mint invite codes, write the
+membership roster, and edit the room info. **Sharing key material means distributing `G.private`** —
+done through a **server-mediated, revocable invite code** (the `JoinService` in `rooms-service`): a
+member hands the server `G.private`, and the server seals a per-joiner grant (see
+[sealing.md](sealing.md)) to each redeemer.
 
 ## Room layout
 
@@ -46,25 +48,45 @@ RoomsManager.createGroup(name):
   write Member + MemberProfile for myProfile               # signed by G
 ```
 
-## Invite & join
+## Invite codes & join
+
+Group access goes through the server-side `JoinService` (`rooms-service`), a lockers `ServerExtension`
+that holds room keys for code-enabled rooms and mints per-joiner grants. Membership on create/revoke
+is proven by presenting `G.private` (whoever holds it is a member; the server checks it matches the
+room); the grant a joiner receives is sealed to their own profile, so an intercepted code is useless
+to anyone else.
 
 ```
-member.invite(roomId, [inviteeProfileId, ...]):           # one or more invitees at once
-  for each invitee:
-    seal Invite{kind: GROUP, room_id: roomId, group_private_key: G.private}
-         into invitee's inbox                              # confidential: only they unwrap G;
-                                                           # a fresh envelope is sealed per recipient
+member.createInviteCode(roomId):                          # must be a member (holds G.private)
+  → JoinService.CreateInviteCode(roomId, G.private, policy?)
+    server verifies publicKeyed(fromPrivateKey(G.private)) == roomId,
+    stores { code → roomId, G.private, policy }, returns a 32-byte code
+  → the code is the shareable blob (e.g. put on a website / QR / DM)
 
-invitee (inbox watcher unseals the invite):
-  if already a member of room_id: skip
-  G' = fromPrivateKey(invite.group_private_key)
-  persist RoomRecord(GROUP, G', invitee profile)
-  write Member + MemberProfile for invitee                 # signed by G' — accepted, room is G-locked
+joiner.joinByCode(code):                                  # joins as the primary profile
+  → JoinService.Join(code, myProfileId)
+    server validates code + policy, seals Invite{GROUP, roomId, G.private} to myProfileId (ECIES),
+    returns the SealedEnvelope
+  unseal with my profile key (deriveSharedSecret + Sealing.unsealWith)
+  verify roomId == publicKeyed(fromPrivateKey(group_private_key).public)   # bind key ↔ room
+  persist RoomRecord(GROUP, G', myProfile)
+  write Member + MemberProfile for myProfile               # signed by G' — accepted, room is G-locked
+
+member.revokeInviteCode(roomId, code):
+  → JoinService.RevokeInviteCode(code, G.private)
+    server verifies membership and deletes the code → future joins fail
 ```
 
-The invitee does not lock the room (the creator already did); holding `G` lets its membership write
-verify against the existing room-scope lock. Any member can invite further members by forwarding the
-same sealed `G`.
+**Policy** (`CodePolicy`) lets the server narrow admission: an expiry, a max-uses count, and an
+optional `allowed_profile_id`. A single-use, profile-restricted code is a direct 1:1 invite; a
+multi-use code is a public join link.
+
+**Trust & revocation.** The server holds `G.private` only for rooms with an active code. Because group
+content is already cleartext to the server (only writes are gated), this is **not** a read regression
+— but it does let the server (or a breach of it) write as a member and admit anyone, so it is
+opt-in per room. Revoking a code stops **future** joins; already-joined members keep access, since
+true eviction needs group-key rotation (deferred). The joiner does not lock the room (the creator
+already did); holding `G` lets its own membership write verify against the existing room-scope lock.
 
 ## Leave
 
@@ -88,7 +110,12 @@ lock grant chain (deferred).
 
 ## Test
 
-`RoomsManagerIntegrationTest."group invite shares the key, both become members, non-member can read
-but not write"` covers: create → invite → the invitee unseals `G` and joins → both appear in a
-two-member roster and share the info → a non-member can read the room but a write is rejected by the
-server lock verifier → leaving removes the member's roster entry.
+`JoinServiceIntegrationTest` (`rooms-service`) drives the server directly over gRPC: create → join
+returns a grant only the joiner can unseal; wrong key → unauthorized; revoked / expired / exhausted /
+profile-restricted codes are all rejected.
+
+`RoomsManagerIntegrationTest."an invite code grants group access and a revoked code cannot"`
+(`rooms-domain`) covers the client path against a real lockers server with an in-process Join stand-in:
+create group → `createInviteCode` → the joiner `joinByCode` unseals `G` and joins → both appear in a
+two-member roster and share the info → a non-member can read but not write → `revokeInviteCode` then a
+later `joinByCode` fails → leaving removes the member's roster entry.

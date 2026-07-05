@@ -58,21 +58,10 @@ message MemberProfile {
   bytes profile_id = 1;
 }
 
-// An ECIES-style sealed envelope: a random AES content key encrypts the payload, and the
-// content key itself is wrapped under an AES key derived from the ECDH of an ephemeral key
-// and the recipient's profile key. Only the recipient's profile private key can unwrap it.
-message SealedEnvelope {
-  // Ephemeral compressed secp256r1 public key generated per seal.
-  bytes ephemeral_public_key = 1;
-  // AES-GCM( sha256(ECDH(ephemeral_private, recipient_public)), content_key_bytes ).
-  bytes wrapped_key = 2;
-  // AES-GCM( content_key, payload_bytes ).
-  bytes ciphertext = 3;
-}
-
-// The cleartext payload of an invite, sealed inside a SealedEnvelope written to the invitee's
-// profile inbox. For a rendezvous invite the invitee derives the room from inviter_profile_id;
-// for a group invite the room id and the shared group key that grants write access are carried.
+// The cleartext payload of an invite, sealed inside a common.v1.SealedEnvelope. For a rendezvous
+// invite it is written to the invitee's profile inbox and the invitee derives the room from
+// inviter_profile_id; for a group invite the room id and the shared group key that grants write
+// access are carried, and the sealed payload is returned by the JoinService to a code redeemer.
 message Invite {
   RoomKind kind = 1;
   // Rendezvous: the inviter's profile id (compressed public key) so the invitee can ECDH.
