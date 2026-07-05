@@ -93,3 +93,10 @@ include(":typing-usecase") // plugins { id("social.kmp-library") } — set / wat
 // into the messages use cases (each watched Message carries the profiles that have read it).
 include(":read-receipts-api")    // plugins { id("social.kmp-proto") }   — ReadReceipt
 include(":read-receipts-domain") // plugins { id("social.kmp-library") } — ReadReceiptsManager over the lockers client
+
+// debug: introspect the raw contents of lockers. Lists every locker the client knows about (from the
+// connector's local cache), grouped by keyspace, decoding each value into a readable hierarchical map
+// via app-registered per-keyspace codecs (each `Type.fromByteArray(bytes).toValue()`). No -api module —
+// the output is a plain Map<String, Any?> assembled from existing feature types.
+include(":debug-domain")   // plugins { id("social.kmp-library") } — DebugManager + LockerCodecs registry
+include(":debug-usecase")  // plugins { id("social.kmp-library") } — watch locker dump use case

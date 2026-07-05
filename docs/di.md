@@ -54,6 +54,13 @@ import com.latenighthack.social.rooms.usecase.RoomsUseCaseProviders
 import com.latenighthack.social.remotecontent.domain.RemoteContentProviders
 import com.latenighthack.social.avatars.usecase.AvatarsUseCaseProviders
 import com.latenighthack.social.avatars.usecase.SetMyAvatarUseCase
+import com.latenighthack.social.debug.domain.DebugProviders
+import com.latenighthack.social.debug.domain.LockerCodecs
+import com.latenighthack.social.debug.usecase.DebugUseCaseProviders
+import com.latenighthack.social.debug.usecase.WatchLockersUseCase
+import com.latenighthack.social.account.v1.AccountState
+import com.latenighthack.social.account.v1.fromByteArray
+import com.latenighthack.social.messages.v1.MessagePayload
 import io.ktor.client.HttpClient
 import com.latenighthack.lockers.connector.AuthenticationKeySource
 import com.latenighthack.lockers.connector.LockKeySource
@@ -83,11 +90,23 @@ abstract class SocialComponent(
     RoomsProviders,
     RoomsUseCaseProviders,
     RemoteContentProviders,
-    AvatarsUseCaseProviders {
+    AvatarsUseCaseProviders,
+    DebugProviders,
+    DebugUseCaseProviders {
 
     // This app includes rooms, so the room key source is the top of the lock chain.
     @Provides
     fun lockKeySource(roomsKeySource: RoomsKeySource): LockKeySource = roomsKeySource
+
+    // The debug feature decodes locker bytes for introspection. The app knows every feature's proto
+    // types, so it registers a codec per keyspace here; keyspaces with no codec render as raw base64.
+    @Provides
+    @SocialScope
+    fun lockerCodecs(): LockerCodecs = LockerCodecs.builder()
+        .register(1L, "account") { AccountState.fromByteArray(it).toValue() }
+        .register(9L, "messages") { MessagePayload.fromByteArray(it).toValue() }
+        // …one per keyspace worth decoding.
+        .build()
 
     @Provides
     @SocialScope
@@ -106,6 +125,7 @@ abstract class SocialComponent(
     abstract val watchRooms: WatchRoomsUseCase
     abstract val createGroup: CreateGroupUseCase
     abstract val setMyAvatar: SetMyAvatarUseCase
+    abstract val watchLockers: WatchLockersUseCase
     // …the rest as needed.
 
     // Everything to drive over the client. The remote-content uploader is contributed @IntoSet like
