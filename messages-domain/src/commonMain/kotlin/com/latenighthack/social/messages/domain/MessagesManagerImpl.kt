@@ -327,6 +327,10 @@ class MessagesManagerImpl(
      */
     private inner class RoomMessageList(private val roomId: RoomId) {
         val entries = MutableStateFlow<List<MessageEntry>>(emptyList())
+
+        // The message ids this room holds, maintained in memory so receive-dedup checks a set rather
+        // than round-tripping the store. Populated by loadLocked and kept in sync by putLocked.
+        private val seen = mutableSetOf<List<Byte>>()
         private val mutex = Mutex()
         private var loaded = false
 
@@ -335,9 +339,11 @@ class MessagesManagerImpl(
         private suspend fun loadLocked() {
             if (loaded) return
             entries.value = store.getMessagesForRoom(roomId).mapNotNull { local ->
+                val messageId = local.messageId ?: return@mapNotNull null
                 val signed = local.message ?: return@mapNotNull null
                 val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull()
                     ?: return@mapNotNull null
+                seen.add(messageId.rawValue.toList())
                 MessageEntry(payload, local.status)
             }.sortedBy { it.payload.sentAtMillis }
             loaded = true
@@ -351,13 +357,15 @@ class MessagesManagerImpl(
         }
 
         /**
-         * A verified incoming message: drop it if the store already has it (our own echo, a replay, a
-         * duplicate); otherwise persist it and, if this room is loaded, reflect it in memory. Returns
-         * true when it was newly stored, so the caller bumps the room.
+         * A verified incoming message: drop it if this room already has it (our own echo, a replay, a
+         * duplicate). When the room is loaded that check is the fast in-memory id set; when it isn't,
+         * it's a keyed store lookup and the message is persisted without pulling the room into memory.
+         * Returns true when it was newly stored, so the caller bumps the room.
          */
         suspend fun ingest(payload: MessagePayload, signed: SignedContent): Boolean = mutex.withLock {
             val messageId = MessageId(rawValue = payload.messageId)
-            if (store.getMessage(roomId, messageId) != null) return@withLock false
+            val duplicate = if (loaded) payload.messageId.toList() in seen else store.getMessage(roomId, messageId) != null
+            if (duplicate) return@withLock false
             store.saveMessage(local(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT))
             if (loaded) putLocked(payload, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT)
             true
@@ -371,9 +379,11 @@ class MessagesManagerImpl(
             }
         }
 
-        // Insert or replace the entry for a message id, keeping the list sorted by sentAtMillis.
+        // Insert or replace the entry for a message id, keeping the list sorted by sentAtMillis and the
+        // id set current. Callers hold [mutex].
         private fun putLocked(payload: MessagePayload, status: MessageDeliveryStatus) {
             val idList = payload.messageId.toList()
+            seen.add(idList)
             val without = entries.value.filterNot { it.payload.messageId.toList() == idList }
             entries.value = (without + MessageEntry(payload, status)).sortedBy { it.payload.sentAtMillis }
         }

@@ -29,6 +29,7 @@ internal class MessageStore(delegate: StoreDelegate) : Store<LocalMessage>(
 
     suspend fun getMessagesForRoom(roomId: RoomId): List<LocalMessage> = getAll(roomIdKey.eq(roomId.rawValue))
 
+    /** Dedup lookup for a room that isn't loaded in memory; loaded rooms check their in-memory id set. */
     suspend fun getMessage(roomId: RoomId, messageId: MessageId): LocalMessage? = get(
         roomIdMessageIdKey.eq(
             listOf(

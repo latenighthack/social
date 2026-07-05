@@ -178,12 +178,12 @@ class MessagesManagerIntegrationTest {
             bob.rooms.watchRooms().first { it.containsAll(listOf(roomA, roomB)) }
             bob.rooms.watchMembers(roomA).first { it.size == 2 }
 
-            // Bob never watches room A's messages, so it stays unloaded in memory. The incoming message
-            // moves it to the front of Bob's room list (persisted + bumped without loading the room).
+            // Bob never watches room A's messages, so it stays unloaded: the incoming message is
+            // persisted and bumps the room to the front without pulling the room into memory.
             alice.messages.send(roomA, Draft { text = "ping" })
             assertTrue(bob.rooms.watchRooms().first { it.firstOrNull() == roomA }.isNotEmpty())
 
-            // Watching room A's messages for the first time loads "ping" lazily from the store.
+            // Opening room A for the first time loads "ping" from the store.
             val loaded = bob.messages.watchMessages(roomA).first { list -> list.any { it.payload.component?.text == "ping" } }
             assertTrue(loaded.any { it.payload.component?.text == "ping" })
 
