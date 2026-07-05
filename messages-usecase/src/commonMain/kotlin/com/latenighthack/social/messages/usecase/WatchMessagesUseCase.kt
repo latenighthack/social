@@ -18,19 +18,20 @@ class WatchMessagesUseCase(
             messages.watchMessages(roomId),
             messages.watchMessageIds(roomId),
             readReceipts.watchReadReceipts(roomId),
-        ) { payloads, orderedIds, receipts ->
+        ) { entries, orderedIds, receipts ->
             // Each receipt is a member's "read up to here" pointer; a message at index i is read by a
             // member whose pointer resolves to index >= i. A pointer to a not-yet-synced message
             // resolves to -1 and counts as unread until that message arrives (eventually consistent).
             val readerIndices = receipts.mapValues { (_, pointer) ->
                 orderedIds.indexOfFirst { it.rawValue.contentEquals(pointer.rawValue) }
             }
-            payloads.mapIndexed { index, payload ->
+            entries.mapIndexed { index, entry ->
                 Message(
-                    senderProfileId = ProfileId { rawValue = payload.senderProfileId },
-                    sentAtMillis = payload.sentAtMillis,
-                    component = payload.component ?: Component { },
+                    senderProfileId = ProfileId { rawValue = entry.payload.senderProfileId },
+                    sentAtMillis = entry.payload.sentAtMillis,
+                    component = entry.payload.component ?: Component { },
                     readBy = readerIndices.filterValues { it >= index }.keys,
+                    status = entry.status,
                 )
             }
         }

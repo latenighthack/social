@@ -7,29 +7,58 @@ option java_package = "com.latenighthack.social.messages.v1";
 import "common/v1/signing.proto";
 import "messages/v1/components.proto";
 
-// A message's unique id, which is also its locker id in the room's messages keyspace. A wrapper
-// type (rather than raw bytes) so the local store's index writer is MessageId::toByteArray.
+// A message's unique id, minted by the sender and carried inside the signed MessagePayload so every
+// party keys off the same value. A wrapper type (rather than raw bytes) so the local store's index
+// writer is MessageId::toByteArray.
 message MessageId {
   bytes raw_value = 1;
 }
 
+// A message's local delivery state, surfaced to the UI. Received messages are SENT; our own sends
+// start SENDING (optimistically shown at once), become SENT once the write lands, or FAILED once the
+// outbox exhausts its retries and dead-letters them.
+enum MessageDeliveryStatus {
+  MESSAGE_DELIVERY_STATUS_SENDING = 0;
+  MESSAGE_DELIVERY_STATUS_SENT = 1;
+  MESSAGE_DELIVERY_STATUS_FAILED = 2;
+}
+
 // The inner content a message's SignedContent envelope wraps and the sender's profile key signs.
-// room_id binds the message to its room (a signature can't be replayed under another room);
-// sender_profile_id is the sender's compressed secp256r1 profile key — the signer, and the key a
-// verifier resolves the signature against. Cross-feature ids are raw bytes, as in rooms' Member.
+// message_id is the sender-minted id every party dedups on; room_id binds the message to its room (a
+// signature can't be replayed under another room); sender_profile_id is the sender's compressed
+// secp256r1 profile key — the signer, and the key a verifier resolves the signature against.
+// Cross-feature ids are raw bytes, as in rooms' Member.
 message MessagePayload {
   bytes room_id = 1;
   bytes sender_profile_id = 2;
   int64 sent_at_millis = 3;
   Component component = 4;
+  bytes message_id = 5;
 }
 
-// Device-local ktstore cache wrapper for an observed message. `message` is the signed envelope as
-// written to the locker; message_id mirrors its locker id and is the store's primary key.
+// Device-local ktstore cache of an observed or composed message: received, sent, and not-yet-sent
+// messages all live here (it is the durable message record, since the MESSAGING locker carries no
+// body). `message` is the signed envelope; message_id is the store's primary key; status is the
+// local delivery state.
 message LocalMessage {
   bytes room_id = 1;
   MessageId message_id = 2;
   com.latenighthack.social.common.v1.SignedContent message = 3;
+  MessageDeliveryStatus status = 4;
+}
+
+// Device-local durable outbox entry for a composed message awaiting delivery, stored duplicated
+// outside the room so it survives restarts and is retried by a single global loop. `message` is the
+// pre-signed envelope delivered as the MESSAGING locker's notification payload; attempts and
+// next_attempt_millis drive the exponential backoff; created_at_millis orders the drain. Reused as
+// the dead-letter store's row once retries are exhausted.
+message PendingMessage {
+  bytes room_id = 1;
+  MessageId message_id = 2;
+  com.latenighthack.social.common.v1.SignedContent message = 3;
+  int64 attempts = 4;
+  int64 next_attempt_millis = 5;
+  int64 created_at_millis = 6;
 }
 
 // One composed-but-unsent attachment on a draft: a photo message [component] (an Image referencing

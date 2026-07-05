@@ -8,8 +8,10 @@ import com.latenighthack.social.messages.v1.fromByteArray
 import com.latenighthack.social.messages.v1.toByteArray
 
 /**
- * Device-local persistent cache of observed messages, wrapped as [LocalMessage] (room id, message
- * id, signed envelope). Keyed by the message id's raw bytes (globally unique per message).
+ * Device-local persistent cache of received, sent, and not-yet-sent messages, wrapped as
+ * [LocalMessage] (room id, message id, signed envelope, delivery status). Keyed by the message id's
+ * raw bytes (globally unique per message), so re-saving the same message overwrites rather than
+ * duplicates — this is what deduplicates our own echoed sends and replays on receive.
  */
 internal class MessageStore(delegate: StoreDelegate) : Store<LocalMessage>(
     delegate,

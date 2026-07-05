@@ -16,6 +16,10 @@ interface MessagesUseCaseProviders {
         SendMessageUseCase(messages, drafts)
 
     @Provides
+    fun retryFailedMessageUseCase(messages: MessagesManager): RetryFailedMessageUseCase =
+        RetryFailedMessageUseCase(messages)
+
+    @Provides
     fun watchMessagesUseCase(messages: MessagesManager, readReceipts: ReadReceiptsManager): WatchMessagesUseCase =
         WatchMessagesUseCase(messages, readReceipts)
 

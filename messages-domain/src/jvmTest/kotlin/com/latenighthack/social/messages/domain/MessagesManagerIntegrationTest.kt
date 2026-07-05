@@ -13,6 +13,7 @@ import com.latenighthack.ktstore.KeyValueStore
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.common.v1.Version
+import com.latenighthack.lockers.connector.LockKeySource
 import com.latenighthack.lockers.connector.LockerWriteException
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.server.attachTestServices
@@ -28,6 +29,7 @@ import com.latenighthack.social.common.v1.toByteArray
 import com.latenighthack.social.messages.v1.Component
 import com.latenighthack.social.messages.v1.Draft
 import com.latenighthack.social.messages.v1.DraftAttachment
+import com.latenighthack.social.messages.v1.MessageDeliveryStatus
 import com.latenighthack.social.messages.v1.MessagePayload
 import com.latenighthack.social.messages.v1.toByteArray
 import com.latenighthack.social.profiles.domain.MyProfilesManagerImpl
@@ -47,7 +49,10 @@ import com.latenighthack.social.rooms.v1.RevokeInviteCodeResponse
 import com.latenighthack.social.rooms.v1.RoomKind
 import com.latenighthack.social.rooms.v1.toByteArray
 import io.ktor.server.application.Application
+import kotlin.jvm.Volatile
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -76,6 +81,9 @@ class MessagesManagerIntegrationTest {
         rpcClient: RpcClient,
         accountStore: KeyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
         joinClient: JoinClient = sharedJoinClient,
+        maxAttempts: Int = 8,
+        backoffBaseMillis: Long = 1L,
+        lockKeySourceFactory: (LockKeySource) -> LockKeySource = { it },
     ): Party {
         val account = AccountManagerImpl(accountStore)
         val accountKeySource = AccountKeySource(account)
@@ -83,7 +91,10 @@ class MessagesManagerIntegrationTest {
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
         val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
-        val messages = MessagesManagerImpl(rooms, myProfiles, InMemoryStoreDelegate())
+        val messages = MessagesManagerImpl(
+            rooms, myProfiles, InMemoryStoreDelegate(),
+            maxAttempts = maxAttempts, backoffBaseMillis = backoffBaseMillis,
+        )
         val drafts = DraftsManagerImpl(InMemoryStoreDelegate())
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
@@ -91,7 +102,7 @@ class MessagesManagerIntegrationTest {
             keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
             keySource = accountKeySource,
             appVersion = Version(0, 0, 1),
-            lockKeySource = roomsKeySource,
+            lockKeySource = lockKeySourceFactory(roomsKeySource),
         )
         account.start(lockers)
         myProfiles.start(lockers)
@@ -117,9 +128,9 @@ class MessagesManagerIntegrationTest {
 
             alice.messages.send(roomId, Draft { text = "hello bob" })
 
-            val delivered = bob.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "hello bob" } }
-            val message = delivered.first { it.component?.text == "hello bob" }
-            assertTrue(message.senderProfileId.contentEquals(aliceProfile.rawValue))
+            val delivered = bob.messages.watchMessages(roomId).first { list -> list.any { it.payload.component?.text == "hello bob" } }
+            val message = delivered.first { it.payload.component?.text == "hello bob" }
+            assertTrue(message.payload.senderProfileId.contentEquals(aliceProfile.rawValue))
 
             bob.close()
             alice.close()
@@ -137,10 +148,10 @@ class MessagesManagerIntegrationTest {
             bob.rooms.watchRooms().first { it.contains(roomId) }
 
             alice.messages.send(roomId, Draft { text = "hi bob" })
-            bob.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "hi bob" } }
+            bob.messages.watchMessages(roomId).first { list -> list.any { it.payload.component?.text == "hi bob" } }
 
             bob.messages.send(roomId, Draft { text = "hi alice" })
-            alice.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "hi alice" } }
+            alice.messages.watchMessages(roomId).first { list -> list.any { it.payload.component?.text == "hi alice" } }
 
             bob.close()
             alice.close()
@@ -180,32 +191,39 @@ class MessagesManagerIntegrationTest {
             bob.rooms.joinByCode(alice.rooms.createInviteCode(roomId))
             bob.rooms.watchRooms().first { it.contains(roomId) }
 
-            // Alice (a member, so the room lock lets her write) posts a message that CLAIMS Bob as the
-            // sender but is signed by an unrelated key — the signature won't match bobProfile.
+            // Alice (a member, so the room lock lets her write) posts a message on the MESSAGING locker
+            // that CLAIMS Bob as the sender but is signed by an unrelated key — it won't verify.
             val forger = Secp256r1KeyPair.generate()
             val forgedPayload = MessagePayload(
                 roomId = roomId.rawValue,
                 senderProfileId = bobProfile.rawValue,
                 sentAtMillis = 1L,
                 component = Component { contents.text { text = "forged" } },
+                messageId = Random.nextBytes(32),
             )
             val forged = sign(forger, MessageSigning.LABEL, forgedPayload.toByteArray())
-            alice.lockers.typed(MessagesKeyspaces.MESSAGES, SignedContent::toByteArray, SignedContent.Companion::fromByteArray)
-                .updateLocker(roomId, LockerId(Random.nextBytes(32), MessagesKeyspaces.MESSAGES)) { forged }
+            alice.lockers.typed(MessagesKeyspaces.MESSAGING, SignedContent::toByteArray, SignedContent.Companion::fromByteArray)
+                .updateLocker(
+                    roomId, MessagesKeyspaces.MESSAGING_LOCKER,
+                    notificationBuilder = { payload { rawValue = forged.toByteArray() } },
+                ) { it }
 
             // A genuine message posted after it; once it arrives the forged one has been processed.
             alice.messages.send(roomId, Draft { text = "genuine" })
-            val delivered = bob.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "genuine" } }
-            assertTrue(delivered.none { it.component?.text == "forged" })
+            val delivered = bob.messages.watchMessages(roomId).first { list -> list.any { it.payload.component?.text == "genuine" } }
+            assertTrue(delivered.none { it.payload.component?.text == "forged" })
 
-            // A non-member cannot post at all: the messages keyspace is under the room lock.
+            // A non-member cannot write the MESSAGING locker at all: it is under the room lock.
             val carol = newParty(server.rpcClient)
             val carolMessages = carol.lockers.typed(
-                MessagesKeyspaces.MESSAGES, SignedContent::toByteArray, SignedContent.Companion::fromByteArray,
+                MessagesKeyspaces.MESSAGING, SignedContent::toByteArray, SignedContent.Companion::fromByteArray,
             )
             carolMessages.subscribeToRoom(roomId)
             assertFailsWith<LockerWriteException> {
-                carolMessages.updateLocker(roomId, LockerId(Random.nextBytes(32), MessagesKeyspaces.MESSAGES)) { forged }
+                carolMessages.updateLocker(
+                    roomId, MessagesKeyspaces.MESSAGING_LOCKER,
+                    notificationBuilder = { payload { rawValue = forged.toByteArray() } },
+                ) { it }
             }
 
             carol.close()
@@ -214,23 +232,82 @@ class MessagesManagerIntegrationTest {
         }
 
     @Test(timeout = 60_000)
-    fun `a restored account re-syncs its message history`() =
+    fun `an own message shows sending immediately then sent once delivered`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
-            // Device 1 creates an account, a profile, a group, and sends a message.
-            val accountStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
-            val device1 = newParty(server.rpcClient, accountStore)
-            device1.myProfiles.createProfile("Alice")
-            val roomId = device1.rooms.createGroup("Team")
-            device1.rooms.watchRooms().first { it.contains(roomId) }
-            device1.messages.send(roomId, Draft { text = "note to self" })
-            device1.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "note to self" } }
-            device1.close()
+            val alice = newParty(server.rpcClient)
+            alice.myProfiles.createProfile("Alice")
+            val roomId = alice.rooms.createGroup("Team")
+            alice.rooms.watchRooms().first { it.contains(roomId) }
 
-            // A fresh device restoring the same account recovers the room and re-syncs the message.
-            val device2 = newParty(server.rpcClient, accountStore)
-            device2.messages.watchMessages(roomId).first { list -> list.any { it.component?.text == "note to self" } }
+            // Optimistic local echo: the message is stored and observable the moment send() returns.
+            alice.messages.send(roomId, Draft { text = "mine" })
+            assertTrue(alice.messages.watchMessages(roomId).first().any { it.payload.component?.text == "mine" })
 
-            device2.close()
+            // It flips to SENT once the outbox delivers it, and our own echoed notification does not
+            // duplicate it.
+            alice.messages.watchMessages(roomId).first { list ->
+                list.any { it.payload.component?.text == "mine" && it.status == MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT }
+            }
+            assertEquals(1, alice.messages.watchMessages(roomId).first().count { it.payload.component?.text == "mine" })
+
+            alice.close()
+        }
+
+    @Test(timeout = 60_000)
+    fun `an undeliverable send is dead-lettered, then delivered after retry`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            // Withhold the write key for the MESSAGING keyspace so message writes are unsigned and the
+            // server rejects them (SIGNATURE_REQUIRED) — a terminal failure. One attempt → dead-letter.
+            lateinit var writes: ToggleMessagesKeySource
+            val alice = newParty(server.rpcClient, maxAttempts = 1) { base ->
+                ToggleMessagesKeySource(base, block = true).also { writes = it }
+            }
+            alice.myProfiles.createProfile("Alice")
+            val roomId = alice.rooms.createGroup("Team")
+            alice.rooms.watchRooms().first { it.contains(roomId) }
+
+            // The blocked write exhausts its one attempt and the message is dead-lettered as FAILED.
+            alice.messages.send(roomId, Draft { text = "will fail" })
+            alice.messages.watchMessages(roomId).first { list ->
+                list.any { it.payload.component?.text == "will fail" && it.status == MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_FAILED }
+            }
+            val messageId = alice.messages.watchMessageIds(roomId).first().first()
+
+            // Unblock writes and retry: the re-queued message now delivers and flips to SENT.
+            writes.block = false
+            alice.messages.retry(roomId, messageId)
+            alice.messages.watchMessages(roomId).first { list ->
+                list.any { it.payload.component?.text == "will fail" && it.status == MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT }
+            }
+
+            alice.close()
+        }
+
+    @Test(timeout = 60_000)
+    fun `concurrent sends to the shared messaging locker are both delivered`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            val alice = newParty(server.rpcClient)
+            val bob = newParty(server.rpcClient)
+            alice.myProfiles.createProfile("Alice")
+            bob.myProfiles.createProfile("Bob")
+
+            val roomId = alice.rooms.createGroup("Team")
+            bob.rooms.joinByCode(alice.rooms.createInviteCode(roomId))
+            bob.rooms.watchRooms().first { it.contains(roomId) }
+
+            // Both members write the single MESSAGING locker at once; the version bump under the room
+            // lock linearizes them (the connector retries the loser), so both land.
+            coroutineScope {
+                launch { alice.messages.send(roomId, Draft { text = "from-alice" }) }
+                launch { bob.messages.send(roomId, Draft { text = "from-bob" }) }
+            }
+
+            bob.messages.watchMessages(roomId).first { list ->
+                list.any { it.payload.component?.text == "from-alice" } && list.any { it.payload.component?.text == "from-bob" }
+            }
+
+            bob.close()
+            alice.close()
         }
 
     @Test(timeout = 60_000)
@@ -257,14 +334,29 @@ class MessagesManagerIntegrationTest {
             // The draft fans out into three messages: two image components and one text component.
             val delivered = bob.messages.watchMessages(roomId).first { it.size == 3 }
             val urls = delivered.mapNotNull {
-                (it.component?.contents as? Component.OneOfContents.image)?.value?.image?.url
+                (it.payload.component?.contents as? Component.OneOfContents.image)?.value?.image?.url
             }
             assertEquals(setOf("photo-1", "photo-2"), urls.toSet())
-            assertTrue(delivered.any { it.component?.text == "look at these" })
+            assertTrue(delivered.any { it.payload.component?.text == "look at these" })
 
             bob.close()
             alice.close()
         }
+}
+
+// A lock key source that can withhold the write key for the MESSAGING keyspace, forcing message
+// writes to be unsigned so the server rejects them (SIGNATURE_REQUIRED). Room setup (other keyspaces)
+// keeps its key, so only message delivery is blocked; flip [block] to restore delivery.
+private class ToggleMessagesKeySource(
+    private val delegate: LockKeySource,
+    @Volatile var block: Boolean,
+) : LockKeySource {
+    override suspend fun writeKeyFor(roomId: RoomId, lockerId: LockerId): Secp256r1KeyPair? =
+        if (block && lockerId.keyspace?.value == MessagesKeyspaces.MESSAGING.value) null
+        else delegate.writeKeyFor(roomId, lockerId)
+
+    override suspend fun onRatcheted(roomId: RoomId, lockerId: LockerId, newKeyPair: Secp256r1KeyPair) =
+        delegate.onRatcheted(roomId, lockerId, newKeyPair)
 }
 
 // Shared in-process stand-in for the server-side Join service, so a two-member group can be
