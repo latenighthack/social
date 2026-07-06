@@ -1,0 +1,4 @@
+packages:
+  - "web"
+  - "demo/web"
+  - "demo/gen-fixtures"

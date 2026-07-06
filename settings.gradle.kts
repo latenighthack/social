@@ -100,3 +100,13 @@ include(":read-receipts-domain") // plugins { id("social.kmp-library") } — Rea
 // the output is a plain Map<String, Any?> assembled from existing feature types.
 include(":debug-domain")   // plugins { id("social.kmp-library") } — DebugManager + LockerCodecs registry
 include(":debug-usecase")  // plugins { id("social.kmp-library") } — watch locker dump use case
+
+// messages-view: pure, importable platform-native renderers for the messages.v1.Component tree.
+// Classic Android Views (here), plus a UIKit Swift package and a React package under messages-view/
+// (both generated from the shared protos via buf — not Gradle modules). The Android library reuses
+// :messages-api's generated Kotlin types directly. The demo app renders the shared .pb fixtures and
+// hosts the Roborazzi screenshot task used for cross-platform parity. See messages-view/README.md.
+include(":messages-view-android")      // plugins { id("com.android.library") }     — Component renderer (Android Views)
+project(":messages-view-android").projectDir = file("messages-view/android")
+include(":messages-view-demo-android") // plugins { id("com.android.application") } — showcase + Roborazzi screenshots
+project(":messages-view-demo-android").projectDir = file("messages-view/demo/android")

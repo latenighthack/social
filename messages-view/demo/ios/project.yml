@@ -1,0 +1,41 @@
+name: MessagesViewDemo
+options:
+  bundleIdPrefix: com.latenighthack.social.messages.view
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  MessagesView:
+    path: ../../ios
+targets:
+  MessagesViewDemo:
+    type: application
+    platform: iOS
+    sources: [Sources, Shared, Fixtures]
+    dependencies:
+      - package: MessagesView
+    info:
+      path: Info.plist
+      properties:
+        UILaunchScreen: {}
+  MessagesViewDemoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests, Shared, Fixtures]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - package: MessagesView
+schemes:
+  MessagesViewDemo:
+    build:
+      targets:
+        MessagesViewDemo: all
+    run: {}
+  MessagesViewDemoTests:
+    build:
+      targets:
+        MessagesViewDemo: all
+        MessagesViewDemoTests: [test]
+    test:
+      targets: [MessagesViewDemoTests]

@@ -1,0 +1,9 @@
+version: v2
+# buf workspace root, used only by the messages-view renderers to generate web
+# (TypeScript, protoc-gen-es) and iOS (Swift, protoc-gen-swift) types from the
+# existing message protos. Android reuses :messages-api's Kotlin codegen instead,
+# so it is not part of `buf generate`. See messages-view/ for the generate config
+# (buf.gen.yaml) and the Makefile that drives it.
+modules:
+  - path: messages-api/proto
+  - path: social-common-api/proto

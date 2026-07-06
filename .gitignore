@@ -26,3 +26,18 @@ local.properties
 
 # OS
 .DS_Store
+
+# messages-view: generated code, fixtures, and screenshots (reproduced by
+# messages-view/Makefile). Node/SwiftPM/Xcode build outputs.
+messages-view/web/src/gen/
+messages-view/ios/Sources/MessagesView/Generated/
+messages-view/demo/bundles/
+messages-view/demo/web/public/bundles/
+messages-view/demo/ios/Fixtures/
+messages-view/**/assets/bundles/
+messages-view/screenshots/
+messages-view/**/node_modules/
+messages-view/**/dist/
+messages-view/demo/ios/*.xcodeproj/
+messages-view/ios/.build/
+node_modules/

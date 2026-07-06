@@ -1,0 +1,21 @@
+version: v2
+clean: true
+plugins:
+  # Web (TypeScript) via protobuf-es. protoc-gen-es is resolved from
+  # messages-view/web/node_modules by the Makefile (it puts that bin on PATH).
+  - local: protoc-gen-es
+    out: messages-view/web/src/gen
+    opt:
+      - target=ts
+      - import_extension=js
+
+  # iOS (Swift) via swift-protobuf. protoc-gen-swift must be on PATH
+  # (brew install swift-protobuf).
+  - local: protoc-gen-swift
+    out: messages-view/ios/Sources/MessagesView/Generated
+    opt:
+      - Visibility=Public
+
+# Android is not generated here: messages-view/android depends on :messages-api,
+# whose Kotlin types (com.latenighthack.social.messages.v1.*) are already produced
+# by the social.kmp-proto convention plugin.

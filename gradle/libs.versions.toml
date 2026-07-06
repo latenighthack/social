@@ -21,6 +21,13 @@ logstashEncoder = "7.4"
 detekt = "1.23.7"
 mavenPublish = "0.30.0"
 
+# messages-view: the Android Views renderer library + its demo/screenshot harness.
+roborazzi = "1.30.0"
+robolectric = "4.14.1"
+androidxCoreKtx = "1.13.1"
+androidxAppcompat = "1.7.0"
+junit = "4.13.2"
+
 # Peer "lockers" repo (../kitkit). Consumed from mavenLocal as SNAPSHOTs during dev
 # (run `./gradlew :api:publishToMavenLocal :connector:publishToMavenLocal` in kitkit).
 lockers = "0.1.0-SNAPSHOT"
@@ -74,10 +81,21 @@ plugin-android = { module = "com.android.tools.build:gradle", version.ref = "agp
 plugin-ksp = { module = "com.google.devtools.ksp:com.google.devtools.ksp.gradle.plugin", version.ref = "ksp" }
 plugin-mavenPublish = { module = "com.vanniktech:gradle-maven-publish-plugin", version.ref = "mavenPublish" }
 
+# messages-view Android renderer + demo/screenshot deps.
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCoreKtx" }
+androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "androidxAppcompat" }
+junit = { module = "junit:junit", version.ref = "junit" }
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+roborazzi = { module = "io.github.takahirom.roborazzi:roborazzi", version.ref = "roborazzi" }
+roborazzi-junit-rule = { module = "io.github.takahirom.roborazzi:roborazzi-junit-rule", version.ref = "roborazzi" }
+
 [plugins]
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 kotlinJvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlinAndroid = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 androidLibrary = { id = "com.android.library", version.ref = "agp" }
+androidApplication = { id = "com.android.application", version.ref = "agp" }
+roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
 detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 mavenPublish = { id = "com.vanniktech.maven.publish", version.ref = "mavenPublish" }
