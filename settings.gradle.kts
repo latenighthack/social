@@ -69,13 +69,30 @@ include(":contacts-usecase") // plugins { id("social.kmp-library") } — add / b
 
 // login: custodial multi-method authentication. Binds a login method (Apple, Google, email
 // magic-link, phone OTP) to an account id + account private key held server-side, and returns the
-// key after the method is re-proven — enabling multi-device sign-in and account recovery. Unlike
-// every other feature it touches no lockers; it is a standalone gRPC service on the lockers server
-// (ServerExtension) plus clients that hand the recovered key to the existing AccountManager.
-include(":login-api")      // plugins { id("social.kmp-proto") }   — Login service + storage records
-include(":login-domain")   // plugins { id("social.kmp-library") } — LoginClient (gRPC) + native sign-in
-include(":login-usecase")  // plugins { id("social.kmp-library") } — authenticate / bind use cases
-include(":login-service")  // plugins { id("social.jvm-service") } — custodial store + gRPC impl + extension
+// key after the method is re-proven — enabling multi-device sign-in and account recovery. Touches no
+// lockers; a standalone gRPC service on the lockers server (ServerExtension) plus clients that hand
+// the recovered key to the existing AccountManager. Split into a shared core + à-la-carte providers:
+// an app/server pulls only login-<provider>-* for the methods it wants. The wire stays one Login
+// service in login-core-api; providers split the client code and (via a ServiceLoader SPI) the
+// service handlers, so the core service enables whatever provider service modules are on the classpath.
+include(":login-core-api")     // id("social.kmp-proto")   — the shared Login gRPC service + storage records
+include(":login-core-domain")  // id("social.kmp-library") — LoginClient (shared transport) + result mapping
+include(":login-core-usecase") // id("social.kmp-library") — SignInResult + BindCurrentAccountUseCase
+include(":login-core-service") // id("social.jvm-service") — custodial stores/crypto/bind + handler SPI
+
+include(":login-apple-domain")  // id("social.kmp-library") — AppleSignInClient + iOS native token
+include(":login-apple-usecase") // id("social.kmp-library") — AuthenticateWithAppleUseCase
+include(":login-apple-service") // id("social.jvm-service") — Apple id-token verifier (SPI)
+
+include(":login-google-domain")  // id("social.kmp-library") — GoogleSignInClient + Android native token
+include(":login-google-usecase") // id("social.kmp-library") — AuthenticateWithGoogleUseCase
+include(":login-google-service") // id("social.jvm-service") — Google id-token verifier (SPI)
+
+include(":login-email-usecase")  // id("social.kmp-library") — request / complete magic-link use cases
+include(":login-email-service")  // id("social.jvm-service") — SMTP / SendGrid / console senders (SPI)
+
+include(":login-phone-usecase")  // id("social.kmp-library") — request / verify OTP use cases
+include(":login-phone-service")  // id("social.jvm-service") — Twilio / console SMS senders (SPI)
 
 // remote-content: a server-side upload/hosting add-on (the first -service). A client makes one gRPC
 // call to get a content id + upload/download URLs, PUTs raw bytes to the upload URL, and later fetches
