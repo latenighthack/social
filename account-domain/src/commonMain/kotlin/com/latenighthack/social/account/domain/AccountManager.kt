@@ -33,6 +33,17 @@ interface AccountManager {
     /** Revoke the identity and sign out. */
     suspend fun signOut()
 
+    /**
+     * Export the account's identity — its 33-byte compressed account id and its raw private key — so
+     * a custodial login service can hold it on the user's behalf (see the login feature). This is the
+     * only path that surfaces the private key outside the account; it is otherwise handed only to the
+     * lockers client via [AccountKeySource]. Throws if no identity exists yet.
+     */
+    suspend fun exportIdentity(): Identity
+
+    /** An account's identity secret: its account id paired with the raw private key that backs it. */
+    class Identity(val accountId: ByteArray, val privateKey: ByteArray)
+
     /** The observable account state. */
     sealed interface Lifecycle {
         /** No key yet — offer to create an account. */

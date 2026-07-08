@@ -160,6 +160,12 @@ class AccountManagerImpl(
 
     override suspend fun signOut() = revokeSession()
 
+    override suspend fun exportIdentity(): AccountManager.Identity {
+        if (!hasSessionKey()) throw IllegalStateException("no account to export")
+        val keyPair = sessionKeyPair()
+        return AccountManager.Identity(keyPair.publicKey.encode(), keyPair.privateKey.encode())
+    }
+
     override fun start(lockers: LockersClient) {
         this.lockers = lockers
         if (job?.isActive == true) return

@@ -67,6 +67,16 @@ include(":contacts-api")     // plugins { id("social.kmp-proto") }   — Contact
 include(":contacts-domain")  // plugins { id("social.kmp-library") } — ContactsManager over the account room
 include(":contacts-usecase") // plugins { id("social.kmp-library") } — add / block / unfriend / unblock / watch
 
+// login: custodial multi-method authentication. Binds a login method (Apple, Google, email
+// magic-link, phone OTP) to an account id + account private key held server-side, and returns the
+// key after the method is re-proven — enabling multi-device sign-in and account recovery. Unlike
+// every other feature it touches no lockers; it is a standalone gRPC service on the lockers server
+// (ServerExtension) plus clients that hand the recovered key to the existing AccountManager.
+include(":login-api")      // plugins { id("social.kmp-proto") }   — Login service + storage records
+include(":login-domain")   // plugins { id("social.kmp-library") } — LoginClient (gRPC) + native sign-in
+include(":login-usecase")  // plugins { id("social.kmp-library") } — authenticate / bind use cases
+include(":login-service")  // plugins { id("social.jvm-service") } — custodial store + gRPC impl + extension
+
 // remote-content: a server-side upload/hosting add-on (the first -service). A client makes one gRPC
 // call to get a content id + upload/download URLs, PUTs raw bytes to the upload URL, and later fetches
 // them (with the create-time mime type) from the download URL. Attaches to the lockers server via the

@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package com.latenighthack.social.login.v1;
+
+option java_package = "com.latenighthack.social.login.v1";
+
+// Server-internal persistence records for the custodial login store. These are NEVER returned to a
+// client; they live in the -api module only because the service module runs no protoc of its own.
+// Persisted via ktstore Store<T> (Record::toByteArray / Record.Companion::fromByteArray).
+
+// A bound login method → account key. `enc_private_key` is the account private key sealed with
+// AES-GCM under the service master key (`enc_nonce` is its per-record IV) — the plaintext key is
+// never at rest. `lookup_key` is the primary index the service computes from (provider, subject).
+message CredentialRecord {
+  bytes lookup_key = 1;
+  int32 provider = 2;
+  bytes subject = 3;
+  bytes account_id = 4;
+  bytes enc_private_key = 5;
+  bytes enc_nonce = 6;
+  int64 created_at_millis = 7;
+  int64 updated_at_millis = 8;
+}
+
+// A short-lived ephemeral proof record — either a pending magic-link / OTP challenge or an issued
+// bind ticket, distinguished by `lookup_key`'s prefix. For a challenge, the delivered token/code is
+// stored ONLY as a PBKDF2 salted hash (`secret_hash` + `salt` + `kdf_iterations`), keyed by
+// (provider, subject), and `attempts_remaining` + `expiry_millis` bound brute force. For a bind
+// ticket, the record is keyed by a hash of the high-entropy ticket itself (so `secret_hash` is
+// empty), carries the proven (provider, subject), and is single-use.
+message ChallengeRecord {
+  bytes lookup_key = 1;
+  int32 provider = 2;
+  bytes subject = 3;
+  bytes secret_hash = 4;
+  bytes salt = 5;
+  int32 kdf_iterations = 6;
+  int64 expiry_millis = 7;
+  int32 attempts_remaining = 8;
+}
