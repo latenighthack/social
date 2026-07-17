@@ -15,6 +15,8 @@ import com.latenighthack.social.remotecontent.domain.Upload
 import com.latenighthack.social.remotecontent.domain.UploadStatus
 import com.latenighthack.social.remotecontent.v1.ContentId
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -38,6 +40,8 @@ class SetMyAvatarUseCaseTest {
     private class FakeMyProfiles(private val profileId: ProfileId?) : MyProfilesManager {
         var updated: Profile? = null
         override fun getProfileList(): Flow<List<ProfileId>> = flowOf(listOfNotNull(profileId))
+        override val isLoaded: StateFlow<Boolean> = MutableStateFlow(true)
+        override suspend fun hasProfileCached(): Boolean = profileId != null
         override suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit) {
             updated = Profile { }.copy(builder)
         }

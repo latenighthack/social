@@ -19,7 +19,6 @@ kotlin {
                 // Durable pending-upload queue.
                 api(libs.ktstore.library)
                 // Clock for enqueue timestamps.
-                implementation(libs.kotlinx.datetime)
             }
         }
         val jvmTest by getting {

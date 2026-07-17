@@ -6,6 +6,7 @@ import com.latenighthack.social.profiles.v1.Profile
 import com.latenighthack.social.profiles.v1.ProfileBuilder
 import com.latenighthack.social.profiles.v1.ProfileId
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * The user's own set of profiles. Each profile is a key pair whose secret half lives as a
@@ -45,6 +46,22 @@ interface MyProfilesManager {
 
     /** The ids of the user's profiles, updated as profiles are added. */
     fun getProfileList(): Flow<List<ProfileId>>
+
+    /**
+     * Whether a profile-source locker for this account is already present in the local cache — a
+     * network-free existence check that reads only persisted lockers (no subscribe, no fetch, no
+     * wait for [isLoaded] or account Ready). Lets the launch flow route a returning user straight
+     * to their home while the session connects and [isLoaded] settles in the background. Returns
+     * false when no account key exists yet or nothing has been cached.
+     */
+    suspend fun hasProfileCached(): Boolean
+
+    /**
+     * Whether the initial profile load from the account room has completed for the current session
+     * (false until the account is Ready and its profiles have been read). Lets callers tell "no
+     * profiles yet" apart from "not loaded yet".
+     */
+    val isLoaded: StateFlow<Boolean>
 
     fun getProfile(id: ProfileId): Profile?
     fun watchProfile(id: ProfileId): Flow<Profile?>

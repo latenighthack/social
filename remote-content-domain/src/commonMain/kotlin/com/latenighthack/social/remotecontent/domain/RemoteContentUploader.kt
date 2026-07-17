@@ -1,3 +1,7 @@
+// kotlin.time.Clock replaces kotlinx-datetime's (removed in datetime 0.7): stdlib-only, still
+// experimental on Kotlin 2.2.x. Only .now().toEpochMilliseconds() is used.
+@file:OptIn(kotlin.time.ExperimentalTime::class)
+
 package com.latenighthack.social.remotecontent.domain
 
 import com.latenighthack.ktstore.StoreDelegate
@@ -17,10 +21,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 /**
  * Where an upload is in its lifecycle, from enqueued through the background transfer to done. This is
@@ -93,11 +95,11 @@ class RemoteContentUploaderImpl(
     // out the retry interval. Conflated: coalesced nudges are fine since the loop drains everything.
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
-    // Guards one-time store init, which both enqueue() and the drain loop can trigger concurrently.
-    private val initMutex = Mutex()
-
     private var job: Job? = null
-    private var storesInitialized = false
+
+    override suspend fun prepare() {
+        store.prepare()
+    }
 
     /** Launches the background drain loop. Idempotent; resumes a queue left by a prior [stop]. */
     fun start() {
@@ -117,7 +119,6 @@ class RemoteContentUploaderImpl(
         // Mint the id + URLs up front; this is the only step that needs the server to be reachable,
         // and it hands back the download URL before the bytes are transferred.
         val created = client.createContent(mimeType)
-        ensureStores()
         store.savePending(PendingUpload {
             contentId = created.contentId
             uploadUrl = created.uploadUrl
@@ -138,7 +139,6 @@ class RemoteContentUploaderImpl(
         uploads.map { it[contentId.rawValue.toList()] }.distinctUntilChanged()
 
     private suspend fun run() {
-        ensureStores()
         // Re-surface uploads that survived a restart as queued, so observers see them resume. Anything
         // already tracked in memory (freshly enqueued) wins over the persisted snapshot.
         val resumed = store.getAllPending().mapNotNull { pending ->
@@ -175,16 +175,6 @@ class RemoteContentUploaderImpl(
 
     private fun setStatus(key: List<Byte>, status: UploadStatus) {
         uploads.update { map -> map[key]?.let { map + (key to it.copy(status = status)) } ?: map }
-    }
-
-    private suspend fun ensureStores() {
-        if (storesInitialized) return
-        initMutex.withLock {
-            if (storesInitialized) return
-            store.prepare()
-            delegate.createStores()
-            storesInitialized = true
-        }
     }
 
     private companion object {

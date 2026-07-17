@@ -41,20 +41,17 @@ class ProfilesManagerImpl(
 
     private var job: Job? = null
     private var lockers: LockersClient? = null
-    private var storesInitialized = false
-    // Completes once the cache has been created and loaded — gates all store access.
+    // Completes once the cache has been loaded — gates all store access.
     private val ready = CompletableDeferred<Unit>()
+
+    override suspend fun prepare() {
+        store.prepare()
+    }
 
     override fun start(lockers: LockersClient) {
         this.lockers = lockers
         if (job?.isActive == true) return
         job = scope.launch {
-            if (!storesInitialized) {
-                store.prepare()
-                delegate.createStores()
-                storesInitialized = true
-            }
-
             val client = profileClient(lockers)
             val cached = store.getAllProfiles()
             _profiles.value = buildMap {

@@ -1,5 +1,6 @@
 package com.latenighthack.social.account.usecase
 
+import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.account.domain.AccountManager
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +23,7 @@ private class FakeAccountManager : AccountManager {
     override fun start(lockers: LockersClient) {}
     override fun stop() {}
     override suspend fun createAccount(): ByteArray { hasAccount = true; return ByteArray(33) }
+    override suspend fun localAccountRoom(): RoomId? = null
     override suspend fun restoreAccount(privateKey: ByteArray): ByteArray { hasAccount = true; return ByteArray(33) }
     override suspend fun signOut() { hasAccount = false }
 }

@@ -15,7 +15,6 @@ kotlin {
                 api(libs.lockers.connector)
                 api(libs.ktcrypto.library)
                 api(libs.ktstore.library)
-                implementation(libs.kotlinx.datetime)
             }
         }
         val jvmTest by getting {

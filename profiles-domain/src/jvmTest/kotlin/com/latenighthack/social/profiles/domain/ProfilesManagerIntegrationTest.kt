@@ -56,6 +56,8 @@ class ProfilesManagerIntegrationTest {
 
             val cacheDelegate = InMemoryStoreDelegate()
             val profilesManager = ProfilesManagerImpl(cacheDelegate)
+            profilesManager.prepare()
+            cacheDelegate.createStores()
             profilesManager.start(lockersB)
             profilesManager.observe(profileId)
 

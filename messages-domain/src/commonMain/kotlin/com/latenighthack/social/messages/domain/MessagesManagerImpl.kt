@@ -1,3 +1,7 @@
+// kotlin.time.Clock replaces kotlinx-datetime's (removed in datetime 0.7): stdlib-only, still
+// experimental on Kotlin 2.2.x. Only .now().toEpochMilliseconds() is used.
+@file:OptIn(kotlin.time.ExperimentalTime::class)
+
 package com.latenighthack.social.messages.domain
 
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
@@ -24,6 +28,7 @@ import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.domain.RoomsManager
 import com.latenighthack.social.runtime.DomainLifecycle
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -40,7 +45,7 @@ import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 import kotlin.random.Random
 
 /**
@@ -83,15 +88,20 @@ class MessagesManagerImpl(
     private val unverified = mutableMapOf<RoomId, MutableList<SignedContent>>()
     private val subscribedRooms = mutableSetOf<RoomId>()
 
-    // Guards the one-time store init that both send() and run() can trigger concurrently.
-    private val initMutex = Mutex()
+    // Completes on first start — by then the app has created the prepared stores — gating store access.
+    private val ready = CompletableDeferred<Unit>()
 
     // Nudges the drain loop to attempt immediately when a new message is enqueued.
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
     private var job: Job? = null
     private var lockers: LockersClient? = null
-    private var storesInitialized = false
+
+    override suspend fun prepare() {
+        store.prepare()
+        pending.prepare()
+        deadLetters.prepare()
+    }
 
     override fun start(lockers: LockersClient) {
         this.lockers = lockers
@@ -112,7 +122,7 @@ class MessagesManagerImpl(
             members.clear()
             unverified.clear()
         }
-        ensureStores()
+        if (!ready.isCompleted) ready.complete(Unit)
 
         supervisorScope {
             launch { drainLoop(lockers) }
@@ -189,7 +199,6 @@ class MessagesManagerImpl(
 
     override suspend fun send(roomId: RoomId, draft: Draft) {
         val senderId = rooms.localProfile(roomId) ?: error("not a member of this room")
-        ensureStores()
         val list = roomList(roomId)
 
         // A draft fans out into one message per component: each attachment's photo component in order,
@@ -231,7 +240,7 @@ class MessagesManagerImpl(
     }
 
     override suspend fun retry(roomId: RoomId, messageId: MessageId) {
-        ensureStores()
+        ready.await()
         val dead = deadLetters.getDeadLettered(roomId, messageId) ?: return
         val signed = dead.message ?: return
         val now = Clock.System.now().toEpochMilliseconds()
@@ -301,19 +310,9 @@ class MessagesManagerImpl(
         emitAll(list.entries.map { room -> room.map { MessageId(rawValue = it.payload.messageId) } })
     }.distinctUntilChanged()
 
-    private suspend fun roomList(roomId: RoomId): RoomMessageList =
-        roomsMutex.withLock { roomLists.getOrPut(roomId) { RoomMessageList(roomId) } }
-
-    private suspend fun ensureStores() {
-        if (storesInitialized) return
-        initMutex.withLock {
-            if (storesInitialized) return
-            store.prepare()
-            pending.prepare()
-            deadLetters.prepare()
-            delegate.createStores()
-            storesInitialized = true
-        }
+    private suspend fun roomList(roomId: RoomId): RoomMessageList {
+        ready.await()
+        return roomsMutex.withLock { roomLists.getOrPut(roomId) { RoomMessageList(roomId) } }
     }
 
     private fun messageClient(lockers: LockersClient): TypedLockerClient<SignedContent> =

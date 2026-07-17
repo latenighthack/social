@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to Maven Central
+    # macOS is required so the KMP iOS targets compile — an ubuntu run would silently skip them
+    # and publish an incomplete artifact set.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Install protoc-gen-kt (Kotlin protoc plugin)
+        env:
+          # Keep in sync with the version the checked-in generated code was produced with
+          # (mirrors kitkit's CI pin). Bump deliberately and regenerate.
+          PROTOC_GEN_KT_VERSION: v0.0.0-20251214023608-0fa742406fbf
+        run: |
+          # The :*-api proto codegen shells out to `protoc-gen-kt` on PATH.
+          go install "latenighthack.com/protoc-gen-kt@${PROTOC_GEN_KT_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Publish to Maven Central
+        # Version is derived from the tag via GITHUB_REF (refs/tags/v0.1.1 -> 0.1.1). ktstore,
+        # lockers and ktcrypto resolve from Central, so release those first. NOTE: the published
+        # POMs reference ktcrypto:0.0.4 from Central (DER signatures) — see the repo's caveat about
+        # SignedContent verify for pure-Central consumers.
+        run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache --stacktrace
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}

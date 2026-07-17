@@ -1,3 +1,7 @@
+// kotlin.time.Clock replaces kotlinx-datetime's (removed in datetime 0.7): stdlib-only, still
+// experimental on Kotlin 2.2.x. Only .now().toEpochMilliseconds() is used.
+@file:OptIn(kotlin.time.ExperimentalTime::class)
+
 package com.latenighthack.social.account.domain
 
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
@@ -29,7 +33,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 /**
  * The account. It owns the identity key (persisted as a typed [AccountRecord] in its own
@@ -118,6 +122,9 @@ class AccountManagerImpl(
         }
         return accountId()
     }
+
+    override suspend fun localAccountRoom(): RoomId? =
+        if (hasSessionKey()) privateRoomId() else null
 
     override suspend fun restoreAccount(privateKeyBytes: ByteArray): ByteArray {
         if (hasSessionKey()) throw IllegalStateException("an account already exists on this device")

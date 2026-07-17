@@ -103,8 +103,11 @@ extensions.configure<KotlinMultiplatformExtension> {
         // compilation that reads commonMain, with no manual dependsOn needed.
         kotlin.srcDir(generateProto)
         dependencies {
-            implementation(libs.ktbuf.library)
-            implementation(libs.ktbuf.rpc)
+            // Generated proto/rpc types are part of this module's public API and extend
+            // ktbuf supertypes (proto.Enum, proto.Message, rpc.*). Kotlin 2.2 rejects a
+            // public supertype coming from a non-exposed dependency, so expose these as `api`.
+            api(libs.ktbuf.library)
+            api(libs.ktbuf.rpc)
             implementation(libs.coroutines.core)
         }
     }

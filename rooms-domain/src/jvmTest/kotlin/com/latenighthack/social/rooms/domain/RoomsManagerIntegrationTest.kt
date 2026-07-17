@@ -265,7 +265,7 @@ class RoomsManagerIntegrationTest {
  * test (key↔room check on create/revoke, seal the group grant to the joiner on join). The real
  * server logic — expiry, use limits, allowed-profile — is covered by rooms-service's own tests.
  */
-private class FakeJoinClient : JoinClient {
+internal class FakeJoinClient : JoinClient {
     private class Stored(val roomId: ByteArray, val groupPrivateKey: ByteArray)
 
     private val codes = mutableMapOf<List<Byte>, Stored>()

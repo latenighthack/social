@@ -69,11 +69,15 @@ class ReadReceiptsManagerIntegrationTest {
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
         val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
-        val messages = MessagesManagerImpl(rooms, myProfiles, InMemoryStoreDelegate())
+        // One delegate for the manager and the lockers client, as in production: every store is
+        // prepared first, then LockersClient.create performs the single createStores() call.
+        val storeDelegate = InMemoryStoreDelegate()
+        val messages = MessagesManagerImpl(rooms, myProfiles, storeDelegate)
+        messages.prepare()
         val readReceipts = ReadReceiptsManagerImpl(rooms, messages)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
-            storeDelegate = InMemoryStoreDelegate(),
+            storeDelegate = storeDelegate,
             keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
             keySource = accountKeySource,
             appVersion = Version(0, 0, 1),

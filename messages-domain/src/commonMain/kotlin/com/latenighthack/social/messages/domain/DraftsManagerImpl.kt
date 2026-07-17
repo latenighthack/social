@@ -34,19 +34,16 @@ class DraftsManagerImpl(
     private val _drafts = MutableStateFlow<Map<RoomId, Draft>>(emptyMap())
 
     private var job: Job? = null
-    private var storesInitialized = false
-    // Completes once the store has been created and loaded — gates all store access.
+    // Completes once the store has been loaded — gates all store access.
     private val ready = CompletableDeferred<Unit>()
+
+    override suspend fun prepare() {
+        store.prepare()
+    }
 
     override fun start(lockers: LockersClient) {
         if (job?.isActive == true) return
         job = scope.launch {
-            if (!storesInitialized) {
-                store.prepare()
-                delegate.createStores()
-                storesInitialized = true
-            }
-
             _drafts.value = buildMap {
                 store.getAllDrafts().forEach { local ->
                     put(RoomId(rawValue = local.roomId), local.draft ?: Draft { })

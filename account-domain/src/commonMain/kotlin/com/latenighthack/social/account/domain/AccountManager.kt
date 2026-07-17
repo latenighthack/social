@@ -24,6 +24,13 @@ interface AccountManager {
     suspend fun createAccount(): ByteArray
 
     /**
+     * The account's private room derived from the locally persisted identity key, or null if no
+     * key exists yet. Reads only local key storage — no connection or [Ready] state required — so
+     * callers can address the account room opportunistically before the session connects.
+     */
+    suspend fun localAccountRoom(): RoomId?
+
+    /**
      * Adopt [privateKey] as the identity and restore the account from its private room,
      * returning the 33-byte compressed account id. Throws [NoAccountToRestoreException] if the
      * room has no account state to restore, or [IllegalArgumentException] if the key is invalid.

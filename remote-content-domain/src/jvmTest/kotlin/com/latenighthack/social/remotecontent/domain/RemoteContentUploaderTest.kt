@@ -62,6 +62,8 @@ class RemoteContentUploaderTest {
             val fake = FakeRemoteContentClient()
             // Not started: no drain loop runs, so the bytes stay queued and are never PUT.
             val uploader = RemoteContentUploaderImpl(fake, delegate)
+            uploader.prepare()
+            delegate.createStores()
 
             val upload = uploader.enqueue(byteArrayOf(1, 2, 3), "image/png")
 
@@ -81,6 +83,8 @@ class RemoteContentUploaderTest {
         val delegate = InMemoryStoreDelegate()
         val fake = FakeRemoteContentClient()
         val uploader = RemoteContentUploaderImpl(fake, delegate)
+        uploader.prepare()
+        delegate.createStores()
         uploader.start()
 
         val upload = uploader.enqueue(byteArrayOf(9, 8, 7), "image/jpeg")
@@ -100,6 +104,8 @@ class RemoteContentUploaderTest {
         val fake = FakeRemoteContentClient(failuresBeforeSuccess = 2)
         // Short retry interval so the two failed attempts are re-driven quickly.
         val uploader = RemoteContentUploaderImpl(fake, delegate, retryIntervalMillis = 50)
+        uploader.prepare()
+        delegate.createStores()
         uploader.start()
 
         val upload = uploader.enqueue(byteArrayOf(4, 2), "image/png")
@@ -117,6 +123,8 @@ class RemoteContentUploaderTest {
         val delegate = InMemoryStoreDelegate()
         val fake = FakeRemoteContentClient(failuresBeforeSuccess = Int.MAX_VALUE)
         val uploader = RemoteContentUploaderImpl(fake, delegate, retryIntervalMillis = 50)
+        uploader.prepare()
+        delegate.createStores()
         uploader.start()
 
         val upload = uploader.enqueue(byteArrayOf(5, 5, 5), "image/png")

@@ -25,7 +25,8 @@ const val SIGNER_KEY_HASH_LENGTH = 16
  * the first (and here, only) signer.
  */
 suspend fun sign(key: Secp256r1KeyPair, label: Long, content: ByteArray): SignedContent {
-    val signature = ecdsaDerToRaw(key.privateKey.sign(transcript(label, content, ByteArray(0))))
+    // ktcrypto's sign() returns the raw r‖s that verify expects on every platform.
+    val signature = key.privateKey.sign(transcript(label, content, ByteArray(0)))
     val keyHash = SHA256.digest(key.publicKey.encode()).copyOf(SIGNER_KEY_HASH_LENGTH)
     return SignedContent {
         this.content = content
@@ -75,31 +76,3 @@ private fun bigEndian(value: Long): ByteArray {
     return out
 }
 
-/**
- * ktcrypto's secp256r1 `sign` emits a DER-encoded ECDSA signature, but its `verify` expects a
- * fixed-width raw r‖s. Convert here so a signature we produce verifies against the on-file key.
- * (The lockers connector has the same helper, but it is `internal` to that module.)
- */
-internal fun ecdsaDerToRaw(der: ByteArray): ByteArray {
-    var offset = 0
-    check(der.getOrNull(offset++) == 0x30.toByte()) { "invalid DER signature header" }
-    offset++ // sequence length — always short-form for P-256 signatures
-    check(der[offset++] == 0x02.toByte()) { "invalid DER signature (r)" }
-    val rLen = der[offset++].toInt() and 0xFF
-    val r = der.copyOfRange(offset, offset + rLen)
-    offset += rLen
-    check(der[offset++] == 0x02.toByte()) { "invalid DER signature (s)" }
-    val sLen = der[offset++].toInt() and 0xFF
-    val s = der.copyOfRange(offset, offset + sLen)
-    return leftPad32(r) + leftPad32(s)
-}
-
-private fun leftPad32(value: ByteArray): ByteArray {
-    var start = 0
-    while (start < value.size - 1 && value[start] == 0.toByte()) start++
-    val trimmed = value.copyOfRange(start, value.size)
-    val out = ByteArray(32)
-    val copyLen = minOf(trimmed.size, 32)
-    trimmed.copyInto(out, 32 - copyLen, trimmed.size - copyLen, trimmed.size)
-    return out
-}

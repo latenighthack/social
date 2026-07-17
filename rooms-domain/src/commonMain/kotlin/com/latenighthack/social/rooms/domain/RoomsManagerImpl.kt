@@ -1,3 +1,7 @@
+// kotlin.time.Clock replaces kotlinx-datetime's (removed in datetime 0.7): stdlib-only, still
+// experimental on Kotlin 2.2.x. Only .now().toEpochMilliseconds() is used.
+@file:OptIn(kotlin.time.ExperimentalTime::class)
+
 package com.latenighthack.social.rooms.domain
 
 import com.latenighthack.ktcrypto.SHA256
@@ -51,7 +55,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 /**
  * Owns the shared key material for every room the user belongs to and drives every room operation
@@ -187,6 +191,44 @@ class RoomsManagerImpl(
             inviterProfileId = me.rawValue,
         ))
         return roomId
+    }
+
+    override suspend fun deriveChildRoomId(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId =
+        RoomKeying.publicKeyed(deriveChildKey(parentRoomId, purpose, salt).publicKey.encode())
+
+    override suspend fun openDerivedRoom(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId {
+        val lockers = requireLockers()
+        val parent = records[parentRoomId] ?: error("not a member of the parent room")
+        val me = ProfileId(rawValue = parent.localProfileId)
+
+        val childKey = deriveChildKey(parentRoomId, purpose, salt)
+        val roomId = RoomKeying.publicKeyed(childKey.publicKey.encode())
+        if (!records.containsKey(roomId)) {
+            adopt(lockers, RoomRecord(
+                roomId = roomId.rawValue,
+                kind = RoomKind.ROOM_KIND_GROUP,
+                sharedPrivateKey = childKey.privateKey.encode(),
+                localProfileId = me.rawValue,
+            ))
+        }
+        // Public-keyed room: the root lock must be signed by the room authority (the derived key).
+        // Every parent member derives the same key, so a repeat lock is byte-identical to the first.
+        infoClient(lockers).lockLocker(
+            roomId,
+            LockScope(kind = LockScopeKind.LOCK_SCOPE_ROOM),
+            childKey,
+            parentKeyPair = childKey,
+        )
+        writeMembership(lockers, roomId, me)
+        return roomId
+    }
+
+    private suspend fun deriveChildKey(parentRoomId: RoomId, purpose: String, salt: ByteArray): Secp256r1KeyPair {
+        val record = records[parentRoomId] ?: error("not a member of the parent room")
+        val seed = SHA256.digest(
+            DERIVED_ROOM_DOMAIN + purpose.encodeToByteArray() + record.sharedPrivateKey + salt,
+        )
+        return Secp256r1KeyPair.fromPrivateKey(seed) ?: error("could not derive a child room key")
     }
 
     override suspend fun createInviteCode(roomId: RoomId): InviteCode {
@@ -475,5 +517,9 @@ class RoomsManagerImpl(
         // Domain-separated KDF prefixes so the rendezvous room id and lock key are independent.
         val RENDEZVOUS_ROOM_DOMAIN = "social.rooms.rendezvous.room.v1".encodeToByteArray()
         val RENDEZVOUS_LOCK_DOMAIN = "social.rooms.rendezvous.lock.v1".encodeToByteArray()
+
+        // KDF prefix for deterministic child rooms (openDerivedRoom); the caller's purpose string
+        // further separates uses within it.
+        val DERIVED_ROOM_DOMAIN = "social.rooms.derived.room.v1".encodeToByteArray()
     }
 }

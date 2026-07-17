@@ -1,3 +1,7 @@
+// kotlin.time.Clock replaces kotlinx-datetime's (removed in datetime 0.7): stdlib-only, still
+// experimental on Kotlin 2.2.x. Only .now().toEpochMilliseconds() is used.
+@file:OptIn(kotlin.time.ExperimentalTime::class)
+
 package com.latenighthack.social.contacts.domain
 
 import com.latenighthack.lockers.common.v1.LockerId
@@ -21,7 +25,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 /**
  * Keeps the user's friend/block list as one [ContactRecord] locker per profile in the account room,

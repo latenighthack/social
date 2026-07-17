@@ -32,6 +32,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -51,21 +52,26 @@ class MyProfilesManagerImpl(
     private var keyPairs: Map<ProfileId, Secp256r1KeyPair> = emptyMap()
 
     private val _profiles = MutableStateFlow<Map<ProfileId, Profile>>(emptyMap())
+    private val _isLoaded = MutableStateFlow(false)
 
     private var job: Job? = null
     private var loaded = false
     private var lockers: LockersClient? = null
 
+    override val isLoaded: StateFlow<Boolean> get() = _isLoaded
+
     override fun start(lockers: LockersClient) {
         this.lockers = lockers
         if (job?.isActive == true) return
         loaded = false
+        _isLoaded.value = false
         job = scope.launch { run() }
     }
 
     override fun stop() {
         job?.cancel()
         job = null
+        _isLoaded.value = false
     }
 
     override suspend fun deriveSharedSecret(profileId: ProfileId, peerPublicKey: ByteArray): ByteArray? {
@@ -79,6 +85,15 @@ class MyProfilesManagerImpl(
 
     override fun getProfileList(): Flow<List<ProfileId>> =
         _profiles.map { it.keys.toList() }.distinctUntilChanged()
+
+    override suspend fun hasProfileCached(): Boolean {
+        val lockers = lockers ?: return false
+        val accountRoom = account.localAccountRoom() ?: return false
+        return lockers.getAllKnownLockers().any { update ->
+            update.roomId.rawValue.contentEquals(accountRoom.rawValue) &&
+                update.lockerId.keyspace?.value == ProfileKeyspaces.PROFILE_SOURCE.value
+        }
+    }
 
     override fun getProfile(id: ProfileId): Profile? = _profiles.value[id]
 
@@ -102,6 +117,7 @@ class MyProfilesManagerImpl(
             if (lifecycle is AccountManager.Lifecycle.Ready && !loaded) {
                 loadProfiles(lifecycle.privateRoom)
                 loaded = true
+                _isLoaded.value = true
             }
         }
     }

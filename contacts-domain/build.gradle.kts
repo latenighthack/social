@@ -17,7 +17,6 @@ kotlin {
                 api(projects.socialRuntime)
                 api(libs.lockers.api)
                 api(libs.lockers.connector)
-                implementation(libs.kotlinx.datetime)
             }
         }
         val jvmTest by getting {

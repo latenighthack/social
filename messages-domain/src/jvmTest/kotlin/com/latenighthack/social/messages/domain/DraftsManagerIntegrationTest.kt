@@ -54,7 +54,10 @@ class DraftsManagerIntegrationTest {
     fun `a draft's text is observable and replaced by a later set`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val lockers = lockersClient(server.rpcClient)
-            val drafts = DraftsManagerImpl(InMemoryStoreDelegate())
+            val delegate = InMemoryStoreDelegate()
+            val drafts = DraftsManagerImpl(delegate)
+            drafts.prepare()
+            delegate.createStores()
             drafts.start(lockers)
             val roomId = room(1)
 
@@ -72,7 +75,10 @@ class DraftsManagerIntegrationTest {
     fun `attachments are added and removed without disturbing the text`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val lockers = lockersClient(server.rpcClient)
-            val drafts = DraftsManagerImpl(InMemoryStoreDelegate())
+            val delegate = InMemoryStoreDelegate()
+            val drafts = DraftsManagerImpl(delegate)
+            drafts.prepare()
+            delegate.createStores()
             drafts.start(lockers)
             val roomId = room(4)
 
@@ -102,7 +108,10 @@ class DraftsManagerIntegrationTest {
     fun `clearing a room's draft leaves other rooms untouched`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val lockers = lockersClient(server.rpcClient)
-            val drafts = DraftsManagerImpl(InMemoryStoreDelegate())
+            val delegate = InMemoryStoreDelegate()
+            val drafts = DraftsManagerImpl(delegate)
+            drafts.prepare()
+            delegate.createStores()
             drafts.start(lockers)
             val roomA = room(1)
             val roomB = room(2)
@@ -125,12 +134,14 @@ class DraftsManagerIntegrationTest {
             val lockers = lockersClient(server.rpcClient)
             val delegate = InMemoryStoreDelegate()
             val drafts = DraftsManagerImpl(delegate)
+            drafts.prepare()
+            delegate.createStores()
             drafts.start(lockers)
             val roomId = room(3)
 
             drafts.setText(roomId, "durable")
 
-            // Read straight from the ktstore backing (the table the manager already created) to prove the
+            // Read straight from the ktstore backing (the table created at boot) to prove the
             // write reached durable storage, not just the in-memory flow.
             val stored = DraftStore(delegate).getAllDrafts()
             assertEquals(1, stored.size)

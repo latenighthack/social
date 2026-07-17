@@ -43,6 +43,22 @@ interface RoomsManager {
     /** Redeems an invite [code]: fetches the sealed group grant, joins as the user's primary profile. */
     suspend fun joinByCode(code: InviteCode): RoomId
 
+    /**
+     * The deterministic child room id of [parentRoomId] for ([purpose], [salt]) — a pure function
+     * of the parent's shared key, so any parent member can compute it (e.g. to read the child's
+     * lockers) without joining. Fails if not a member of the parent.
+     */
+    suspend fun deriveChildRoomId(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId
+
+    /**
+     * Joins the deterministic child room of [parentRoomId] for ([purpose], [salt]). The child key
+     * is derived from the parent room's shared private key (domain-separated SHA-256), and the
+     * room id is public-keyed from it — every parent member derives the same room with zero grant
+     * exchange, and the derivation leaks nothing without the parent key. Idempotent: adopting,
+     * locking, and membership writes are all safe to repeat. Fails if not a member of the parent.
+     */
+    suspend fun openDerivedRoom(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId
+
     /** Leaves [roomId]: removes the user's own roster + profile entries and drops the local record. */
     suspend fun leave(roomId: RoomId)
 

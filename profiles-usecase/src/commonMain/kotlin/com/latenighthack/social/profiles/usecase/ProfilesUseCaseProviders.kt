@@ -15,5 +15,21 @@ interface ProfilesUseCaseProviders {
         MyProfileInfoUseCase(myProfiles)
 
     @Provides
+    fun watchMyProfileUseCase(myProfiles: MyProfilesManager): WatchMyProfileUseCase =
+        WatchMyProfileUseCase(myProfiles)
+
+    @Provides
+    fun myProfileInvitationUseCase(myProfiles: MyProfilesManager): MyProfileInvitationUseCase =
+        MyProfileInvitationUseCase(myProfiles)
+
+    @Provides
+    fun hasProfileUseCase(myProfiles: MyProfilesManager): HasProfileUseCase =
+        HasProfileUseCase(myProfiles)
+
+    @Provides
+    fun hasCachedProfileUseCase(myProfiles: MyProfilesManager): HasCachedProfileUseCase =
+        HasCachedProfileUseCase(myProfiles)
+
+    @Provides
     fun profileInfoUseCase(profiles: ProfilesManager): ProfileInfoUseCase = ProfileInfoUseCase(profiles)
 }
