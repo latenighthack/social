@@ -351,6 +351,8 @@ class RoomsManagerImpl(
     override fun localProfile(roomId: RoomId): ProfileId? =
         records[roomId]?.let { ProfileId { rawValue = it.localProfileId } }
 
+    override fun roomKind(roomId: RoomId): RoomKind? = records[roomId]?.kind
+
     // --- invite delivery + inbox ---
 
     private suspend fun sendInvite(lockers: LockersClient, recipient: ProfileId, invite: Invite) {

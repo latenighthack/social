@@ -48,6 +48,7 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RoomsManagerIntegrationTest {
@@ -108,6 +109,10 @@ class RoomsManagerIntegrationTest {
             assertEquals(roomId, bob.rooms.joinByCode(code))
             assertTrue(bob.rooms.watchRooms().first { it.contains(roomId) }.isNotEmpty())
 
+            // Both members see the room as a group; a non-member sees no kind.
+            assertEquals(RoomKind.ROOM_KIND_GROUP, alice.rooms.roomKind(roomId))
+            assertEquals(RoomKind.ROOM_KIND_GROUP, bob.rooms.roomKind(roomId))
+
             // Both sides converge on a two-member roster.
             val members = alice.rooms.watchMembers(roomId).first { it.size == 2 }
             assertTrue(members.contains(aliceProfile))
@@ -120,6 +125,7 @@ class RoomsManagerIntegrationTest {
 
             // A non-member can READ the room (server does not gate reads) ...
             val carol = newParty(server.rpcClient)
+            assertNull(carol.rooms.roomKind(roomId))
             val carolMembers = carol.lockers.typed(
                 RoomsKeyspaces.MEMBERSHIP, Member::toByteArray, Member.Companion::fromByteArray,
             )
@@ -211,8 +217,10 @@ class RoomsManagerIntegrationTest {
             val bobRooms = bob.rooms.watchRooms().first { it.isNotEmpty() }
             assertEquals(roomId, bobRooms.single())
 
-            // Both are members of the 1:1 room.
+            // Both are members of the 1:1 room, and both see it as a rendezvous.
             assertEquals(2, alice.rooms.watchMembers(roomId).first { it.size == 2 }.size)
+            assertEquals(RoomKind.ROOM_KIND_RENDEZVOUS, alice.rooms.roomKind(roomId))
+            assertEquals(RoomKind.ROOM_KIND_RENDEZVOUS, bob.rooms.roomKind(roomId))
 
             // Both hold the derived lock key, so info is mutable from either side.
             alice.rooms.updateInfo(roomId) { replaceDisclosure { name { value = "hi bob" } } }

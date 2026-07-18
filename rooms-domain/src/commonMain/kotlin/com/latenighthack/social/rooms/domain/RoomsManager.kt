@@ -6,6 +6,7 @@ import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.v1.InviteCode
 import com.latenighthack.social.rooms.v1.RoomInfo
 import com.latenighthack.social.rooms.v1.RoomInfoBuilder
+import com.latenighthack.social.rooms.v1.RoomKind
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -88,4 +89,7 @@ interface RoomsManager {
 
     /** Which of the user's profiles they belong to [roomId] as, or null if not a member. */
     fun localProfile(roomId: RoomId): ProfileId?
+
+    /** The kind (rendezvous or group) of a room the user belongs to, or null if not a member. */
+    fun roomKind(roomId: RoomId): RoomKind?
 }

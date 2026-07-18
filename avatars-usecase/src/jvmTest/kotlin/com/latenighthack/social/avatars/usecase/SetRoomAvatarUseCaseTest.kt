@@ -47,12 +47,15 @@ class SetRoomAvatarUseCaseTest {
         override suspend fun createInviteCode(roomId: RoomId): InviteCode = error("unused")
         override suspend fun revokeInviteCode(roomId: RoomId, code: InviteCode) = error("unused")
         override suspend fun joinByCode(code: InviteCode): RoomId = error("unused")
+        override suspend fun deriveChildRoomId(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId = error("unused")
+        override suspend fun openDerivedRoom(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId = error("unused")
         override suspend fun leave(roomId: RoomId) = error("unused")
         override suspend fun markUpdated(roomId: RoomId) = error("unused")
         override fun watchRooms(): Flow<List<RoomId>> = error("unused")
         override fun watchInfo(roomId: RoomId): Flow<RoomInfo?> = error("unused")
         override fun watchMembers(roomId: RoomId): Flow<List<ProfileId>> = error("unused")
         override fun localProfile(roomId: RoomId): ProfileId? = error("unused")
+        override fun roomKind(roomId: RoomId): com.latenighthack.social.rooms.v1.RoomKind? = error("unused")
     }
 
     @Test
