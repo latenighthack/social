@@ -40,7 +40,10 @@ tasks.named<Test>("test") {
 
 mavenPublishing {
     publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
-    signAllPublications()
+    // Sign only when a key is configured (CI); local publishToMavenLocal has no signatory.
+    if (providers.gradleProperty("signingInMemoryKey").isPresent) {
+        signAllPublications()
+    }
     coordinates(artifactId = project.name)
     pom {
         name.set(project.name)
