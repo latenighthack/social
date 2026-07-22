@@ -36,7 +36,7 @@ junit = "4.13.2"
 
 # Peer "lockers" repo (../kitkit). Consumed from mavenLocal as SNAPSHOTs during dev
 # (run `./gradlew :api:publishToMavenLocal :connector:publishToMavenLocal` in kitkit).
-lockers = "0.1.1"
+lockers = "0.1.4"
 
 [libraries]
 kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib" }

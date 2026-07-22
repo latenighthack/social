@@ -27,6 +27,7 @@ import com.latenighthack.social.login.core.usecase.SignInResult
 import com.latenighthack.social.login.v1.LoginServer
 import io.ktor.server.application.Application
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -66,7 +67,7 @@ private suspend fun Application.attachLoginAndLockers() {
 }
 
 // A fresh, started AccountManager over the shared server (no local identity).
-private suspend fun bootAccount(rpcClient: RpcClient): AccountManagerImpl {
+private suspend fun bootAccount(rpcClient: RpcClient): Pair<AccountManagerImpl, LockersClient> {
     val manager = AccountManagerImpl(KeyValueStore(InMemoryKeyValueStoreDelegate()))
     val keySource = AccountKeySource(manager)
     val lockers = LockersClient.create(
@@ -78,7 +79,7 @@ private suspend fun bootAccount(rpcClient: RpcClient): AccountManagerImpl {
         lockKeySource = keySource,
     )
     manager.start(lockers)
-    return manager
+    return manager to lockers
 }
 
 class LoginAccountIntegrationTest {
@@ -89,9 +90,14 @@ class LoginAccountIntegrationTest {
             val loginClient = LoginClientImpl(server.rpcClient)
 
             // Device A: create an account, then sign up with Apple → needs binding → bind it.
-            val deviceA = bootAccount(server.rpcClient)
+            val (deviceA, lockersA) = bootAccount(server.rpcClient)
             val accountId = deviceA.createAccount()
-            deviceA.lifecycle.first { it is Lifecycle.Ready }
+            val readyA = deviceA.lifecycle.first { it is Lifecycle.Ready } as Lifecycle.Ready
+            // Ready is offline-first; wait for the connected-tick init to create the AccountState
+            // (the private room's only locker here) before device B tries to recover it.
+            while (lockersA.getAllKnownLockers().none { it.roomId.rawValue.contentEquals(readyA.privateRoom.rawValue) }) {
+                delay(50)
+            }
 
             val signUp = AuthenticateWithAppleUseCase(loginClient, fakeApple, deviceA).authenticate()
             assertTrue(signUp is SignInResult.NeedsBinding, "a first-time method should need binding")
@@ -100,7 +106,7 @@ class LoginAccountIntegrationTest {
             assertTrue(bound is BindResult.Bound, "binding the current account should succeed")
 
             // Device B: no local identity. Sign in with the same Apple identity → recover the key.
-            val deviceB = bootAccount(server.rpcClient)
+            val (deviceB, _) = bootAccount(server.rpcClient)
             assertTrue(deviceB.lifecycle.first() is Lifecycle.NoAccount)
 
             val signIn = AuthenticateWithAppleUseCase(loginClient, fakeApple, deviceB).authenticate()

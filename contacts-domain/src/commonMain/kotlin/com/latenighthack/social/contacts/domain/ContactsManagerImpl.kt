@@ -57,7 +57,7 @@ class ContactsManagerImpl(
     // Warm the account room once the account is ready so the watch and mutations see current
     // versions; the watch subscribes on its own too, so this is a best-effort head start.
     private suspend fun run(lockers: LockersClient) {
-        contactsClient(lockers).subscribeToRoom(accountRoom())
+        contactsClient(lockers).subscribeToRoom(accountRoom(), waitForSubscription = false)
     }
 
     override suspend fun add(profileId: ProfileId) {

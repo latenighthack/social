@@ -18,6 +18,7 @@ import com.latenighthack.social.account.v1.AccountState
 import com.latenighthack.social.account.v1.fromByteArray
 import com.latenighthack.social.account.v1.toByteArray
 import io.ktor.server.application.Application
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -55,7 +56,15 @@ class AccountManagerRestoreIntegrationTest {
                 lockKeySource = firstKeySource,
             )
             first.start(firstLockers)
-            first.lifecycle.first { it is Lifecycle.Ready }
+            val firstReady = first.lifecycle.first { it is Lifecycle.Ready } as Lifecycle.Ready
+            // Ready is offline-first; wait for the connected-tick init to create the AccountState
+            // on the server before the second device probes for it.
+            val firstState = firstLockers.typed(
+                AccountKeyspaces.ACCOUNT_STATE, AccountState::toByteArray, AccountState.Companion::fromByteArray,
+            )
+            while (firstState.getLocker(firstReady.privateRoom, AccountKeyspaces.ACCOUNT_STATE_LOCKER) == null) {
+                delay(50)
+            }
 
             // Second device: no local identity. Restore from the same private key.
             val second = AccountManagerImpl(KeyValueStore(InMemoryKeyValueStoreDelegate()))

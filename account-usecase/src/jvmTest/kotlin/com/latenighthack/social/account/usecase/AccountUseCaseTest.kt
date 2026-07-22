@@ -26,6 +26,8 @@ private class FakeAccountManager : AccountManager {
     override suspend fun localAccountRoom(): RoomId? = null
     override suspend fun restoreAccount(privateKey: ByteArray): ByteArray { hasAccount = true; return ByteArray(33) }
     override suspend fun signOut() { hasAccount = false }
+    override suspend fun exportIdentity(): AccountManager.Identity =
+        AccountManager.Identity(ByteArray(33), ByteArray(32))
 }
 
 class AccountUseCaseTest {

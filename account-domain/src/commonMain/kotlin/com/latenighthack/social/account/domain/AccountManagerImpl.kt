@@ -198,11 +198,14 @@ class AccountManagerImpl(
                     roomInitialized = false
                     if (everReady) Lifecycle.SignedOut else Lifecycle.NoAccount
                 }
-                !connected -> Lifecycle.Connecting
                 else -> {
-                    if (!roomInitialized) {
-                        initializePrivateRoom(lockers, account)
-                        roomInitialized = true
+                    // Offline-first: the account id and private room derive from the local key, so
+                    // Ready is emitted without a connection and cached state serves reads. The
+                    // private room's server-side lock/init is deferred to the first connected tick.
+                    // Best-effort: a failed init (transient write race, network drop mid-init)
+                    // must not kill this collector; it retries on the next connectivity tick.
+                    if (connected && !roomInitialized) {
+                        roomInitialized = runCatching { initializePrivateRoom(lockers, account) }.isSuccess
                     }
                     everReady = true
                     Lifecycle.Ready(accountId(), privateRoomId())

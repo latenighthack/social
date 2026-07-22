@@ -55,7 +55,6 @@ class MyProfilesManagerImpl(
     private val _isLoaded = MutableStateFlow(false)
 
     private var job: Job? = null
-    private var loaded = false
     private var lockers: LockersClient? = null
 
     override val isLoaded: StateFlow<Boolean> get() = _isLoaded
@@ -63,7 +62,6 @@ class MyProfilesManagerImpl(
     override fun start(lockers: LockersClient) {
         this.lockers = lockers
         if (job?.isActive == true) return
-        loaded = false
         _isLoaded.value = false
         job = scope.launch { run() }
     }
@@ -114,10 +112,14 @@ class MyProfilesManagerImpl(
 
     private suspend fun run() {
         account.lifecycle.collect { lifecycle ->
-            if (lifecycle is AccountManager.Lifecycle.Ready && !loaded) {
-                loadProfiles(lifecycle.privateRoom)
-                loaded = true
-                _isLoaded.value = true
+            if (lifecycle is AccountManager.Lifecycle.Ready) {
+                // Ready arrives offline too (cache-backed) and each reconnect re-emits it, so
+                // reload on every emission: an offline cold-cache load legitimately sees nothing,
+                // and the reconnect tick then picks up the server copy. loadProfiles is
+                // idempotent; failures must not kill this collector.
+                if (runCatching { loadProfiles(lifecycle.privateRoom) }.isSuccess) {
+                    _isLoaded.value = true
+                }
             }
         }
     }
@@ -126,15 +128,21 @@ class MyProfilesManagerImpl(
         val lockers = lockers ?: return
         val sourceClient = sourceClient(lockers)
         val profileClient = profileClient(lockers)
-        sourceClient.subscribeToRoom(accountRoom)
+        // no ACK wait: offline, cached profile sources must still load (reconnect reconciles the sub)
+        sourceClient.subscribeToRoom(accountRoom, waitForSubscription = false)
 
         for ((_, source) in sourceClient.getAllLockers(accountRoom)) {
             val profileId = source.profileId ?: continue
             val keyPair = Secp256r1KeyPair.fromPrivateKey(source.privateKey) ?: continue
             keyPairs = keyPairs + (profileId to keyPair)
-            ensureProfileRoom(profileClient, profileId, keyPair)
-            profileClient.getLocker(profileId.toRoomId(), profileId.toProfileLockerId())?.let {
-                _profiles.value = _profiles.value + (profileId to it)
+            // Key material first, then best-effort server work: the room re-lock is a no-op for an
+            // established profile and the profile read is cache-served, so an offline failure here
+            // must not drop the key or sink the remaining profiles.
+            runCatching { ensureProfileRoom(profileClient, profileId, keyPair) }
+            runCatching {
+                profileClient.getLocker(profileId.toRoomId(), profileId.toProfileLockerId())?.let {
+                    _profiles.value = _profiles.value + (profileId to it)
+                }
             }
         }
     }

@@ -59,9 +59,12 @@ class ProfilesManagerImpl(
             }
             if (!ready.isCompleted) ready.complete(Unit)
 
-            // Collect before (re)subscribing so the initial burst isn't missed.
+            // Collect before (re)subscribing so the initial burst isn't missed. No ACK wait:
+            // offline, one unacked subscribe must not stall resubscription of the rest.
             launch { client.allUpdates.collect { onUpdate(it) } }
-            cached.forEach { local -> local.profileId?.let { client.subscribeToRoom(it.toRoomId()) } }
+            cached.forEach { local ->
+                local.profileId?.let { client.subscribeToRoom(it.toRoomId(), waitForSubscription = false) }
+            }
         }
     }
 

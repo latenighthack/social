@@ -114,16 +114,25 @@ class RoomsManagerImpl(
         // and re-establish them below (the processedInvites dedup cache is deliberately retained).
         watchedInboxes.clear()
 
-        // Restore the room list from the synced account room once the account is ready — this is
-        // what makes a freshly restored account recover its rooms and shared keys.
-        val ready = account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
-        loadRooms(lockers, (ready as AccountManager.Lifecycle.Ready).privateRoom)
-
         // Watch each of the user's profile inboxes for sealed invites, as profiles appear. The
         // per-inbox collectors are launched as children of this coroutine (not the retained scope)
         // so stop() — which cancels this job — tears them down too; supervisorScope keeps one
         // collector's failure from cancelling the others.
         supervisorScope {
+            launch {
+                // Restore the room list from the synced account room — this is what makes a freshly
+                // restored account recover its rooms and shared keys. Ready arrives offline too
+                // (cache-backed) and each reconnect re-emits it, so reload on every emission: an
+                // offline cold-cache load legitimately sees nothing, and the reconnect tick then
+                // picks up the server copy. loadRooms is idempotent; failures must not kill this
+                // collector.
+                account.lifecycle.collect { lifecycle ->
+                    if (lifecycle is AccountManager.Lifecycle.Ready) {
+                        runCatching { loadRooms(lockers, lifecycle.privateRoom) }
+                    }
+                }
+            }
+
             myProfiles.getProfileList().collect { profileIds ->
                 for (profileId in profileIds) {
                     if (watchedInboxes.add(profileId)) {
@@ -420,7 +429,8 @@ class RoomsManagerImpl(
     /** Load the synced room list from the account room and rebuild in-memory state for each. */
     private suspend fun loadRooms(lockers: LockersClient, accountRoom: RoomId) {
         val client = accountRoomsClient(lockers)
-        client.subscribeToRoom(accountRoom)
+        // no ACK wait: offline, the cached room list must still load (reconnect reconciles the sub)
+        client.subscribeToRoom(accountRoom, waitForSubscription = false)
         for ((_, record) in client.getAllLockers(accountRoom)) {
             remember(lockers, record)
         }
@@ -452,7 +462,7 @@ class RoomsManagerImpl(
             records = records + (roomId to record)
             _rooms.value = sortedRoomIds()
         }
-        infoClient(lockers).subscribeToRoom(roomId)
+        infoClient(lockers).subscribeToRoom(roomId, waitForSubscription = false)
     }
 
     /** The user's room ids ordered by `updated_at`, newest first. */

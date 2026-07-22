@@ -1,5 +1,11 @@
 package com.latenighthack.social.account.domain
 
+import com.latenighthack.ktbuf.net.RpcClient
+import com.latenighthack.ktbuf.net.RpcMethodSpecifier
+import com.latenighthack.ktbuf.net.RpcResponse
+import com.latenighthack.ktbuf.net.RpcResponseException
+import com.latenighthack.ktbuf.net.RpcServerStream
+import com.latenighthack.ktbuf.proto.Codes
 import com.latenighthack.ktbuf.test.server.runTestWithServer
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
 import com.latenighthack.ktstore.InMemoryStoreDelegate
@@ -15,6 +21,7 @@ import com.latenighthack.social.account.v1.copy
 import com.latenighthack.social.account.v1.fromByteArray
 import com.latenighthack.social.account.v1.toByteArray
 import io.ktor.server.application.Application
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
@@ -23,6 +30,47 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class AccountManagerIntegrationTest {
+
+    /** Fails every RPC to simulate a fully offline network. */
+    private class OfflineRpcClient : RpcClient {
+        override suspend fun unaryCall(
+            method: RpcMethodSpecifier,
+            headers: Map<String, String>,
+            request: ByteArray,
+        ): RpcResponse = throw RpcResponseException(path = "test", verb = "POST", code = Codes.UNAVAILABLE, errorMessage = "offline")
+
+        override suspend fun serverStreamingCall(
+            method: RpcMethodSpecifier,
+            block: suspend RpcServerStream.() -> Unit,
+            readyCallback: () -> Unit,
+        ): Unit = throw RpcResponseException(path = "test", verb = "POST", code = Codes.UNAVAILABLE, errorMessage = "offline")
+    }
+
+    @Test(timeout = 30_000)
+    fun `a present key reaches Ready without a connection`() =
+        runTestWithServer(Application::attachTestServices) { _, _ ->
+            val manager = AccountManagerImpl(KeyValueStore(InMemoryKeyValueStoreDelegate()))
+            val keySource = AccountKeySource(manager)
+            val lockers = LockersClient.create(
+                rpcClient = OfflineRpcClient(),
+                storeDelegate = InMemoryStoreDelegate(),
+                keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
+                keySource = keySource,
+                appVersion = Version(0, 0, 1),
+                lockKeySource = keySource,
+            )
+            manager.start(lockers)
+            manager.createAccount()
+
+            // Ready arrives without a connection, carrying the locally derived ids.
+            val ready = manager.lifecycle.first { it is Lifecycle.Ready } as Lifecycle.Ready
+            assertTrue(ready.accountId.isNotEmpty())
+            assertTrue(ready.privateRoom.rawValue.isNotEmpty())
+            assertFalse(lockers.isConnected.first())
+
+            manager.stop()
+            lockers.close()
+        }
 
     @Test(timeout = 30_000)
     fun `create account locks the private room, mirrors the session id, and rejects strangers`() =
@@ -48,12 +96,16 @@ class AccountManagerIntegrationTest {
             val ready = manager.lifecycle.first { it is Lifecycle.Ready } as Lifecycle.Ready
             val roomId = ready.privateRoom
 
-            // AccountState is present, and its mirrored session id matches the client's.
+            // AccountState is present, and its mirrored session id matches the client's. Ready is
+            // offline-first, so poll until the connected-tick room init has landed.
             val stateClient = lockers.typed(
                 AccountKeyspaces.ACCOUNT_STATE, AccountState::toByteArray, AccountState.Companion::fromByteArray,
             )
-            val state = stateClient.getLocker(roomId, AccountKeyspaces.ACCOUNT_STATE_LOCKER)
-            assertNotNull(state)
+            var state = stateClient.getLocker(roomId, AccountKeyspaces.ACCOUNT_STATE_LOCKER)
+            while (state == null || state.sessionId.isEmpty()) {
+                delay(50)
+                state = stateClient.getLocker(roomId, AccountKeyspaces.ACCOUNT_STATE_LOCKER)
+            }
             val sessionId = lockers.sessionId.value
             assertNotNull(sessionId)
             assertTrue(state.sessionId.contentEquals(sessionId.rawValue))

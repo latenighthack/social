@@ -57,9 +57,14 @@ interface AccountManager {
         data object NoAccount : Lifecycle
 
         /** A key exists; the session is opening or reconnecting. */
+        @Deprecated("no longer emitted: a present key now goes straight to Ready (offline-first); observe the client's isConnected for connectivity")
         data object Connecting : Lifecycle
 
-        /** Connected, private room locked and loaded. */
+        /**
+         * A key exists; account id and private room are derived locally, so this is emitted with
+         * or without a connection (cached state serves reads offline). The private room's
+         * server-side lock/init runs on the first connected tick.
+         */
         data class Ready(val accountId: ByteArray, val privateRoom: RoomId) : Lifecycle
 
         /** A terminal session failure (key rejected, upgrade required). */

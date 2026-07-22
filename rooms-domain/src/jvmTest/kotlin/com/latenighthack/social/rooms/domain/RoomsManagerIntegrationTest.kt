@@ -1,6 +1,11 @@
 package com.latenighthack.social.rooms.domain
 
 import com.latenighthack.ktbuf.net.RpcClient
+import com.latenighthack.ktbuf.net.RpcMethodSpecifier
+import com.latenighthack.ktbuf.net.RpcResponse
+import com.latenighthack.ktbuf.net.RpcResponseException
+import com.latenighthack.ktbuf.net.RpcServerStream
+import com.latenighthack.ktbuf.proto.Codes
 import com.latenighthack.ktbuf.test.server.runTestWithServer
 import com.latenighthack.ktcrypto.SHA256
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
@@ -10,6 +15,7 @@ import com.latenighthack.ktcrypto.fromPrivateKey
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
 import com.latenighthack.ktstore.InMemoryStoreDelegate
 import com.latenighthack.ktstore.KeyValueStore
+import com.latenighthack.ktstore.StoreDelegate
 import com.latenighthack.lockers.common.RoomKeying
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.LockerKeyspace
@@ -43,17 +49,20 @@ import com.latenighthack.social.common.v1.toByteArray
 import com.latenighthack.social.rooms.v1.fromByteArray
 import com.latenighthack.social.rooms.v1.toByteArray
 import io.ktor.server.application.Application
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RoomsManagerIntegrationTest {
 
     private class Party(
+        val account: AccountManagerImpl,
         val myProfiles: MyProfilesManagerImpl,
         val rooms: RoomsManagerImpl,
         val lockers: LockersClient,
@@ -61,6 +70,7 @@ class RoomsManagerIntegrationTest {
         fun close() {
             rooms.stop()
             myProfiles.stop()
+            account.stop()
             lockers.close()
         }
     }
@@ -69,6 +79,8 @@ class RoomsManagerIntegrationTest {
         rpcClient: RpcClient,
         accountStore: KeyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
         joinClient: JoinClient = FakeJoinClient(),
+        storeDelegate: StoreDelegate = InMemoryStoreDelegate(),
+        clientStore: KeyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
     ): Party {
         val account = AccountManagerImpl(accountStore)
         val accountKeySource = AccountKeySource(account)
@@ -78,8 +90,8 @@ class RoomsManagerIntegrationTest {
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
-            storeDelegate = InMemoryStoreDelegate(),
-            keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
+            storeDelegate = storeDelegate,
+            keyValueStore = clientStore,
             keySource = accountKeySource,
             appVersion = Version(0, 0, 1),
             lockKeySource = roomsKeySource,
@@ -89,7 +101,35 @@ class RoomsManagerIntegrationTest {
         rooms.start(lockers)
         account.createAccount()
         account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
-        return Party(myProfiles, rooms, lockers)
+        return Party(account, myProfiles, rooms, lockers)
+    }
+
+    /** Fails every RPC to simulate a fully offline network. */
+    private class OfflineRpcClient : RpcClient {
+        override suspend fun unaryCall(
+            method: RpcMethodSpecifier,
+            headers: Map<String, String>,
+            request: ByteArray,
+        ): RpcResponse = throw RpcResponseException(path = "test", verb = "POST", code = Codes.UNAVAILABLE, errorMessage = "offline")
+
+        override suspend fun serverStreamingCall(
+            method: RpcMethodSpecifier,
+            block: suspend RpcServerStream.() -> Unit,
+            readyCallback: () -> Unit,
+        ): Unit = throw RpcResponseException(path = "test", verb = "POST", code = Codes.UNAVAILABLE, errorMessage = "offline")
+    }
+
+    // InMemoryStoreDelegate.createStores wipes table data on every call, so a second client
+    // sharing the delegate would lose the first's cache; make creation once-only instead.
+    private class SharedStoreDelegate(
+        private val inner: InMemoryStoreDelegate = InMemoryStoreDelegate(),
+    ) : StoreDelegate by inner {
+        private var created = false
+        override suspend fun createStores() {
+            if (created) return
+            created = true
+            inner.createStores()
+        }
     }
 
     @Test(timeout = 60_000)
@@ -265,6 +305,32 @@ class RoomsManagerIntegrationTest {
 
             outsider.close()
             bob.close()
+        }
+
+    @Test(timeout = 60_000)
+    fun `cached rooms load without a connection`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            // Online session creates a room and lets its record land in the local cache.
+            val accountStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
+            val storeDelegate = SharedStoreDelegate()
+            val clientStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
+            val online = newParty(server.rpcClient, accountStore, storeDelegate = storeDelegate, clientStore = clientStore)
+            online.myProfiles.createProfile("Alice")
+            val roomId = online.rooms.createGroup("Team")
+            online.rooms.watchRooms().first { it.contains(roomId) }
+            val accountRoom = (online.account.lifecycle.value as AccountManager.Lifecycle.Ready).privateRoom
+            while (online.lockers.getAllKnownLockers().none {
+                    it.roomId.rawValue.contentEquals(accountRoom.rawValue) &&
+                        it.lockerId.keyspace?.value == RoomsKeyspaces.ACCOUNT_ROOMS.value
+                }
+            ) delay(50)
+            online.close()
+
+            // A fresh app start on the same stores, fully offline: rooms come from the cache.
+            val offline = newParty(OfflineRpcClient(), accountStore, storeDelegate = storeDelegate, clientStore = clientStore)
+            assertTrue(offline.rooms.watchRooms().first { it.contains(roomId) }.isNotEmpty())
+            assertFalse(offline.lockers.isConnected.first())
+            offline.close()
         }
 }
 
