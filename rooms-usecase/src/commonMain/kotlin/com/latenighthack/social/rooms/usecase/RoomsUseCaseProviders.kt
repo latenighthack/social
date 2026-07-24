@@ -19,6 +19,9 @@ interface RoomsUseCaseProviders {
     fun revokeInviteCodeUseCase(rooms: RoomsManager): RevokeInviteCodeUseCase = RevokeInviteCodeUseCase(rooms)
 
     @Provides
+    fun inviteToRoomUseCase(rooms: RoomsManager): InviteToRoomUseCase = InviteToRoomUseCase(rooms)
+
+    @Provides
     fun joinByCodeUseCase(rooms: RoomsManager): JoinByCodeUseCase = JoinByCodeUseCase(rooms)
 
     @Provides

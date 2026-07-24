@@ -244,6 +244,55 @@ class RoomsManagerIntegrationTest {
         }
 
     @Test(timeout = 60_000)
+    fun `a direct group invite lands in the profile inbox and the invitee auto-joins`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            val alice = newParty(server.rpcClient)
+            val bob = newParty(server.rpcClient)
+            val aliceProfile = alice.myProfiles.createProfile("Alice")
+            val bobProfile = bob.myProfiles.createProfile("Bob")
+
+            val roomId = alice.rooms.createGroup("Team")
+            alice.rooms.inviteToRoom(roomId, bobProfile)
+
+            // Bob's manager unseals the invite from his profile inbox and joins without any action.
+            assertTrue(bob.rooms.watchRooms().first { it.contains(roomId) }.isNotEmpty())
+            assertEquals(RoomKind.ROOM_KIND_GROUP, bob.rooms.roomKind(roomId))
+
+            // Both sides converge on a two-member roster; Bob holds the key and can write.
+            val members = alice.rooms.watchMembers(roomId).first { it.size == 2 }
+            assertTrue(members.contains(aliceProfile))
+            assertTrue(members.contains(bobProfile))
+            bob.rooms.updateInfo(roomId) { replaceDisclosure { name { value = "Squad" } } }
+            assertEquals("Squad", alice.rooms.watchInfo(roomId).first { it?.name() == "Squad" }?.name())
+
+            // A grant re-pointed at another room is ignored: the sealed key must match the claimed
+            // room id, so Carol's inbox write cannot force Bob into a room it does not key.
+            val carol = newParty(server.rpcClient)
+            carol.myProfiles.createProfile("Carol")
+            val decoyRoom = carol.rooms.createGroup("Decoy")
+            val forged = Invite {
+                kind = RoomKind.ROOM_KIND_GROUP
+                this.roomId = decoyRoom.rawValue
+                // key from Alice's unrelated room does not match decoyRoom
+                groupPrivateKey = ByteArray(32) { 7 }
+            }
+            val envelope = Sealing.seal(bobProfile.rawValue, forged.toByteArray())
+            val bobInboxRoom = RoomKeying.publicKeyed(bobProfile.rawValue)
+            val inbox = carol.lockers.typed(
+                RoomsKeyspaces.INBOX, SealedEnvelope::toByteArray, SealedEnvelope.Companion::fromByteArray,
+            )
+            inbox.subscribeToRoom(bobInboxRoom)
+            inbox.updateLocker(bobInboxRoom, LockerId(SHA256.digest(envelope.ephemeralPublicKey), RoomsKeyspaces.INBOX)) { envelope }
+            // Bob keeps only the legitimate rooms; the forged invite never admits him to the decoy.
+            delay(500)
+            assertFalse(bob.rooms.watchRooms().first().contains(decoyRoom))
+
+            carol.close()
+            bob.close()
+            alice.close()
+        }
+
+    @Test(timeout = 60_000)
     fun `rendezvous rooms converge on the same id and both profiles can write`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val alice = newParty(server.rpcClient)

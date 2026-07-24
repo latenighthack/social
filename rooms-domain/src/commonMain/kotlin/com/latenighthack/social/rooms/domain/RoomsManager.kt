@@ -18,7 +18,8 @@ import kotlinx.coroutines.flow.Flow
  *
  * All membership is flat: every member holds the shared room key and may edit the room info and the
  * membership list. Group access is granted through server-mediated, revocable invite codes (a member
- * hands the server the room key so it can admit joiners); rendezvous still bootstraps 1:1 through a
+ * hands the server the room key so it can admit joiners) or by a member sealing the group grant
+ * directly into a peer's profile inbox ([inviteToRoom]); rendezvous still bootstraps 1:1 through a
  * sealed inbox invite. Removal/kick and key rotation are deferred.
  */
 interface RoomsManager {
@@ -40,6 +41,14 @@ interface RoomsManager {
 
     /** Revokes [code] for group [roomId] so it can no longer be used to join. No-op if not a member. */
     suspend fun revokeInviteCode(roomId: RoomId, code: InviteCode)
+
+    /**
+     * Invites [peerProfileId] directly to group [roomId]: seals the room's shared key into the
+     * peer's profile inbox (the same sealed-invite channel rendezvous bootstrap uses — never a
+     * visible message). The peer's own manager auto-joins on receipt. Fails if not a member or
+     * if [roomId] is not a group.
+     */
+    suspend fun inviteToRoom(roomId: RoomId, peerProfileId: ProfileId)
 
     /** Redeems an invite [code]: fetches the sealed group grant, joins as the user's primary profile. */
     suspend fun joinByCode(code: InviteCode): RoomId

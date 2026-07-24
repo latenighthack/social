@@ -61,7 +61,9 @@ message MemberProfile {
 // The cleartext payload of an invite, sealed inside a common.v1.SealedEnvelope. For a rendezvous
 // invite it is written to the invitee's profile inbox and the invitee derives the room from
 // inviter_profile_id; for a group invite the room id and the shared group key that grants write
-// access are carried, and the sealed payload is returned by the JoinService to a code redeemer.
+// access are carried, and the sealed payload is either returned by the JoinService to a code
+// redeemer or written directly to the invitee's profile inbox (a member inviting a peer), where
+// the invitee's manager auto-joins on receipt.
 message Invite {
   RoomKind kind = 1;
   // Rendezvous: the inviter's profile id (compressed public key) so the invitee can ECDH.

@@ -70,9 +70,11 @@ import kotlin.time.Clock
  *
  * A rendezvous room's id and lock key are both derived from the ECDH of two profiles, so no key is
  * transmitted; its bootstrap invite arrives in the peer's open, unlocked inbox keyspace and is
- * unsealed with that profile's key via [MyProfilesManager.deriveSharedSecret]. Group access instead
+ * unsealed with that profile's key via [MyProfilesManager.deriveSharedSecret]. Group access
  * goes through the server-mediated [JoinClient]: a member mints a revocable invite code (handing the
- * server the group key), and a joiner redeems it for a grant sealed to their own profile.
+ * server the group key), and a joiner redeems it for a grant sealed to their own profile. A member
+ * can also invite a peer directly ([inviteToRoom]): the same group grant is sealed straight into
+ * the peer's profile inbox and the peer's manager auto-joins on receipt.
  */
 class RoomsManagerImpl(
     private val account: AccountManager,
@@ -261,6 +263,18 @@ class RoomsManagerImpl(
         })
     }
 
+    override suspend fun inviteToRoom(roomId: RoomId, peerProfileId: ProfileId) {
+        val lockers = lockers ?: error("inviteToRoom requires start(lockers) first")
+        val record = records[roomId] ?: error("not a member of this room")
+        require(record.kind == RoomKind.ROOM_KIND_GROUP) { "direct invites are for group rooms; rendezvous is 1:1" }
+        sendInvite(lockers, peerProfileId, Invite(
+            kind = RoomKind.ROOM_KIND_GROUP,
+            inviterProfileId = record.localProfileId,
+            roomId = roomId.rawValue,
+            groupPrivateKey = record.sharedPrivateKey,
+        ))
+    }
+
     override suspend fun joinByCode(code: InviteCode): RoomId {
         val lockers = lockers ?: error("joinByCode requires start(lockers) first")
         val me = primaryProfileId()
@@ -418,6 +432,21 @@ class RoomsManagerImpl(
                     lockKey,
                     parentKeyPair = null,
                 )
+                writeMembership(lockers, roomId, profileId)
+            }
+            RoomKind.ROOM_KIND_GROUP -> {
+                // Same binding check as joinByCode: the sealed key must actually key the claimed
+                // room, so an invite cannot be re-pointed at another room.
+                val groupKey = Secp256r1KeyPair.fromPrivateKey(invite.groupPrivateKey) ?: return
+                if (!RoomKeying.publicKeyed(groupKey.publicKey.encode()).rawValue.contentEquals(invite.roomId)) return
+                val roomId = RoomId(rawValue = invite.roomId)
+                if (records.containsKey(roomId)) return
+                adopt(lockers, RoomRecord(
+                    roomId = invite.roomId,
+                    kind = RoomKind.ROOM_KIND_GROUP,
+                    sharedPrivateKey = invite.groupPrivateKey,
+                    localProfileId = profileId.rawValue,
+                ))
                 writeMembership(lockers, roomId, profileId)
             }
             else -> return
