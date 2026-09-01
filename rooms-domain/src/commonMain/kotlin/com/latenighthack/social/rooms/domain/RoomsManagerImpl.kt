@@ -43,6 +43,7 @@ import com.latenighthack.social.rooms.v1.fromByteArray
 import com.latenighthack.social.rooms.v1.toByteArray
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -153,23 +154,34 @@ class RoomsManagerImpl(
 
         val groupKey = Secp256r1KeyPair.generate()
         val roomId = RoomKeying.publicKeyed(groupKey.publicKey.encode())
-        adopt(lockers, RoomRecord(
+        val stamped = RoomRecord(
             roomId = roomId.rawValue,
             kind = RoomKind.ROOM_KIND_GROUP,
             sharedPrivateKey = groupKey.privateKey.encode(),
             localProfileId = me.rawValue,
-        ))
-
-        // Public-keyed room: the root lock must be signed by the room authority (the group key).
-        infoClient(lockers).lockLocker(
-            roomId,
-            LockScope(kind = LockScopeKind.LOCK_SCOPE_ROOM),
-            groupKey,
-            parentKeyPair = groupKey,
+            updatedAtMillis = Clock.System.now().toEpochMilliseconds(),
         )
+        remember(lockers, stamped)
+
         val groupName = name
-        writeInfo(lockers, roomId, groupKey) { replaceDisclosure { name { value = groupName } } }
-        writeMembership(lockers, roomId, me)
+        // Latency: the account-room record targets a different room, so it runs alongside the
+        // lock -> writes chain; info/membership are distinct lockers with independent versions,
+        // so once the lock is up they write concurrently. All complete before return (durable).
+        coroutineScope {
+            launch { writeAccountRecord(lockers, stamped) }
+
+            // Public-keyed room: the root lock must be signed by the room authority (the group key).
+            infoClient(lockers).lockLocker(
+                roomId,
+                LockScope(kind = LockScopeKind.LOCK_SCOPE_ROOM),
+                groupKey,
+                parentKeyPair = groupKey,
+            )
+            launch {
+                writeInfo(lockers, roomId, groupKey, fresh = true) { replaceDisclosure { name { value = groupName } } }
+            }
+            writeMembership(lockers, roomId, me)
+        }
         return roomId
     }
 
@@ -329,7 +341,7 @@ class RoomsManagerImpl(
     override suspend fun updateInfo(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit) {
         val lockers = lockers ?: error("updateInfo requires start(lockers) first")
         val roomKey = keyPairs[roomId] ?: error("not a member of this room")
-        writeInfo(lockers, roomId, roomKey, builder)
+        writeInfo(lockers, roomId, roomKey, builder = builder)
     }
 
     override suspend fun markUpdated(roomId: RoomId) {
@@ -474,6 +486,11 @@ class RoomsManagerImpl(
         // Stamp the join/create time so a newly adopted room sorts to the front of the list.
         val stamped = record.copy(updatedAtMillis = Clock.System.now().toEpochMilliseconds())
         remember(lockers, stamped)
+        writeAccountRecord(lockers, stamped)
+    }
+
+    /** Record the room in the synced account-room list so a fresh restore recovers it. */
+    private suspend fun writeAccountRecord(lockers: LockersClient, stamped: RoomRecord) {
         accountRoom()?.let { accountRoom ->
             accountRoomsClient(lockers).updateLocker(
                 accountRoom,
@@ -505,12 +522,15 @@ class RoomsManagerImpl(
         lockers: LockersClient,
         roomId: RoomId,
         roomKey: Secp256r1KeyPair,
+        // A just-created room's info locker is known-empty; fresh=true skips the read round-trip.
+        fresh: Boolean = false,
         builder: RoomInfoBuilder.() -> Unit,
     ) {
         val client = infoClient(lockers)
         // Apply the caller's builder to the current info, then re-sign every disclosure over its
         // payload with the shared room key so signatures always match the written content.
-        val built = (client.getLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER) ?: RoomInfo { }).copy(builder)
+        val base = if (fresh) null else client.getLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER)
+        val built = (base ?: RoomInfo { }).copy(builder)
         val signed = built.disclosures.map {
             RoomInfoDisclosures.sign(roomKey, roomId, RoomInfo.DisclosurePayload.fromByteArray(it.content))
         }
@@ -520,11 +540,18 @@ class RoomsManagerImpl(
 
     private suspend fun writeMembership(lockers: LockersClient, roomId: RoomId, profileId: ProfileId) {
         val now = Clock.System.now().toEpochMilliseconds()
-        membershipClient(lockers).updateLocker(roomId, LockerId(profileId.rawValue, RoomsKeyspaces.MEMBERSHIP)) {
-            Member(joinedAtMillis = now)
-        }
-        memberProfileClient(lockers).updateLocker(roomId, LockerId(profileId.rawValue, RoomsKeyspaces.MEMBER_PROFILES)) {
-            MemberProfile(profileId = profileId.rawValue)
+        // Distinct lockers, independent versions: write concurrently.
+        coroutineScope {
+            launch {
+                membershipClient(lockers).updateLocker(roomId, LockerId(profileId.rawValue, RoomsKeyspaces.MEMBERSHIP)) {
+                    Member(joinedAtMillis = now)
+                }
+            }
+            launch {
+                memberProfileClient(lockers).updateLocker(roomId, LockerId(profileId.rawValue, RoomsKeyspaces.MEMBER_PROFILES)) {
+                    MemberProfile(profileId = profileId.rawValue)
+                }
+            }
         }
     }
 
