@@ -19,8 +19,15 @@ class AuthenticateWithGoogleUseCase(
     private val account: AccountManager,
 ) {
     suspend fun authenticate(): SignInResult {
+        // Replay defense: bind a server-issued single-use nonce into the native request. Best-effort —
+        // enforcement (and thus failure) is server-side.
+        val nonce = try {
+            loginClient.requestNonce().nonce.ifEmpty { null }
+        } catch (e: Exception) {
+            null
+        }
         val idToken = try {
-            googleSignIn.signIn()
+            googleSignIn.signIn(nonce)
         } catch (e: Exception) {
             return SignInResult.Failed(e.message ?: "Google sign-in failed")
         }
@@ -28,6 +35,7 @@ class AuthenticateWithGoogleUseCase(
             AuthenticateSocialRequest {
                 provider = Provider.PROVIDER_GOOGLE
                 this.idToken = idToken
+                nonce?.let { this.nonce = it }
             },
         )
         return response.toSignInResult(account)

@@ -14,6 +14,7 @@ import com.latenighthack.social.account.domain.AccountKeySource
 import com.latenighthack.social.account.domain.AccountManager.Lifecycle
 import com.latenighthack.social.account.domain.AccountManagerImpl
 import com.latenighthack.social.login.apple.domain.AppleSignInClient
+import com.latenighthack.social.login.apple.domain.AppleSignInResult
 import com.latenighthack.social.login.core.domain.LoginClientImpl
 import com.latenighthack.social.login.core.service.ChallengeStore
 import com.latenighthack.social.login.core.service.CredentialStore
@@ -39,7 +40,7 @@ private const val APPLE_SUBJECT = "apple-sub-integration"
 private val TEST_MASTER_KEY = ByteArray(CustodyCrypto.KEY_BYTES) { (it + 1).toByte() }
 
 private val fakeApple = object : AppleSignInClient {
-    override suspend fun signIn(): String = APPLE_SUBJECT
+    override suspend fun signIn(nonce: String?): AppleSignInResult = AppleSignInResult(APPLE_SUBJECT)
 }
 
 // Boots the full lockers monolith (for account create/restore) and the login core service — with only

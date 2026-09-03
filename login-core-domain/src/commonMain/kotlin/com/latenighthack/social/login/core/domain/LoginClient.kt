@@ -7,6 +7,8 @@ import com.latenighthack.social.login.v1.BindRequest
 import com.latenighthack.social.login.v1.BindResponse
 import com.latenighthack.social.login.v1.CompleteEmailLinkRequest
 import com.latenighthack.social.login.v1.LoginServiceRpc
+import com.latenighthack.social.login.v1.RequestNonceRequest
+import com.latenighthack.social.login.v1.RequestNonceResponse
 import com.latenighthack.social.login.v1.StartChallengeResponse
 import com.latenighthack.social.login.v1.StartEmailLinkRequest
 import com.latenighthack.social.login.v1.StartPhoneCodeRequest
@@ -18,6 +20,8 @@ import com.latenighthack.social.login.v1.VerifyPhoneCodeRequest
  * a running server. Mirrors rooms-domain's JoinClient.
  */
 interface LoginClient {
+    suspend fun requestNonce(): RequestNonceResponse
+
     suspend fun authenticateSocial(request: AuthenticateSocialRequest): AuthenticateResponse
 
     suspend fun startEmailLink(request: StartEmailLinkRequest): StartChallengeResponse
@@ -33,6 +37,8 @@ interface LoginClient {
 
 class LoginClientImpl(rpcClient: RpcClient) : LoginClient {
     private val rpc = LoginServiceRpc(rpcClient)
+
+    override suspend fun requestNonce(): RequestNonceResponse = rpc.requestNonce(RequestNonceRequest {})
 
     override suspend fun authenticateSocial(request: AuthenticateSocialRequest): AuthenticateResponse =
         rpc.authenticateSocial(request)

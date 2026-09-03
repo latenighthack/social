@@ -20,6 +20,12 @@ message CredentialRecord {
   bytes enc_nonce = 6;
   int64 created_at_millis = 7;
   int64 updated_at_millis = 8;
+  // Per-record HKDF salt: the record's DEK is HKDF-SHA256(master key, kdf_salt), and the AES-GCM AAD
+  // binds provider|subject|key_version|alg so ciphertext cannot be transplanted across subjects.
+  // Empty = legacy record sealed directly under the master key; re-wrapped on next successful use.
+  bytes kdf_salt = 9;
+  // Master-key version the record is sealed under, enabling KEK rotation via re-wrap.
+  int32 key_version = 10;
 }
 
 // A short-lived ephemeral proof record — either a pending magic-link / OTP challenge or an issued

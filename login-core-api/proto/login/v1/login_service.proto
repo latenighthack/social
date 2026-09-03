@@ -51,6 +51,30 @@ message AuthenticateSocialRequest {
   Provider provider = 1;
   // The provider-issued OIDC id token (a signed JWT) the app obtained from the native SDK.
   string id_token = 2;
+  // The raw server-issued nonce (from RequestNonce) the client bound into the native auth request.
+  // The server checks the token's `nonce` claim equals this value or its SHA-256 hex (Apple hashes),
+  // and consumes it — defeating replay of a captured id token. Empty = legacy client; rejected only
+  // when the server is configured to require nonces.
+  string nonce = 3;
+}
+
+// Optional signup prefills the server read from the VERIFIED token's claims (Google carries name /
+// picture / email; Apple carries email only — its name never appears in the token and is captured
+// natively by the client at first authorization). All fields best-effort and user-editable.
+message ProfilePrefill {
+  string display_name = 1;
+  string photo_url = 2;
+  string email = 3;
+}
+
+message RequestNonceRequest {}
+
+message RequestNonceResponse {
+  LoginResult result = 1;
+  // Single-use, short-lived value to bind into the native Apple/Google auth request (Apple: pass its
+  // SHA-256 hex as the request nonce; Google: pass it verbatim to setNonce).
+  string nonce = 2;
+  int64 expires_in_seconds = 3;
 }
 
 message StartEmailLinkRequest {
@@ -87,6 +111,8 @@ message AuthenticateResponse {
   // Populated only on NEEDS_BINDING — a short-lived, single-use token authorizing a Bind for the
   // just-proven (provider, subject).
   bytes bind_ticket = 3;
+  // Best-effort profile prefills from the verified token's claims (see ProfilePrefill).
+  ProfilePrefill prefill = 4;
 }
 
 message BindRequest {
@@ -100,6 +126,9 @@ message BindResponse {
 }
 
 service Login {
+  // Issues a single-use nonce to bind into the native Apple/Google auth request (replay defense).
+  rpc RequestNonce(RequestNonceRequest) returns (RequestNonceResponse);
+
   // Social (Apple/Google): verify the id token, then recover the bound key or issue a bind ticket.
   rpc AuthenticateSocial(AuthenticateSocialRequest) returns (AuthenticateResponse);
 

@@ -27,6 +27,8 @@ class LoginServerExtension(
     emailSender: EmailSender?,
     smsSender: SmsSender?,
     linkBaseUrl: String,
+    nonces: NonceService = NonceService(),
+    requireNonce: Boolean = false,
 ) : ServerExtension {
     private val credentials = CredentialStore(storeDelegate)
     private val challenges = ChallengeStore(storeDelegate)
@@ -40,6 +42,8 @@ class LoginServerExtension(
         emailSender = emailSender,
         smsSender = smsSender,
         linkBaseUrl = linkBaseUrl,
+        nonces = nonces,
+        requireNonce = requireNonce,
     )
 
     override val services: List<GrpcRouteProvider<*>> = listOf(
@@ -84,6 +88,7 @@ class LoginServerExtensionFactory : ServerExtensionFactory {
             emailSender = handlers.filterIsInstance<LoginHandler.Email>().firstOrNull()?.sender,
             smsSender = handlers.filterIsInstance<LoginHandler.Sms>().firstOrNull()?.sender,
             linkBaseUrl = config.linkBaseUrl,
+            requireNonce = config.requireNonce,
         )
     }
 }

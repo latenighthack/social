@@ -11,6 +11,8 @@ import com.latenighthack.social.login.v1.CredentialRecord
 import com.latenighthack.social.login.v1.LoginResult
 import com.latenighthack.social.login.v1.LoginServer
 import com.latenighthack.social.login.v1.Provider
+import com.latenighthack.social.login.v1.RequestNonceRequest
+import com.latenighthack.social.login.v1.RequestNonceResponse
 import com.latenighthack.social.login.v1.StartChallengeResponse
 import com.latenighthack.social.login.v1.StartEmailLinkRequest
 import com.latenighthack.social.login.v1.StartPhoneCodeRequest
@@ -45,6 +47,10 @@ class LoginServiceImpl(
     private val emailSender: EmailSender?,
     private val smsSender: SmsSender?,
     private val linkBaseUrl: String,
+    private val nonces: NonceService = NonceService(),
+    // When true, AuthenticateSocial rejects requests whose nonce is absent or fails the single-use
+    // check. Off by default for rollout: legacy clients carry no nonce.
+    private val requireNonce: Boolean = false,
     private val clock: () -> Long = System::currentTimeMillis,
     private val random: SecureRandom = SecureRandom(),
     private val challengeTtlMillis: Long = 15 * 60 * 1000L,
@@ -53,6 +59,15 @@ class LoginServiceImpl(
     private val otpDigits: Int = 6,
     private val tokenBytes: Int = 32,
 ) : LoginServer {
+
+    override suspend fun requestNonce(
+        context: GrpcRequestContext,
+        request: RequestNonceRequest,
+    ): RequestNonceResponse = RequestNonceResponse {
+        result = LoginResult.LOGIN_RESULT_OK
+        nonce = nonces.issue()
+        expiresInSeconds = nonces.expiresInSeconds
+    }
 
     override suspend fun authenticateSocial(
         context: GrpcRequestContext,
@@ -63,9 +78,21 @@ class LoginServiceImpl(
             Provider.PROVIDER_GOOGLE -> googleVerifier
             else -> null
         } ?: return authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
-        val subject = verifier.verify(request.idToken)
+        val claims = verifier.verify(request.idToken)
             ?: return authResult(LoginResult.LOGIN_RESULT_UNAUTHORIZED)
-        return recoverOrIssueTicket(request.provider.value, subjectBytes(subject))
+        // Replay defense: under enforcement, a nonce must be present, issued here, and match the
+        // token's claim (verbatim or SHA-256 hex). Outside enforcement the check is best-effort — the
+        // nonce is still spent, but a mismatch is non-fatal (a non-enforcing server already accepts
+        // nonce-less requests, so failing here would only break verifiers that don't surface the
+        // claim, e.g. the dev verifier, without adding protection).
+        if (requireNonce) {
+            if (request.nonce.isEmpty() || !nonces.consume(request.nonce, claims.nonce)) {
+                return authResult(LoginResult.LOGIN_RESULT_UNAUTHORIZED)
+            }
+        } else if (request.nonce.isNotEmpty()) {
+            nonces.consume(request.nonce, claims.nonce)
+        }
+        return recoverOrIssueTicket(request.provider.value, subjectBytes(claims.subject), claims)
     }
 
     override suspend fun startEmailLink(
@@ -126,7 +153,7 @@ class LoginServiceImpl(
             return BindResponse { result = LoginResult.LOGIN_RESULT_ALREADY_BOUND }
         }
 
-        val sealed = custody.encrypt(request.accountPrivateKey)
+        val sealed = custody.encrypt(request.accountPrivateKey, CustodyCrypto.Binding(ticket.provider, ticket.subject))
         val now = clock()
         credentials.put(
             CredentialRecord {
@@ -136,6 +163,8 @@ class LoginServiceImpl(
                 accountId = request.accountId
                 encPrivateKey = sealed.ciphertext
                 encNonce = sealed.nonce
+                kdfSalt = sealed.salt
+                keyVersion = sealed.keyVersion
                 createdAtMillis = existing?.createdAtMillis ?: now
                 updatedAtMillis = now
             },
@@ -144,16 +173,37 @@ class LoginServiceImpl(
     }
 
     /** After a method is proven, recover its bound key or, if none, issue a single-use bind ticket. */
-    private suspend fun recoverOrIssueTicket(provider: Int, subject: ByteArray): AuthenticateResponse {
+    private suspend fun recoverOrIssueTicket(
+        provider: Int,
+        subject: ByteArray,
+        claims: VerifiedClaims? = null,
+    ): AuthenticateResponse {
         val credential = credentials.getByLookup(credentialKey(provider, subject))
         if (credential != null) {
-            val privateKey = custody.decrypt(credential.encPrivateKey, credential.encNonce)
+            val binding = CustodyCrypto.Binding(provider, subject)
+            val privateKey = custody.decrypt(
+                credential.encPrivateKey, credential.encNonce, credential.kdfSalt, credential.keyVersion, binding,
+            )
+            // Migrate legacy / previous-key-version records to the current envelope opportunistically.
+            if (custody.needsRewrap(credential.kdfSalt, credential.keyVersion)) {
+                val sealed = custody.encrypt(privateKey, binding)
+                credentials.put(
+                    credential.copy {
+                        encPrivateKey = sealed.ciphertext
+                        encNonce = sealed.nonce
+                        kdfSalt = sealed.salt
+                        keyVersion = sealed.keyVersion
+                        updatedAtMillis = clock()
+                    },
+                )
+            }
             return AuthenticateResponse {
                 result = LoginResult.LOGIN_RESULT_OK
                 identity {
                     accountId = credential.accountId
                     accountPrivateKey = privateKey
                 }
+                applyPrefill(claims)
             }
         }
         val ticket = randomBytes(tokenBytes)
@@ -169,6 +219,7 @@ class LoginServiceImpl(
         return AuthenticateResponse {
             result = LoginResult.LOGIN_RESULT_NEEDS_BINDING
             bindTicket = ticket
+            applyPrefill(claims)
         }
     }
 
@@ -213,6 +264,18 @@ class LoginServiceImpl(
     }
 
     private fun authResult(result: LoginResult) = AuthenticateResponse { this.result = result }
+
+    // Attach best-effort prefills from the verified token's claims (Google: name/picture/email;
+    // Apple: email only — its name never appears in the token).
+    private fun com.latenighthack.social.login.v1.AuthenticateResponseBuilder.applyPrefill(claims: VerifiedClaims?) {
+        if (claims == null) return
+        if (claims.displayName == null && claims.photoUrl == null && claims.email == null) return
+        prefill {
+            claims.displayName?.let { displayName = it }
+            claims.photoUrl?.let { photoUrl = it }
+            claims.email?.let { email = it }
+        }
+    }
 
     // The proto enum number. Taken via the base Provider type: `Provider.PROVIDER_X.value` would bind
     // PROVIDER_X to the nested classifier of the same name rather than the companion instance.

@@ -16,10 +16,11 @@ class AndroidGoogleSignInClient(
     private val context: Context,
     private val serverClientId: String,
 ) : GoogleSignInClient {
-    override suspend fun signIn(): String {
+    override suspend fun signIn(nonce: String?): String {
         val option = GetGoogleIdOption.Builder()
             .setServerClientId(serverClientId)
             .setFilterByAuthorizedAccounts(false)
+            .apply { nonce?.let(::setNonce) }
             .build()
         val request = GetCredentialRequest.Builder()
             .addCredentialOption(option)

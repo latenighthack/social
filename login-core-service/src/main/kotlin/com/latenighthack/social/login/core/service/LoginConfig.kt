@@ -11,6 +11,9 @@ import java.util.Base64
 class LoginConfig(
     val masterKey: ByteArray,
     val linkBaseUrl: String,
+    // When true, AuthenticateSocial rejects requests without a valid server-issued nonce
+    // (LOGIN_REQUIRE_NONCE=true). Off by default so pre-nonce clients keep working during rollout.
+    val requireNonce: Boolean = false,
 ) {
     companion object {
         fun fromEnv(env: (String) -> String? = System::getenv): LoginConfig {
@@ -25,6 +28,7 @@ class LoginConfig(
             return LoginConfig(
                 masterKey = masterKey,
                 linkBaseUrl = env("LOGIN_LINK_BASE_URL") ?: "https://example.invalid/login",
+                requireNonce = env("LOGIN_REQUIRE_NONCE")?.toBoolean() ?: false,
             )
         }
     }
