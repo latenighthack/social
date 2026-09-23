@@ -16,7 +16,7 @@ pluginManagement {
     // live in the build-logic included build.
     includeBuild("build-logic")
     repositories {
-        mavenLocal()
+        // Global Maven Local is intentionally excluded; use -PfhWorkspace for local development.
         google()
         mavenCentral()
         gradlePluginPortal()
@@ -25,9 +25,7 @@ pluginManagement {
 
 dependencyResolutionManagement {
     repositories {
-        // mavenLocal first so the peer "lockers" repo's SNAPSHOTs (published via
-        // `./gradlew publishToMavenLocal` in ../kitkit) resolve during local dev.
-        mavenLocal()
+        // Global Maven Local is intentionally excluded; use -PfhWorkspace for local development.
         google()
         mavenCentral()
     }
@@ -137,3 +135,6 @@ include(":messages-view-android")      // plugins { id("com.android.library") } 
 project(":messages-view-android").projectDir = file("messages-view/android")
 include(":messages-view-demo-android") // plugins { id("com.android.application") } — showcase + Roborazzi screenshots
 project(":messages-view-demo-android").projectDir = file("messages-view/demo/android")
+
+// Explicit isolated library development; release builds use published dependencies.
+apply(from = "gradle/fh-workspace.settings.gradle")

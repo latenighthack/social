@@ -46,6 +46,7 @@ class SetRoomAvatarUseCaseTest {
         override suspend fun openRendezvous(peerProfileId: ProfileId): RoomId = error("unused")
         override suspend fun createInviteCode(roomId: RoomId): InviteCode = error("unused")
         override suspend fun revokeInviteCode(roomId: RoomId, code: InviteCode) = error("unused")
+        override suspend fun inviteToRoom(roomId: RoomId, peerProfileId: ProfileId) = error("unused")
         override suspend fun joinByCode(code: InviteCode): RoomId = error("unused")
         override suspend fun deriveChildRoomId(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId = error("unused")
         override suspend fun openDerivedRoom(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId = error("unused")

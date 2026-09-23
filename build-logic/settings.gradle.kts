@@ -1,6 +1,6 @@
 dependencyResolutionManagement {
     repositories {
-        mavenLocal()
+        // Resolve convention plugins from their pinned published repositories.
         google()
         mavenCentral()
         gradlePluginPortal()
