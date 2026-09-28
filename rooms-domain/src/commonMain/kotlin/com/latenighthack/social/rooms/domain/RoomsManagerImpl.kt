@@ -15,6 +15,7 @@ import com.latenighthack.lockers.common.v1.LockScope
 import com.latenighthack.lockers.common.v1.LockScopeKind
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
+import com.latenighthack.lockers.connector.LockerClient
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.lockers.connector.TypedLockerUpdate
@@ -164,23 +165,16 @@ class RoomsManagerImpl(
         remember(lockers, stamped)
 
         val groupName = name
-        // Latency: the account-room record targets a different room, so it runs alongside the
-        // lock -> writes chain; info/membership are distinct lockers with independent versions,
-        // so once the lock is up they write concurrently. All complete before return (durable).
+        val built = RoomInfo { replaceDisclosure { name { value = groupName } } }
+        val info = built.copy { disclosures = built.disclosures.map {
+            RoomInfoDisclosures.sign(groupKey, roomId, RoomInfo.DisclosurePayload.fromByteArray(it.content))
+        } }
         coroutineScope {
+            // Independent account room: await both operations before reporting creation complete.
             launch { writeAccountRecord(lockers, stamped) }
-
-            // Public-keyed room: the root lock must be signed by the room authority (the group key).
-            infoClient(lockers).lockLocker(
-                roomId,
-                LockScope(kind = LockScopeKind.LOCK_SCOPE_ROOM),
-                groupKey,
-                parentKeyPair = groupKey,
-            )
-            launch {
-                writeInfo(lockers, roomId, groupKey, fresh = true) { replaceDisclosure { name { value = groupName } } }
-            }
-            writeMembership(lockers, roomId, me)
+            lockers.lockers.updateLockers(roomId, listOf(
+                LockerClient.Change(RoomsKeyspaces.ROOM_INFO_LOCKER) { info.toByteArray() }
+            ) + membershipChanges(me), initialKey = groupKey)
         }
         return roomId
     }
@@ -491,12 +485,10 @@ class RoomsManagerImpl(
 
     /** Record the room in the synced account-room list so a fresh restore recovers it. */
     private suspend fun writeAccountRecord(lockers: LockersClient, stamped: RoomRecord) {
-        accountRoom()?.let { accountRoom ->
-            accountRoomsClient(lockers).updateLocker(
-                accountRoom,
-                LockerId(stamped.roomId, RoomsKeyspaces.ACCOUNT_ROOMS),
-            ) { stamped }
-        }
+        val accountRoom = accountRoom() ?: error("account is not ready to persist room membership")
+        accountRoomsClient(lockers).updateLocker(
+            accountRoom, LockerId(stamped.roomId, RoomsKeyspaces.ACCOUNT_ROOMS),
+        ) { stamped }
     }
 
     /** Set in-memory key material + record and (re)subscribe. Idempotent; no account-room write. */
@@ -538,21 +530,16 @@ class RoomsManagerImpl(
         client.updateLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER) { updated }
     }
 
-    private suspend fun writeMembership(lockers: LockersClient, roomId: RoomId, profileId: ProfileId) {
+    private fun membershipChanges(profileId: ProfileId): List<LockerClient.Change> {
         val now = Clock.System.now().toEpochMilliseconds()
-        // Distinct lockers, independent versions: write concurrently.
-        coroutineScope {
-            launch {
-                membershipClient(lockers).updateLocker(roomId, LockerId(profileId.rawValue, RoomsKeyspaces.MEMBERSHIP)) {
-                    Member(joinedAtMillis = now)
-                }
-            }
-            launch {
-                memberProfileClient(lockers).updateLocker(roomId, LockerId(profileId.rawValue, RoomsKeyspaces.MEMBER_PROFILES)) {
-                    MemberProfile(profileId = profileId.rawValue)
-                }
-            }
-        }
+        return listOf(
+            LockerClient.Change(LockerId(profileId.rawValue, RoomsKeyspaces.MEMBERSHIP)) { Member(joinedAtMillis = now).toByteArray() },
+            LockerClient.Change(LockerId(profileId.rawValue, RoomsKeyspaces.MEMBER_PROFILES)) { MemberProfile(profileId = profileId.rawValue).toByteArray() },
+        )
+    }
+
+    private suspend fun writeMembership(lockers: LockersClient, roomId: RoomId, profileId: ProfileId) {
+        lockers.lockers.updateLockers(roomId, membershipChanges(profileId))
     }
 
     private suspend fun primaryProfileId(): ProfileId =

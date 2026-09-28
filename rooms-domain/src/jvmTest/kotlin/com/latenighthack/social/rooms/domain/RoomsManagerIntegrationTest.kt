@@ -23,7 +23,7 @@ import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.common.v1.Version
 import com.latenighthack.lockers.connector.LockerWriteException
 import com.latenighthack.lockers.connector.LockersClient
-import com.latenighthack.lockers.server.attachTestServices
+import com.latenighthack.lockers.server.attachFastpathTestServices
 import com.latenighthack.lockers.server.rpcClient
 import com.latenighthack.social.account.domain.AccountKeySource
 import com.latenighthack.social.account.domain.AccountManager
@@ -134,7 +134,7 @@ class RoomsManagerIntegrationTest {
 
     @Test(timeout = 60_000)
     fun `an invite code grants group access and a revoked code cannot`() =
-        runTestWithServer(Application::attachTestServices) { server, _ ->
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             val join = FakeJoinClient()
             val alice = newParty(server.rpcClient, joinClient = join)
             val bob = newParty(server.rpcClient, joinClient = join)
@@ -197,7 +197,7 @@ class RoomsManagerIntegrationTest {
 
     @Test(timeout = 60_000)
     fun `a restored account recovers its rooms and shared keys from the account room`() =
-        runTestWithServer(Application::attachTestServices) { server, _ ->
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             // Device 1 creates an account, a profile, and a group room.
             val accountStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
             val device1 = newParty(server.rpcClient, accountStore)
@@ -223,7 +223,7 @@ class RoomsManagerIntegrationTest {
 
     @Test(timeout = 60_000)
     fun `watchRooms is ordered newest-first and markUpdated moves a room to the front`() =
-        runTestWithServer(Application::attachTestServices) { server, _ ->
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             val party = newParty(server.rpcClient)
             party.myProfiles.createProfile("Alice")
             val a = party.rooms.createGroup("A")
@@ -245,7 +245,7 @@ class RoomsManagerIntegrationTest {
 
     @Test(timeout = 60_000)
     fun `a direct group invite lands in the profile inbox and the invitee auto-joins`() =
-        runTestWithServer(Application::attachTestServices) { server, _ ->
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             val alice = newParty(server.rpcClient)
             val bob = newParty(server.rpcClient)
             val aliceProfile = alice.myProfiles.createProfile("Alice")
@@ -294,7 +294,7 @@ class RoomsManagerIntegrationTest {
 
     @Test(timeout = 60_000)
     fun `rendezvous rooms converge on the same id and both profiles can write`() =
-        runTestWithServer(Application::attachTestServices) { server, _ ->
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             val alice = newParty(server.rpcClient)
             val bob = newParty(server.rpcClient)
             alice.myProfiles.createProfile("Alice")
@@ -323,7 +323,7 @@ class RoomsManagerIntegrationTest {
 
     @Test(timeout = 60_000)
     fun `profile inbox is open for sealed writes but content keyspace stays locked`() =
-        runTestWithServer(Application::attachTestServices) { server, _ ->
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             val bob = newParty(server.rpcClient)
             val bobProfile = bob.myProfiles.createProfile("Bob")
             // Ensure Bob's profile room is created and its content keyspace locked.
@@ -358,7 +358,7 @@ class RoomsManagerIntegrationTest {
 
     @Test(timeout = 60_000)
     fun `cached rooms load without a connection`() =
-        runTestWithServer(Application::attachTestServices) { server, _ ->
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             // Online session creates a room and lets its record land in the local cache.
             val accountStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
             val storeDelegate = SharedStoreDelegate()

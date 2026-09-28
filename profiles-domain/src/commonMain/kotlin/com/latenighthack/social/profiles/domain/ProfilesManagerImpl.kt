@@ -78,7 +78,7 @@ class ProfilesManagerImpl(
         val client = profileClient(lockers)
         client.subscribeToRoom(profileId.toRoomId())
         // Capture the current value directly so callers don't race the update stream.
-        client.getLocker(profileId.toRoomId(), profileId.toProfileLockerId())?.let { ingest(profileId, it) }
+        client.getLocker(profileId.toRoomId(), profileId.toProfileLockerId(), revalidate = false)?.let { ingest(profileId, it) }
     }
 
     override fun getProfile(id: ProfileId): Profile? = _profiles.value[id]
