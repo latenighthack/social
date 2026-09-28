@@ -28,10 +28,14 @@ if (manifestPath) {
         [p.configurations, p.buildscript.configurations].each { configs ->
             configs.configureEach { c ->
                 c.resolutionStrategy.eachDependency { d ->
-                    if (overrides[d.requested.group] && d.requested.group != p.group.toString()) d.useVersion(overrides[d.requested.group])
+                    // Keep dependencies between this build's own projects as projects.
+                    def localProject = p.rootProject.allprojects.any {
+                        it.group.toString() == d.requested.group && it.name == d.requested.name
+                    }
+                    if (!localProject && overrides[d.requested.group]) d.useVersion(overrides[d.requested.group])
                 }
                 c.dependencies.all { d ->
-                    if (d instanceof org.gradle.api.artifacts.ExternalModuleDependency && overrides[d.group] && d.group != p.group.toString()) {
+                    if (d instanceof org.gradle.api.artifacts.ExternalModuleDependency && overrides[d.group]) {
                         d.version { strictly(overrides[d.group]) }
                     }
                 }
