@@ -5,7 +5,7 @@ import org.gradle.accessors.dm.LibrariesForLibs
 // lockers server — a LockerAgentRegistry and/or extra gRPC services + ktstore stores.
 // Wired with kotlin-inject (KSP), mirroring the lockers server module.
 // Published so downstream server deployments (e.g. gwb) can mount the extensions
-// from mavenLocal via the ServiceLoader plug-in mechanism.
+// from released artifacts or an explicit fh workspace via ServiceLoader.
 plugins {
     id("org.jetbrains.kotlin.jvm")
     id("com.google.devtools.ksp")
