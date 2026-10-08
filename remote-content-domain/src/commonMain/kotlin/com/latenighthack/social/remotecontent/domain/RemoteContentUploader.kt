@@ -13,6 +13,7 @@ import com.latenighthack.social.remotecontent.v1.copy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
 import com.latenighthack.social.runtime.TaskHealth
 import com.latenighthack.social.runtime.recoverTask
@@ -131,6 +132,7 @@ class RemoteContentUploaderImpl(
     override suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload {
         // Mint the id + URLs up front; this is the only step that needs the server to be reachable,
         // and it hands back the download URL before the bytes are transferred.
+        require(bytes.size <= 16 * 1024 * 1024) { "upload exceeds 16 MiB" }
         val owner = session.currentOwner()
         val created = client.createContent(mimeType)
         val upload = Upload(created.contentId, created.downloadUrl, UploadStatus.Queued)
@@ -175,11 +177,13 @@ class RemoteContentUploaderImpl(
     private suspend fun runForOwner() {
         // Re-surface uploads that survived a restart as queued, so observers see them resume. Anything
         // already tracked in memory (freshly enqueued) wins over the persisted snapshot.
-        val resumed = store.getAllPending().filter { session.owns(it.ownerAccountId) }.mapNotNull { pending ->
-            val contentId = pending.contentId ?: return@mapNotNull null
-            contentId.rawValue.toList() to Upload(contentId, pending.downloadUrl, UploadStatus.Queued)
-        }.toMap()
-        stateMutex.withLock { uploads.update { resumed + it } }
+        store.pages().collect { page ->
+            val resumed = page.filter { session.owns(it.ownerAccountId) }.mapNotNull { pending ->
+                val id = pending.contentId ?: return@mapNotNull null
+                id.rawValue.toList() to Upload(id, pending.downloadUrl, UploadStatus.Queued)
+            }.toMap()
+            stateMutex.withLock { uploads.update { (resumed + it).entries.toList().takeLast(1024).associate { it.toPair() } } }
+        }
         while (true) {
             drainOnce()
             // Wait for a freshly enqueued upload, or fall through after the interval to retry
@@ -189,26 +193,32 @@ class RemoteContentUploaderImpl(
     }
 
     private suspend fun drainOnce() {
-        for (pending in store.getAllPending().filter { session.owns(it.ownerAccountId) }.sortedBy { it.createdAtMillis }) {
-            val contentId = pending.contentId ?: continue
-            val key = contentId.rawValue.toList()
-            setStatus(key, UploadStatus.Uploading)
-            try {
-                // Byte-level progress is tracked by the transport and observed via watchUpload(uploadUrl).
-                client.upload(pending.uploadUrl, pending.bytes)
-                store.deletePending(contentId)
-                setStatus(key, UploadStatus.Completed)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                // Keep the entry for the next pass; a transient network/server error must not drop it.
-                setStatus(key, UploadStatus.Queued)
+        store.pages().collect { page ->
+            for (batch in page.filter { session.owns(it.ownerAccountId) }.chunked(4)) kotlinx.coroutines.coroutineScope {
+                batch.map { pending -> launch { transfer(pending) } }.forEach { it.join() }
             }
         }
     }
 
+    private suspend fun transfer(pending: com.latenighthack.social.remotecontent.v1.PendingUpload) {
+        val contentId = pending.contentId ?: return
+        val key = contentId.rawValue.toList()
+        setStatus(key, UploadStatus.Uploading)
+        try {
+            kotlinx.coroutines.withTimeout(30_000) { client.upload(pending.uploadUrl, pending.bytes) }
+            store.deletePending(contentId)
+            setStatus(key, UploadStatus.Completed)
+        } catch (e: CancellationException) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (e !is kotlinx.coroutines.TimeoutCancellationException) throw e
+            setStatus(key, UploadStatus.Queued)
+        } catch (_: Exception) {
+            setStatus(key, UploadStatus.Queued)
+        }
+    }
+
     private suspend fun setStatus(key: List<Byte>, status: UploadStatus) = stateMutex.withLock {
-        uploads.update { map -> map[key]?.let { map + (key to it.copy(status = status)) } ?: map }
+        uploads.update { map -> map[key]?.let { (map + (key to it.copy(status = status))).entries.toList().takeLast(1024).associate { it.toPair() } } ?: map }
     }
 
     private companion object {

@@ -187,7 +187,10 @@ class MessagesManagerIntegrationTest {
     fun `failed outbox persistence rolls back every optimistic echo`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val base = com.latenighthack.ktstore.InMemoryStoreDelegate()
-            val delegate = object : com.latenighthack.ktstore.LifecycleStoreDelegate by base, com.latenighthack.ktstore.ScopedStoreDelegate {
+            val delegate = object : com.latenighthack.ktstore.LifecycleStoreDelegate by base, com.latenighthack.ktstore.ScopedStoreDelegate, com.latenighthack.ktstore.IndexedQueryDelegate {
+                override suspend fun query(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.query(tableName, query, identity, version)
+                override suspend fun count(tableName: String, query: com.latenighthack.ktstore.IndexedQuery) = base.count(tableName, query)
+                override suspend fun deleteBatch(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.deleteBatch(tableName, query, identity, version)
                 override suspend fun <T> transaction(stores: Set<String>, mode: com.latenighthack.ktstore.TransactionMode, block: suspend () -> T): T = base.transaction(stores, mode, block)
                 override suspend fun <T> transaction(block: suspend () -> T): T = base.transaction(block)
                 override suspend fun <T> transaction(lockKey: String, block: suspend () -> T): T = base.transaction(lockKey, block)

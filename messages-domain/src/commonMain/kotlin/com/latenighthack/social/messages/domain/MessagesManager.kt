@@ -35,6 +35,9 @@ interface MessagesManager {
     fun watchMessages(roomId: RoomId): Flow<List<MessageEntry>>
 
     /** The ids of the messages in [roomId], oldest first — index-aligned with [watchMessages]. */
+    /** Older durable history; the live flow retains the most recent 1000 messages. */
+    suspend fun loadEarlier(roomId: RoomId, before: MessageId, limit: Int = 100): List<MessageEntry> = emptyList()
+
     fun watchMessageIds(roomId: RoomId): Flow<List<MessageId>>
 }
 

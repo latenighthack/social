@@ -112,6 +112,11 @@ class TypingManagerImpl(
             }
 
             rooms.watchRooms().collect { roomIds ->
+                mutex.withLock {
+                    subscribedRooms.retainAll(roomIds.toSet())
+                    lastStartedSentAt.keys.retainAll(roomIds.toSet())
+                    _typing.value = _typing.value.filterKeys { it in roomIds }
+                }
                 for (roomId in roomIds) {
                     if (subscribedRooms.add(roomId)) {
                         launch { typingClient(lockers).subscribeToRoom(roomId) }
@@ -122,6 +127,7 @@ class TypingManagerImpl(
     }
 
     private suspend fun onNotification(notification: IncomingNotification) {
+        if (notification.roomId !in mutex.withLock { subscribedRooms.toSet() } || notification.payload.size > 4096) return
         val signal = runCatching { TypingPayload.fromByteArray(notification.payload) }.getOrNull() ?: return
         val profileId = ProfileId { rawValue = notification.lockerId.rawValue }
         if (!com.latenighthack.social.common.domain.verifyProfileClaim(profileId.rawValue, notification.roomId.rawValue,
@@ -129,7 +135,7 @@ class TypingManagerImpl(
         mutex.withLock {
             val current = _typing.value[notification.roomId].orEmpty()
             val updated = if (signal.startedTypingMillis > 0L) {
-                current + (profileId to elapsedMillis())
+                (current + (profileId to elapsedMillis())).entries.toList().takeLast(128).associate { it.toPair() }
             } else {
                 current - profileId
             }

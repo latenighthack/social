@@ -11,8 +11,10 @@ import com.latenighthack.social.remotecontent.v1.toByteArray
  * re-enqueuing the same content overwrites rather than duplicates. Survives restarts, letting the
  * uploader resume in-flight transfers.
  */
-internal class PendingUploadStore(database: Database) : Store<PendingUpload>(database, PendingUploadStoreDefinitionV1) {
+internal class PendingUploadStore(private val handle: Database) : Store<PendingUpload>(handle, PendingUploadStoreDefinitionV1) {
     private val contentIdKey = PendingUploadStoreDefinitionV1.contentIdKey
+
+    fun pages() = com.latenighthack.social.runtime.storePages(handle, PendingUploadStoreDefinitionV1, contentIdKey, pageSize = 16)
 
     suspend fun getAllPending(): List<PendingUpload> = getAll()
 

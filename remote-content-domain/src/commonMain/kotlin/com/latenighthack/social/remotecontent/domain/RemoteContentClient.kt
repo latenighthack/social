@@ -93,7 +93,7 @@ class RemoteContentClientImpl(
             expectSuccess = true
             setBody(bytes)
             onUpload { sent, total ->
-                uploads.update { it + (uploadUrl to TransferProgress(sent, total ?: bytes.size.toLong())) }
+                uploads.update { (it + (uploadUrl to TransferProgress(sent, total ?: bytes.size.toLong()))).entries.toList().takeLast(256).associate { it.toPair() } }
             }
         }
     }
@@ -102,7 +102,7 @@ class RemoteContentClientImpl(
         val response: HttpResponse = httpClient.get(downloadUrl) {
             expectSuccess = true
             onDownload { received, total ->
-                downloads.update { it + (downloadUrl to TransferProgress(received, total ?: 0L)) }
+                downloads.update { (it + (downloadUrl to TransferProgress(received, total ?: 0L))).entries.toList().takeLast(256).associate { it.toPair() } }
             }
         }
         return DownloadedContent(

@@ -81,7 +81,13 @@ class RemoteContentUploaderTest {
         val base = com.latenighthack.ktstore.InMemoryStoreDelegate()
         val saved = kotlinx.coroutines.CompletableDeferred<Unit>()
         val finishSave = kotlinx.coroutines.CompletableDeferred<Unit>()
-        val delegate = object : com.latenighthack.ktstore.LifecycleStoreDelegate by base {
+        val delegate = object : com.latenighthack.ktstore.LifecycleStoreDelegate by base, com.latenighthack.ktstore.IndexedQueryDelegate, com.latenighthack.ktstore.ScopedStoreDelegate {
+            override suspend fun <T> transaction(stores: Set<String>, mode: com.latenighthack.ktstore.TransactionMode, block: suspend () -> T): T = base.transaction(stores, mode, block)
+            override suspend fun <T> transaction(block: suspend () -> T): T = base.transaction(block)
+            override suspend fun <T> transaction(lockKey: String, block: suspend () -> T): T = base.transaction(lockKey, block)
+            override suspend fun query(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.query(tableName, query, identity, version)
+            override suspend fun count(tableName: String, query: com.latenighthack.ktstore.IndexedQuery) = base.count(tableName, query)
+            override suspend fun deleteBatch(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.deleteBatch(tableName, query, identity, version)
             override suspend fun save(tableName: String, data: Any, keys: List<com.latenighthack.ktstore.BoundStoreKey>) {
                 base.save(tableName, data, keys)
                 saved.complete(Unit)

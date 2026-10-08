@@ -13,10 +13,12 @@ import com.latenighthack.social.messages.v1.toByteArray
  * ids are only unique within a room, so both are needed to identify a row and to look one up without
  * scanning the whole outbox.
  */
-internal class PendingMessageStore(database: Database) : Store<PendingMessage>(database, PendingMessageStoreDefinitionV1) {
+internal class PendingMessageStore(private val handle: Database) : Store<PendingMessage>(handle, PendingMessageStoreDefinitionV1) {
     private val roomIdKey = PendingMessageStoreDefinitionV1.roomIdKey
     private val messageIdKey = PendingMessageStoreDefinitionV1.messageIdKey
     private val roomIdMessageIdKey = PendingMessageStoreDefinitionV1.roomIdMessageIdKey
+
+    fun pages() = com.latenighthack.social.runtime.storePages(handle, PendingMessageStoreDefinitionV1, roomIdKey, pageSize = 16)
 
     suspend fun getAllPending(): List<PendingMessage> = getAll()
 
