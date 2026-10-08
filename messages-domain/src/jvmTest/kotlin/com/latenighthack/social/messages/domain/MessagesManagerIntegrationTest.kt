@@ -83,6 +83,7 @@ class MessagesManagerIntegrationTest {
         joinClient: JoinClient = sharedJoinClient,
         maxAttempts: Int = 8,
         backoffBaseMillis: Long = 1L,
+        databaseDelegate: com.latenighthack.ktstore.LifecycleStoreDelegate = com.latenighthack.ktstore.InMemoryStoreDelegate(),
         lockKeySourceFactory: (LockKeySource) -> LockKeySource = { it },
     ): Party {
         val account = AccountManagerImpl(accountStore)
@@ -93,7 +94,7 @@ class MessagesManagerIntegrationTest {
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         // One delegate for the managers and the lockers client, as in production: every store is
         // prepared first, then LockersClient.create performs the single createStores() call.
-        val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
+        val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), databaseDelegate)
         val messages = MessagesManagerImpl(
             rooms, myProfiles, database,
             maxAttempts = maxAttempts, backoffBaseMillis = backoffBaseMillis,
@@ -118,6 +119,30 @@ class MessagesManagerIntegrationTest {
         account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
         return Party(myProfiles, rooms, messages, drafts, lockers)
     }
+
+    @Test(timeout = 30000)
+    fun `failed outbox persistence rolls back every optimistic echo`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            val base = com.latenighthack.ktstore.InMemoryStoreDelegate()
+            val delegate = object : com.latenighthack.ktstore.LifecycleStoreDelegate by base, com.latenighthack.ktstore.ScopedStoreDelegate {
+                override suspend fun <T> transaction(stores: Set<String>, mode: com.latenighthack.ktstore.TransactionMode, block: suspend () -> T): T = base.transaction(stores, mode, block)
+                override suspend fun <T> transaction(block: suspend () -> T): T = base.transaction(block)
+                override suspend fun <T> transaction(lockKey: String, block: suspend () -> T): T = base.transaction(lockKey, block)
+                override suspend fun save(tableName: String, data: Any, keys: List<com.latenighthack.ktstore.BoundStoreKey>) {
+                    if (tableName == "pending_messages") throw java.io.IOException("injected outbox failure")
+                    base.save(tableName, data, keys)
+                }
+            }
+            val alice = newParty(server.rpcClient, databaseDelegate = delegate)
+            try {
+                alice.myProfiles.createProfile("Alice")
+                val room = alice.rooms.createGroup("atomic")
+                assertFailsWith<java.io.IOException> { alice.messages.send(room, Draft { text = "must not be stranded" }) }
+                assertTrue(alice.messages.watchMessages(room).first().isEmpty())
+                assertTrue(base.getAll("messages", null).isEmpty())
+                assertTrue(base.getAll("pending_messages", null).isEmpty())
+            } finally { alice.close() }
+        }
 
     @Test(timeout = 60_000)
     fun `a group message is delivered with signed sender attribution`() =

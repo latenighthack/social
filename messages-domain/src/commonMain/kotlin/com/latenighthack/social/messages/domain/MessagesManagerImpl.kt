@@ -208,7 +208,7 @@ class MessagesManagerImpl(
                 Component { contents.text { this.text = text } }
             })
 
-        for (component in components) {
+        val prepared = components.map { component ->
             val messageId = MessageId(rawValue = Random.nextBytes(32))
             val payload = MessagePayload(
                 roomId = roomId.rawValue,
@@ -219,19 +219,9 @@ class MessagesManagerImpl(
             )
             val signed = myProfiles.sign(senderId, MessageSigning.LABEL, payload.toByteArray())
                 ?: error("no signing key for the room's profile")
-            // Optimistic local echo: store and show the message as SENDING at once, then durably queue
-            // it. The stored row also dedups the write's own echoed notification.
-            list.addOwn(messageId, payload, signed)
-            val now = Clock.System.now().toEpochMilliseconds()
-            pending.savePending(PendingMessage {
-                this.roomId = roomId.rawValue
-                this.messageId = messageId
-                message = signed
-                attempts = 0
-                nextAttemptMillis = now
-                createdAtMillis = now
-            })
+            Triple(messageId, payload, signed)
         }
+        list.addOwn(prepared)
         wake.trySend(Unit)
         // Bump the room to the front the moment the user sends, reflecting their intent — not when the
         // message eventually lands. Launched (not awaited) and best-effort: markUpdated reorders the
@@ -244,9 +234,10 @@ class MessagesManagerImpl(
         val dead = deadLetters.getDeadLettered(roomId, messageId) ?: return
         val signed = dead.message ?: return
         val now = Clock.System.now().toEpochMilliseconds()
-        pending.savePending(dead.copy(attempts = 0L, nextAttemptMillis = now))
-        deadLetters.deleteDeadLettered(roomId, messageId)
-        roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING)
+        roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING) {
+            pending.savePending(dead.copy(attempts = 0L, nextAttemptMillis = now))
+            deadLetters.deleteDeadLettered(roomId, messageId)
+        }
         wake.trySend(Unit)
     }
 
@@ -274,16 +265,18 @@ class MessagesManagerImpl(
                 MessagesKeyspaces.MESSAGING_LOCKER,
                 notificationBuilder = { payload { rawValue = signed.toByteArray() } },
             ) { it }
-            pending.deletePending(roomId, messageId)
-            roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT)
+            roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT) {
+                pending.deletePending(roomId, messageId)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
             val attempts = entry.attempts + 1
             if (attempts >= maxAttempts) {
-                deadLetters.saveDeadLettered(entry.copy(attempts = attempts))
-                pending.deletePending(roomId, messageId)
-                roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_FAILED)
+                roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_FAILED) {
+                    deadLetters.saveDeadLettered(entry.copy(attempts = attempts))
+                    pending.deletePending(roomId, messageId)
+                }
             } else {
                 pending.savePending(entry.copy(
                     attempts = attempts,
@@ -349,10 +342,21 @@ class MessagesManagerImpl(
         }
 
         /** Our own send: persist it as SENDING and show it immediately (loads history first). */
-        suspend fun addOwn(messageId: MessageId, payload: MessagePayload, signed: SignedContent) = mutex.withLock {
+        suspend fun addOwn(prepared: List<Triple<MessageId, MessagePayload, SignedContent>>) = mutex.withLock {
             loadLocked()
-            store.saveMessage(local(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING))
-            putLocked(payload, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING)
+            database.transaction("social.messages") {
+                for ((id, payload, signed) in prepared) {
+                    store.saveMessage(local(id, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING))
+                    pending.savePending(PendingMessage {
+                        roomId = this@RoomMessageList.roomId.rawValue
+                        messageId = id
+                        message = signed
+                        createdAtMillis = payload.sentAtMillis
+                        nextAttemptMillis = payload.sentAtMillis
+                    })
+                }
+            }
+            for ((_, payload, _) in prepared) putLocked(payload, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING)
         }
 
         /**
@@ -371,8 +375,14 @@ class MessagesManagerImpl(
         }
 
         /** Persist a delivery-status change and reflect it in memory when the room is loaded. */
-        suspend fun setStatus(messageId: MessageId, signed: SignedContent, status: MessageDeliveryStatus) = mutex.withLock {
-            store.saveMessage(local(messageId, signed, status))
+        suspend fun setStatus(
+            messageId: MessageId, signed: SignedContent, status: MessageDeliveryStatus,
+            transition: suspend () -> Unit = {},
+        ) = mutex.withLock {
+            database.transaction("social.messages") {
+                transition()
+                store.saveMessage(local(messageId, signed, status))
+            }
             if (loaded) {
                 runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull()?.let { putLocked(it, status) }
             }
