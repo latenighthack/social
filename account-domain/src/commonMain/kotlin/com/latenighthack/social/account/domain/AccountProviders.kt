@@ -22,6 +22,9 @@ interface AccountProviders {
     fun accountManager(impl: AccountManagerImpl): AccountManager = impl
 
     @Provides
+    fun accountSession(impl: AccountManagerImpl): com.latenighthack.social.runtime.AccountSession = impl
+
+    @Provides
     @SocialScope
     fun accountKeySource(impl: AccountManagerImpl): AccountKeySource = AccountKeySource(impl)
 

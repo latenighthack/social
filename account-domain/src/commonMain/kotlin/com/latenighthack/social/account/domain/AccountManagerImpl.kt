@@ -37,6 +37,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -59,6 +60,14 @@ class AccountManagerImpl(
     // --- key material (owned here; AccountKeySource forwards to these) ---
 
     private val identityMutex = Mutex()
+    private val _owner = MutableStateFlow<String?>(null)
+    override val owner: StateFlow<String?> get() = _owner
+    override var mayAdoptLegacyStorage: Boolean = false
+        private set
+
+    private suspend fun publishOwner(key: Secp256r1KeyPair) {
+        _owner.value = key.publicKey.encode().joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
+    }
 
     private var cachedKeyPair: Secp256r1KeyPair? = null
     private var tentativeKeyPair: Secp256r1KeyPair? = null
@@ -75,6 +84,7 @@ class AccountManagerImpl(
     internal suspend fun hasSessionKey(): Boolean {
         val present = cachedKeyPair != null || loadRecord() != null
         hasKey.value = present
+        if (present) publishOwner(sessionKeyPair())
         return present
     }
 
@@ -96,6 +106,10 @@ class AccountManagerImpl(
         tentativeKeyPair = null
         pendingKeyPair = CompletableDeferred()
         hasKey.value = false
+        mayAdoptLegacyStorage = false
+        _owner.value = null
+        roomInitialized = false
+        _lifecycle.value = if (everReady) Lifecycle.SignedOut else Lifecycle.NoAccount
     }
 
     private suspend fun generateKey() {
@@ -109,12 +123,18 @@ class AccountManagerImpl(
             AccountRecord::toByteArray,
         )
         cachedKeyPair = keyPair
+        mayAdoptLegacyStorage = false
+        publishOwner(keyPair)
         hasKey.value = true
         pendingKeyPair.complete(keyPair)
+        everReady = true
+        _lifecycle.value = Lifecycle.Ready(keyPair.publicKey.encode(), RoomKeying.publicKeyed(keyPair.publicKey.encode()))
     }
 
     private suspend fun loadRecord(): AccountRecord? =
-        keyValueStore.get(ACCOUNT_RECORD_KEY, AccountRecord.Companion::fromByteArray)
+        keyValueStore.get(ACCOUNT_RECORD_KEY, AccountRecord.Companion::fromByteArray).also {
+            if (it != null && cachedKeyPair == null && tentativeKeyPair == null && _owner.value == null) mayAdoptLegacyStorage = true
+        }
 
     private suspend fun accountId(): ByteArray = sessionKeyPair().publicKey.encode()
 
@@ -128,6 +148,7 @@ class AccountManagerImpl(
     private var job: Job? = null
     private var everReady = false
     private var roomInitialized = false
+    private var roomInitializedOwner: String? = null
     private var lockers: LockersClient? = null
 
     override suspend fun createAccount(): ByteArray = identityMutex.withLock {
@@ -180,7 +201,11 @@ class AccountManagerImpl(
         cachedKeyPair = keyPair
         tentativeKeyPair = null
         committed = true
+        mayAdoptLegacyStorage = false
+        publishOwner(keyPair)
         hasKey.value = true
+        everReady = true
+        _lifecycle.value = Lifecycle.Ready(keyPair.publicKey.encode(), roomId)
         keyPair.publicKey.encode()
         } finally {
             if (!committed) withContext(NonCancellable) {
@@ -229,26 +254,37 @@ class AccountManagerImpl(
         val account = lockers.typed(
             AccountKeyspaces.ACCOUNT_STATE, AccountState::toByteArray, AccountState.Companion::fromByteArray,
         )
-        hasSessionKey() // seed hasKey from persistence
+        identityMutex.withLock { hasSessionKey() } // seed the committed identity from persistence
 
-        combine(hasKey, lockers.isConnected, lockers.fatalError, ::Inputs).collect { (present, connected, fatal) ->
-            _lifecycle.value = when {
-                fatal != null -> Lifecycle.Fatal(fatal)
-                !present -> {
-                    roomInitialized = false
-                    if (everReady) Lifecycle.SignedOut else Lifecycle.NoAccount
+        combine(_owner, lockers.isConnected, lockers.fatalError) { owner, connected, fatal ->
+            Triple(owner, connected, fatal)
+        }.collectLatest { (owner, connected, fatal) ->
+            // combine can deliver an older snapshot after a synchronous identity transition.
+            // Never let that snapshot overwrite the state published by create/signOut.
+            if (_owner.value != owner) return@collectLatest
+            if (owner == null) {
+                roomInitialized = false
+                _lifecycle.value = if (everReady) Lifecycle.SignedOut else Lifecycle.NoAccount
+                return@collectLatest
+            }
+            val key = cachedKeyPair ?: return@collectLatest
+            val id = key.publicKey.encode()
+            if (_owner.value != owner) return@collectLatest
+            everReady = true
+            _lifecycle.value = if (fatal != null) Lifecycle.Fatal(fatal)
+                else Lifecycle.Ready(id, RoomKeying.publicKeyed(id))
+            if (fatal == null && connected && (!roomInitialized || roomInitializedOwner != owner)) {
+                val initialized = try {
+                    initializePrivateRoom(lockers, account)
+                    true
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    false
                 }
-                else -> {
-                    // Offline-first: the account id and private room derive from the local key, so
-                    // Ready is emitted without a connection and cached state serves reads. The
-                    // private room's server-side lock/init is deferred to the first connected tick.
-                    // Best-effort: a failed init (transient write race, network drop mid-init)
-                    // must not kill this collector; it retries on the next connectivity tick.
-                    if (connected && !roomInitialized) {
-                        roomInitialized = runCatching { initializePrivateRoom(lockers, account) }.isSuccess
-                    }
-                    everReady = true
-                    Lifecycle.Ready(accountId(), privateRoomId())
+                if (_owner.value == owner) {
+                    roomInitialized = initialized
+                    if (initialized) roomInitializedOwner = owner
                 }
             }
         }
@@ -285,7 +321,6 @@ class AccountManagerImpl(
         }
     }
 
-    private data class Inputs(val hasKey: Boolean, val connected: Boolean, val fatal: StreamFatalError?)
 
     internal companion object {
         const val SCHEMA_VERSION = 1

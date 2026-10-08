@@ -18,6 +18,8 @@ internal class DeadLetterStore(database: Database) : Store<PendingMessage>(datab
     private val messageIdKey = DeadLetterStoreDefinitionV1.messageIdKey
     private val roomIdMessageIdKey = DeadLetterStoreDefinitionV1.roomIdMessageIdKey
 
+    suspend fun getAllDeadLetters(): List<PendingMessage> = getAll()
+
     suspend fun saveDeadLettered(dead: PendingMessage) = save(dead)
 
     suspend fun getDeadLettered(roomId: RoomId, messageId: MessageId): PendingMessage? =

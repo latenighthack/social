@@ -62,6 +62,7 @@ import kotlin.test.assertTrue
 class MessagesManagerIntegrationTest {
 
     private class Party(
+        val account: AccountManagerImpl,
         val myProfiles: MyProfilesManagerImpl,
         val rooms: RoomsManagerImpl,
         val messages: MessagesManagerImpl,
@@ -73,6 +74,7 @@ class MessagesManagerIntegrationTest {
             messages.stop()
             rooms.stop()
             myProfiles.stop()
+            account.stop()
             lockers.close()
         }
     }
@@ -97,9 +99,9 @@ class MessagesManagerIntegrationTest {
         val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), databaseDelegate)
         val messages = MessagesManagerImpl(
             rooms, myProfiles, database,
-            maxAttempts = maxAttempts, backoffBaseMillis = backoffBaseMillis,
+            maxAttempts = maxAttempts, backoffBaseMillis = backoffBaseMillis, session = account,
         )
-        val drafts = DraftsManagerImpl(database)
+        val drafts = DraftsManagerImpl(database, session = account)
         messages.prepare()
         drafts.prepare()
         val lockers = LockersClient.create(
@@ -117,8 +119,33 @@ class MessagesManagerIntegrationTest {
         drafts.start(lockers)
         account.createAccount()
         account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
-        return Party(myProfiles, rooms, messages, drafts, lockers)
+        return Party(account, myProfiles, rooms, messages, drafts, lockers)
     }
+
+    @Test(timeout = 30000)
+    fun `sign out and immediate account creation hide prior drafts messages and signing keys`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val party = newParty(server.rpcClient)
+                try {
+                    val profile = party.myProfiles.createProfile("Alice")
+                    val room = party.rooms.createGroup("private history")
+                    party.drafts.setText(room, "private draft")
+                    party.messages.stop()
+                    party.messages.send(room, Draft { text = "private queued message" })
+                    party.account.signOut()
+                    party.account.createAccount()
+                    party.messages.start(party.lockers)
+                    assertTrue(party.messages.watchMessages(room).first().isEmpty())
+                    kotlin.test.assertNull(party.drafts.watchDraft(room).first())
+                    kotlin.test.assertNull(party.myProfiles.sign(profile, 3, byteArrayOf(1)))
+                    val fresh = party.myProfiles.createProfile("Bob")
+                    assertTrue(fresh != profile)
+                    val freshRoom = party.rooms.createGroup("fresh account")
+                    assertTrue(freshRoom != room)
+                } finally { party.close() }
+            }
+        }
 
     @Test(timeout = 30000)
     fun `messages received while consumer is stopped must recover on restart`() =

@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.supervisorScope
@@ -59,6 +60,8 @@ class MyProfilesManagerImpl(
 
     private val _profiles = MutableStateFlow<Map<ProfileId, Profile>>(emptyMap())
     private val _isLoaded = MutableStateFlow(false)
+    private val loadedOwner = MutableStateFlow<String?>(null)
+    private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value
 
     private var job: Job? = null
     private var lockers: LockersClient? = null
@@ -79,16 +82,22 @@ class MyProfilesManagerImpl(
     }
 
     override suspend fun deriveSharedSecret(profileId: ProfileId, peerPublicKey: ByteArray): ByteArray? {
+        if (!ownsKeys()) return null
         val keyPair = keyPairs.value[profileId] ?: return null
         val peer = Secp256r1PublicKey.decode(peerPublicKey)
-        return Secp256r1.ECDH.sharedSecret(keyPair.privateKey, peer)
+        val secret = Secp256r1.ECDH.sharedSecret(keyPair.privateKey, peer)
+        return secret.takeIf { ownsKeys() }
     }
 
     override suspend fun sign(profileId: ProfileId, label: Long, content: ByteArray): SignedContent? =
-        keyPairs.value[profileId]?.let { signContent(it, label, content) }
+        if (!ownsKeys()) null else keyPairs.value[profileId]?.let {
+            signContent(it, label, content).takeIf { ownsKeys() }
+        }
 
     override fun getProfileList(): Flow<List<ProfileId>> =
-        _profiles.map { it.keys.toList() }.distinctUntilChanged()
+        combine(_profiles, account.owner, loadedOwner) { profiles, current, loaded ->
+            if (current != null && current == loaded) profiles.keys.toList() else emptyList()
+        }.distinctUntilChanged()
 
     override suspend fun hasProfileCached(): Boolean {
         val lockers = lockers ?: return false
@@ -99,29 +108,38 @@ class MyProfilesManagerImpl(
         }
     }
 
-    override fun getProfile(id: ProfileId): Profile? = _profiles.value[id]
+    override fun getProfile(id: ProfileId): Profile? = if (ownsKeys()) _profiles.value[id] else null
 
     override fun watchProfile(id: ProfileId): Flow<Profile?> =
-        _profiles.map { it[id] }.distinctUntilChanged()
+        combine(_profiles, account.owner, loadedOwner) { profiles, current, loaded ->
+            if (current != null && current == loaded) profiles[id] else null
+        }.distinctUntilChanged()
 
     override fun getProfiles(ids: List<ProfileId>): List<Profile?> =
-        _profiles.value.let { current -> ids.map { current[it] } }
+        ids.map { getProfile(it) }
 
     override fun watchProfiles(ids: List<ProfileId>): Flow<List<Profile?>> =
-        _profiles.map { current -> ids.map { current[it] } }.distinctUntilChanged()
+        combine(_profiles, account.owner, loadedOwner) { profiles, current, loaded ->
+            ids.map { if (current != null && current == loaded) profiles[it] else null }
+        }.distinctUntilChanged()
 
     /** The write key for a profile room whose authority matches one of our profiles. */
     internal fun writeKey(roomId: RoomId, lockerId: LockerId): Secp256r1KeyPair? {
+        if (!ownsKeys()) return null
         val authority = RoomKeying.authorityKey(roomId) ?: return null
         return keyPairs.value[ProfileId { rawValue = authority }]
     }
 
     private suspend fun run() {
-        account.lifecycle.map { (it as? AccountManager.Lifecycle.Ready)?.privateRoom }
-            .distinctUntilChanged().collectLatest { accountRoom ->
+        account.lifecycle.map { it as? AccountManager.Lifecycle.Ready }
+            .distinctUntilChanged { old, new ->
+                    old?.accountId?.toList() == new?.accountId?.toList()
+                }.collectLatest { ready ->
+                val accountRoom = ready?.privateRoom
                 keyPairs.value = emptyMap()
                 _profiles.value = emptyMap()
                 _isLoaded.value = false
+                loadedOwner.value = ready?.accountId?.joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
                 if (accountRoom == null) return@collectLatest
                 val client = lockers ?: return@collectLatest
                 supervisorScope {
@@ -187,6 +205,8 @@ class MyProfilesManagerImpl(
         val accountRoom = (account.lifecycle.value as? AccountManager.Lifecycle.Ready)?.privateRoom
             ?: error("account must be Ready to create a profile")
 
+        val owner = account.owner.value
+        loadedOwner.first { it == owner && it != null }
         val keyPair = Secp256r1KeyPair.generate()
         val publicKey = keyPair.publicKey.encode()
         val privateKeyBytes = keyPair.privateKey.encode()
@@ -212,6 +232,7 @@ class MyProfilesManagerImpl(
         val profile = profileClient.updateLocker(profileId.toRoomId(), profileId.toProfileLockerId()) {
             it.copy { disclosures = listOf(disclosure) }
         } ?: Profile { disclosures = listOf(disclosure) }
+        check(account.owner.value == owner) { "account changed during profile creation" }
         _profiles.update { it + (profileId to profile) }
 
         return profileId
@@ -219,6 +240,7 @@ class MyProfilesManagerImpl(
 
     override suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit) {
         val lockers = lockers ?: error("updateProfile requires start(lockers) first")
+        check(ownsKeys()) { "account is signed out" }
         val keyPair = keyPairs.value[profileId] ?: error("unknown profile")
 
         // Apply the caller's builder to the current profile, then re-sign every disclosure over

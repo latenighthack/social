@@ -55,6 +55,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -97,6 +98,8 @@ class RoomsManagerImpl(
     private val watchedInboxes = mutableSetOf<ProfileId>()
     private val processedInvites = mutableSetOf<LockerId>()
     private var leftRooms: Set<RoomId> = emptySet()
+    private val loadedOwner = MutableStateFlow<String?>(null)
+    private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value
 
     private var job: Job? = null
     private var lockers: LockersClient? = null
@@ -113,7 +116,7 @@ class RoomsManagerImpl(
     }
 
     /** The shared write key for a room the user is a member of, or null (not our room → open/other). */
-    internal fun writeKey(roomId: RoomId): Secp256r1KeyPair? = keyPairs[roomId]
+    internal fun writeKey(roomId: RoomId): Secp256r1KeyPair? = if (ownsKeys()) keyPairs[roomId] else null
 
     private suspend fun run(lockers: LockersClient) {
         // A prior stop() cancelled the inbox collectors, so forget which inboxes were being watched
@@ -132,12 +135,16 @@ class RoomsManagerImpl(
                 // offline cold-cache load legitimately sees nothing, and the reconnect tick then
                 // picks up the server copy. loadRooms is idempotent; failures must not kill this
                 // collector.
-                account.lifecycle.map { (it as? AccountManager.Lifecycle.Ready)?.privateRoom }
-                    .distinctUntilChanged().collectLatest { accountRoom ->
+                account.lifecycle.map { it as? AccountManager.Lifecycle.Ready }
+                    .distinctUntilChanged { old, new ->
+                    old?.accountId?.toList() == new?.accountId?.toList()
+                }.collectLatest { ready ->
+                val accountRoom = ready?.privateRoom
                         stateMutex.withLock {
                             keyPairs = emptyMap(); records = emptyMap(); leftRooms = emptySet()
                             _rooms.value = emptyList()
                         }
+                        loadedOwner.value = ready?.accountId?.joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
                         if (accountRoom == null) return@collectLatest
                         var previous = emptySet<RoomId>()
                         accountRoomsClient(lockers).watchAll(accountRoom).collect { source ->
@@ -369,7 +376,9 @@ class RoomsManagerImpl(
         }
     }
 
-    override fun watchRooms(): Flow<List<RoomId>> = _rooms
+    override fun watchRooms(): Flow<List<RoomId>> = combine(_rooms, account.owner) { rooms, owner ->
+        if (owner != null && owner == loadedOwner.value) rooms else emptyList()
+    }
 
     override fun watchInfo(roomId: RoomId): Flow<RoomInfo?> =
         infoClient(requireLockers()).watch(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER).map {
@@ -392,9 +401,9 @@ class RoomsManagerImpl(
         }.distinctUntilChanged()
 
     override fun localProfile(roomId: RoomId): ProfileId? =
-        records[roomId]?.let { ProfileId { rawValue = it.localProfileId } }
+        if (ownsKeys()) records[roomId]?.let { ProfileId { rawValue = it.localProfileId } } else null
 
-    override fun roomKind(roomId: RoomId): RoomKind? = records[roomId]?.kind
+    override fun roomKind(roomId: RoomId): RoomKind? = if (ownsKeys()) records[roomId]?.kind else null
 
     // --- invite delivery + inbox ---
 
@@ -575,8 +584,11 @@ class RoomsManagerImpl(
         lockers.lockers.updateLockers(roomId, membershipChanges(profileId))
     }
 
-    private suspend fun primaryProfileId(): ProfileId =
-        myProfiles.getProfileList().first().firstOrNull() ?: error("a profile is required to use rooms")
+    private suspend fun primaryProfileId(): ProfileId {
+        val owner = checkNotNull(account.owner.value) { "account is signed out" }
+        loadedOwner.first { it == owner }
+        return myProfiles.getProfileList().first().firstOrNull() ?: error("a profile is required to use rooms")
+    }
 
     private suspend fun rendezvousRoomId(secret: ByteArray): RoomId =
         RoomId(rawValue = SHA256.digest(RENDEZVOUS_ROOM_DOMAIN + secret))

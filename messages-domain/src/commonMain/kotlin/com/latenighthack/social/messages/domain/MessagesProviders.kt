@@ -3,6 +3,7 @@ package com.latenighthack.social.messages.domain
 import com.latenighthack.ktstore.Database
 import com.latenighthack.social.profiles.domain.MyProfilesManager
 import com.latenighthack.social.rooms.domain.RoomsManager
+import com.latenighthack.social.runtime.AccountSession
 import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.runtime.SocialScope
 import me.tatarka.inject.annotations.IntoSet
@@ -20,7 +21,8 @@ interface MessagesProviders {
         rooms: RoomsManager,
         myProfiles: MyProfilesManager,
         database: Database,
-    ): MessagesManagerImpl = MessagesManagerImpl(rooms, myProfiles, database)
+        session: AccountSession,
+    ): MessagesManagerImpl = MessagesManagerImpl(rooms, myProfiles, database, session = session)
 
     @Provides
     fun messagesManager(impl: MessagesManagerImpl): MessagesManager = impl
@@ -31,7 +33,7 @@ interface MessagesProviders {
 
     @Provides
     @SocialScope
-    fun draftsManagerImpl(database: Database): DraftsManagerImpl = DraftsManagerImpl(database)
+    fun draftsManagerImpl(database: Database, session: AccountSession): DraftsManagerImpl = DraftsManagerImpl(database, session = session)
 
     @Provides
     fun draftsManager(impl: DraftsManagerImpl): DraftsManager = impl

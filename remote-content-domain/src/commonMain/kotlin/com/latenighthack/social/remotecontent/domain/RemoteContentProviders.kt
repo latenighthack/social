@@ -2,6 +2,7 @@ package com.latenighthack.social.remotecontent.domain
 
 import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.ktstore.Database
+import com.latenighthack.social.runtime.AccountSession
 import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.runtime.SocialScope
 import io.ktor.client.HttpClient
@@ -21,8 +22,8 @@ interface RemoteContentProviders {
 
     @Provides
     @SocialScope
-    fun remoteContentUploaderImpl(client: RemoteContentClient, database: Database): RemoteContentUploaderImpl =
-        RemoteContentUploaderImpl(client, database)
+    fun remoteContentUploaderImpl(client: RemoteContentClient, database: Database, session: AccountSession): RemoteContentUploaderImpl =
+        RemoteContentUploaderImpl(client, database, session = session)
 
     @Provides
     fun remoteContentUploader(impl: RemoteContentUploaderImpl): RemoteContentUploader = impl

@@ -8,13 +8,16 @@ import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.remotecontent.v1.ContentId
 import com.latenighthack.social.remotecontent.v1.PendingUpload
-import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.*
+import com.latenighthack.social.remotecontent.v1.copy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -85,8 +88,10 @@ class RemoteContentUploaderImpl(
     private val database: Database,
     private val retryIntervalMillis: Long = DEFAULT_RETRY_INTERVAL_MILLIS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val session: AccountSession? = null,
 ) : RemoteContentUploader, DomainLifecycle {
 
+    private var loadedOwner: String? = null
     private val store = PendingUploadStore(database)
     private val stateMutex = Mutex()
 
@@ -121,11 +126,15 @@ class RemoteContentUploaderImpl(
     override suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload {
         // Mint the id + URLs up front; this is the only step that needs the server to be reachable,
         // and it hands back the download URL before the bytes are transferred.
+        val owner = session.currentOwner()
         val created = client.createContent(mimeType)
         val upload = Upload(created.contentId, created.downloadUrl, UploadStatus.Queued)
         stateMutex.withLock {
+        check(session.currentOwner() == owner) { "account changed during upload creation" }
+        if (loadedOwner != owner) { uploads.value = emptyMap(); loadedOwner = owner }
         store.savePending(PendingUpload {
             contentId = created.contentId
+            ownerAccountId = owner
             uploadUrl = created.uploadUrl
             downloadUrl = created.downloadUrl
             this.bytes = bytes
@@ -138,15 +147,30 @@ class RemoteContentUploaderImpl(
     }
 
     override fun watchUploads(): Flow<List<Upload>> =
-        uploads.map { it.values.toList() }.distinctUntilChanged()
+        combine(uploads, session.ownerChanges()) { map, owner -> if (owner != null && owner == loadedOwner) map.values.toList() else emptyList() }.distinctUntilChanged()
 
     override fun watchUpload(contentId: ContentId): Flow<Upload?> =
-        uploads.map { it[contentId.rawValue.toList()] }.distinctUntilChanged()
+        combine(uploads, session.ownerChanges()) { map, owner -> if (owner != null && owner == loadedOwner) map[contentId.rawValue.toList()] else null }.distinctUntilChanged()
 
     private suspend fun run() {
+        session.ownerChanges().collectLatest { owner ->
+            stateMutex.withLock {
+                if (loadedOwner != owner) uploads.value = emptyMap()
+                loadedOwner = owner
+                if (owner != null && session != null) for (row in store.getAllPending()) {
+                    if (row.ownerAccountId.isNotEmpty()) continue
+                    if (session.owns("")) store.savePending(row.copy(ownerAccountId = owner))
+                    else row.contentId?.let { store.deletePending(it) }
+                }
+            }
+            if (owner != null) runForOwner()
+        }
+    }
+
+    private suspend fun runForOwner() {
         // Re-surface uploads that survived a restart as queued, so observers see them resume. Anything
         // already tracked in memory (freshly enqueued) wins over the persisted snapshot.
-        val resumed = store.getAllPending().mapNotNull { pending ->
+        val resumed = store.getAllPending().filter { session.owns(it.ownerAccountId) }.mapNotNull { pending ->
             val contentId = pending.contentId ?: return@mapNotNull null
             contentId.rawValue.toList() to Upload(contentId, pending.downloadUrl, UploadStatus.Queued)
         }.toMap()
@@ -160,7 +184,7 @@ class RemoteContentUploaderImpl(
     }
 
     private suspend fun drainOnce() {
-        for (pending in store.getAllPending().sortedBy { it.createdAtMillis }) {
+        for (pending in store.getAllPending().filter { session.owns(it.ownerAccountId) }.sortedBy { it.createdAtMillis }) {
             val contentId = pending.contentId ?: continue
             val key = contentId.rawValue.toList()
             setStatus(key, UploadStatus.Uploading)

@@ -27,7 +27,8 @@ import com.latenighthack.social.messages.v1.toByteArray
 import com.latenighthack.social.profiles.domain.MyProfilesManager
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.domain.RoomsManager
-import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.*
+import com.latenighthack.social.messages.v1.copy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -35,6 +36,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -72,6 +76,7 @@ class MessagesManagerImpl(
     private val backoffCapMillis: Long = DEFAULT_BACKOFF_CAP_MILLIS,
     private val idleWaitMillis: Long = DEFAULT_IDLE_WAIT_MILLIS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val session: AccountSession? = null,
 ) : MessagesManager, DomainLifecycle {
 
     private val store = MessageStore(database)
@@ -116,6 +121,37 @@ class MessagesManagerImpl(
     }
 
     private suspend fun run(lockers: LockersClient) {
+        session.ownerChanges().collectLatest { owner ->
+            roomsMutex.withLock { roomLists.clear() }
+            if (owner != null) {
+                migrateOwnership(owner)
+                runForOwner(lockers)
+            }
+        }
+    }
+
+    private suspend fun migrateOwnership(owner: String) {
+        if (session == null) return
+        database.transaction("social.messages") {
+            for (row in store.getAllMessages()) if (row.ownerAccountId.isEmpty()) {
+                val id = row.messageId ?: continue
+                if (session.owns("")) store.saveMessage(row.copy(ownerAccountId = owner))
+                else store.deleteMessage(RoomId(rawValue = row.roomId), id)
+            }
+            for (row in pending.getAllPending()) if (row.ownerAccountId.isEmpty()) {
+                val id = row.messageId ?: continue
+                if (session.owns("")) pending.savePending(row.copy(ownerAccountId = owner))
+                else pending.deletePending(RoomId(rawValue = row.roomId), id)
+            }
+            for (row in deadLetters.getAllDeadLetters()) if (row.ownerAccountId.isEmpty()) {
+                val id = row.messageId ?: continue
+                if (session.owns("")) deadLetters.saveDeadLettered(row.copy(ownerAccountId = owner))
+                else deadLetters.deleteDeadLettered(RoomId(rawValue = row.roomId), id)
+            }
+        }
+    }
+
+    private suspend fun runForOwner(lockers: LockersClient) {
         // A prior stop() cancelled the collectors and drain loop, so forget the per-room subscription
         // state and re-establish it below. Cached room lists are kept (the store is unchanged).
         mutex.withLock {
@@ -208,6 +244,7 @@ class MessagesManagerImpl(
     }
 
     override suspend fun send(roomId: RoomId, draft: Draft) {
+        session.currentOwner()
         val senderId = rooms.localProfile(roomId) ?: error("not a member of this room")
         val list = roomList(roomId)
 
@@ -242,6 +279,7 @@ class MessagesManagerImpl(
     override suspend fun retry(roomId: RoomId, messageId: MessageId) {
         ready.await()
         val dead = deadLetters.getDeadLettered(roomId, messageId) ?: return
+        if (!session.owns(dead.ownerAccountId)) return
         val signed = dead.message ?: return
         val now = Clock.System.now().toEpochMilliseconds()
         roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING) {
@@ -254,10 +292,10 @@ class MessagesManagerImpl(
     private suspend fun drainLoop(lockers: LockersClient) {
         while (true) {
             val now = Clock.System.now().toEpochMilliseconds()
-            for (entry in pending.getAllPending().sortedBy { it.createdAtMillis }) {
+            for (entry in pending.getAllPending().filter { session.owns(it.ownerAccountId) }.sortedBy { it.createdAtMillis }) {
                 if (entry.nextAttemptMillis <= now) attemptSend(lockers, entry)
             }
-            val soonest = pending.getAllPending().minOfOrNull { it.nextAttemptMillis }
+            val soonest = pending.getAllPending().filter { session.owns(it.ownerAccountId) }.minOfOrNull { it.nextAttemptMillis }
             val wait = if (soonest == null) idleWaitMillis
             else (soonest - Clock.System.now().toEpochMilliseconds()).coerceIn(1L, idleWaitMillis)
             withTimeoutOrNull(wait) { wake.receive() }
@@ -304,21 +342,26 @@ class MessagesManagerImpl(
         return (backoffBaseMillis shl shift).coerceAtMost(backoffCapMillis)
     }
 
-    override fun watchMessages(roomId: RoomId): Flow<List<MessageEntry>> = flow {
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    override fun watchMessages(roomId: RoomId): Flow<List<MessageEntry>> = session.ownerChanges().flatMapLatest { owner ->
+        if (owner == null) flowOf(emptyList()) else watchOwnedMessages(roomId)
+    }
+
+    private fun watchOwnedMessages(roomId: RoomId): Flow<List<MessageEntry>> = flow {
         val list = roomList(roomId)
         list.ensureLoaded()
-        emitAll(list.entries)
+        emitAll(list.entries.map { if (session.owns(list.owner)) it else emptyList() })
     }.distinctUntilChanged()
 
-    override fun watchMessageIds(roomId: RoomId): Flow<List<MessageId>> = flow {
-        val list = roomList(roomId)
-        list.ensureLoaded()
-        emitAll(list.entries.map { room -> room.map { MessageId(rawValue = it.payload.messageId) } })
-    }.distinctUntilChanged()
+    override fun watchMessageIds(roomId: RoomId): Flow<List<MessageId>> =
+        watchMessages(roomId).map { entries -> entries.map { MessageId(rawValue = it.payload.messageId) } }.distinctUntilChanged()
 
     private suspend fun roomList(roomId: RoomId): RoomMessageList {
         ready.await()
-        return roomsMutex.withLock { roomLists.getOrPut(roomId) { RoomMessageList(roomId) } }
+        return roomsMutex.withLock {
+            val owner = session.currentOwner()
+            roomLists[roomId]?.takeIf { it.owner == owner } ?: RoomMessageList(roomId).also { roomLists[roomId] = it }
+        }
     }
 
     private fun messageClient(lockers: LockersClient): TypedLockerClient<SignedContent> =
@@ -331,6 +374,7 @@ class MessagesManagerImpl(
      * message id) is the dedup source of truth, so an unloaded room still drops duplicates on receive.
      */
     private inner class RoomMessageList(private val roomId: RoomId) {
+        val owner = session.currentOwner()
         val entries = MutableStateFlow<List<MessageEntry>>(emptyList())
 
         // The message ids this room holds, maintained in memory so receive-dedup checks a set rather
@@ -343,7 +387,7 @@ class MessagesManagerImpl(
 
         private suspend fun loadLocked() {
             if (loaded) return
-            entries.value = store.getMessagesForRoom(roomId).mapNotNull { local ->
+            entries.value = store.getMessagesForRoom(roomId).filter { session.owns(it.ownerAccountId) }.mapNotNull { local ->
                 val messageId = local.messageId ?: return@mapNotNull null
                 val signed = local.message ?: return@mapNotNull null
                 val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull()
@@ -363,6 +407,7 @@ class MessagesManagerImpl(
                     pending.savePending(PendingMessage {
                         roomId = this@RoomMessageList.roomId.rawValue
                         messageId = id
+                        ownerAccountId = owner
                         message = signed
                         createdAtMillis = payload.sentAtMillis
                         nextAttemptMillis = payload.sentAtMillis
@@ -410,11 +455,15 @@ class MessagesManagerImpl(
             entries.value = (without + MessageEntry(payload, status)).sortedBy { it.payload.sentAtMillis }
         }
 
-        private fun local(messageId: MessageId, signed: SignedContent, status: MessageDeliveryStatus) = LocalMessage {
+        private fun local(messageId: MessageId, signed: SignedContent, status: MessageDeliveryStatus): LocalMessage {
+            if (!session.owns(owner)) throw CancellationException("account changed")
+            return LocalMessage {
             roomId = this@RoomMessageList.roomId.rawValue
             this.messageId = messageId
             message = signed
             this.status = status
+            ownerAccountId = owner
+            }
         }
     }
 

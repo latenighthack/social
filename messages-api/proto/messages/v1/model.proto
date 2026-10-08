@@ -45,6 +45,7 @@ message LocalMessage {
   MessageId message_id = 2;
   com.latenighthack.social.common.v1.SignedContent message = 3;
   MessageDeliveryStatus status = 4;
+  string owner_account_id = 5;
 }
 
 // Device-local durable outbox entry for a composed message awaiting delivery, stored duplicated
@@ -59,6 +60,7 @@ message PendingMessage {
   int64 attempts = 4;
   int64 next_attempt_millis = 5;
   int64 created_at_millis = 6;
+  string owner_account_id = 7;
 }
 
 // One composed-but-unsent attachment on a draft: a photo message [component] (an Image referencing
@@ -80,4 +82,5 @@ message Draft {
 message LocalDraft {
   bytes room_id = 1;
   Draft draft = 2;
+  string owner_account_id = 3;
 }

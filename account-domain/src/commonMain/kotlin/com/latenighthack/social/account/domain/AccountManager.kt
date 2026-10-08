@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
  * hands that material to the `LockersClient`. Build the client from an [AccountKeySource]
  * wrapping this manager, then [start] the manager with that client.
  */
-interface AccountManager {
+interface AccountManager : com.latenighthack.social.runtime.AccountSession {
     val lifecycle: StateFlow<Lifecycle>
 
     /** Begin driving the lifecycle over [lockers]. Idempotent; resumable after [stop]. */

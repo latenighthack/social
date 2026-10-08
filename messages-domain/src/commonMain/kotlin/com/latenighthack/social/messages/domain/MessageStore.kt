@@ -32,5 +32,11 @@ internal class MessageStore(database: Database) : Store<LocalMessage>(database, 
         ),
     )
 
+    suspend fun getAllMessages(): List<LocalMessage> = getAll()
+    suspend fun deleteMessage(roomId: RoomId, messageId: MessageId) = delete(roomIdMessageIdKey.eq(listOf(
+        BoundStoreKey.SerializedKey(roomIdKey.name.value, roomId.rawValue),
+        BoundStoreKey.SerializedKey(messageIdKey.name.value, messageId.toByteArray()),
+    )))
+
     suspend fun saveMessage(message: LocalMessage) = save(message)
 }

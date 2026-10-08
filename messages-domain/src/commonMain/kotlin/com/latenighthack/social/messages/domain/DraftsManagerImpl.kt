@@ -6,7 +6,8 @@ import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.messages.v1.Draft
 import com.latenighthack.social.messages.v1.DraftAttachment
 import com.latenighthack.social.messages.v1.LocalDraft
-import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.*
+import com.latenighthack.social.messages.v1.copy
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +18,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -29,11 +32,13 @@ import kotlinx.coroutines.sync.withLock
 class DraftsManagerImpl(
     private val database: Database,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val session: AccountSession? = null,
 ) : DraftsManager, DomainLifecycle {
 
     private val store = DraftStore(database)
     private val mutex = Mutex()
 
+    private var loadedOwner: String? = null
     private val _drafts = MutableStateFlow<Map<RoomId, Draft>>(emptyMap())
 
     private var job: Job? = null
@@ -47,12 +52,24 @@ class DraftsManagerImpl(
     override fun start(lockers: LockersClient) {
         if (job?.isActive == true) return
         job = scope.launch {
-            _drafts.value = buildMap {
-                store.getAllDrafts().forEach { local ->
-                    put(RoomId(rawValue = local.roomId), local.draft ?: Draft { })
+            session.ownerChanges().collectLatest { owner ->
+                mutex.withLock {
+                    _drafts.value = emptyMap()
+                    loadedOwner = owner
+                    if (owner != null) {
+                        val rows = store.getAllDrafts()
+                        for (row in rows) if (session != null && row.ownerAccountId.isEmpty()) {
+                            if (session.owns(row.ownerAccountId)) store.saveDraft(row.copy(ownerAccountId = owner))
+                            else store.removeDraft(RoomId(rawValue = row.roomId))
+                        }
+                        _drafts.value = rows.filter { session.owns(it.ownerAccountId) }.associate {
+                            RoomId(rawValue = it.roomId) to (it.draft ?: Draft { })
+                        }
+                    }
+                    if (!ready.isCompleted) ready.complete(Unit)
                 }
+                kotlinx.coroutines.awaitCancellation()
             }
-            if (!ready.isCompleted) ready.complete(Unit)
         }
     }
 
@@ -77,31 +94,37 @@ class DraftsManagerImpl(
     // and mirrors the result into memory and the store, so each field can be edited without clobbering
     // the others.
     private suspend fun mutate(roomId: RoomId, transform: (Draft) -> Draft) {
+        val owner = session.currentOwner()
         ready.await()
         mutex.withLock {
-            val updated = transform(_drafts.value[roomId] ?: Draft { })
-            store.saveDraft(LocalDraft(roomId = roomId.rawValue, draft = updated))
-            _drafts.value = _drafts.value + (roomId to updated)
+            val updated = transform(if (loadedOwner == owner) _drafts.value[roomId] ?: Draft { } else Draft { })
+            store.saveDraft(LocalDraft(roomId = roomId.rawValue, draft = updated, ownerAccountId = owner))
+            check(session.currentOwner() == owner) { "account changed" }
+            _drafts.value = (if (loadedOwner == owner) _drafts.value else emptyMap()) + (roomId to updated)
+            loadedOwner = owner
         }
     }
 
     override suspend fun clear(roomId: RoomId) {
+        val owner = session.currentOwner()
         ready.await()
         mutex.withLock {
+            if (loadedOwner != owner) return
             store.removeDraft(roomId)
             _drafts.value = _drafts.value - roomId
         }
     }
 
     override suspend fun clearIfUnchanged(roomId: RoomId, sent: Draft) {
+        val owner = session.currentOwner()
         ready.await()
         mutex.withLock {
-            if (_drafts.value[roomId] != sent) return
+            if (loadedOwner != owner || _drafts.value[roomId] != sent) return
             store.removeDraft(roomId)
             _drafts.value = _drafts.value - roomId
         }
     }
 
     override fun watchDraft(roomId: RoomId): Flow<Draft?> =
-        _drafts.map { it[roomId] }.distinctUntilChanged()
+        combine(_drafts, session.ownerChanges()) { drafts, owner -> if (owner != null && owner == loadedOwner) drafts[roomId] else null }.distinctUntilChanged()
 }

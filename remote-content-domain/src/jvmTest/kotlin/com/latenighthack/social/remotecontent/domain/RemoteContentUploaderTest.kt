@@ -56,6 +56,27 @@ class RemoteContentUploaderTest {
         withTimeout(10_000) { while (!condition()) delay(10) }
 
     @Test
+    fun `a new account cannot resume another account's upload queue`() = runBlocking {
+        val owner = kotlinx.coroutines.flow.MutableStateFlow<String?>("alice")
+        val session = object : com.latenighthack.social.runtime.AccountSession { override val owner = owner }
+        val database = Database(RemoteContentStorage.configuration("owner-isolation"), com.latenighthack.ktstore.InMemoryStoreDelegate())
+        database.open()
+        val fake = FakeRemoteContentClient()
+        val uploader = RemoteContentUploaderImpl(fake, database, retryIntervalMillis = 10, session = session)
+        uploader.prepare()
+        val upload = uploader.enqueue(byteArrayOf(1), "image/png")
+        owner.value = "bob"
+        uploader.start()
+        try {
+            delay(100)
+            kotlin.test.assertTrue(fake.uploaded.isEmpty())
+            kotlin.test.assertNull(uploader.watchUpload(upload.contentId).first())
+            owner.value = "alice"
+            awaitUntil { uploader.watchUpload(upload.contentId).first()?.status == UploadStatus.Completed }
+        } finally { uploader.stop() }
+    }
+
+    @Test
     fun `review queue registration must not overwrite a completed upload`() = runBlocking {
         val base = com.latenighthack.ktstore.InMemoryStoreDelegate()
         val saved = kotlinx.coroutines.CompletableDeferred<Unit>()
