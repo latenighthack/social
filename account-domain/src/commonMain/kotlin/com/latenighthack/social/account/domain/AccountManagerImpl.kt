@@ -33,6 +33,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.time.Clock
 
 /**
@@ -49,12 +53,16 @@ class AccountManagerImpl(
 
     // --- key material (owned here; AccountKeySource forwards to these) ---
 
+    private val identityMutex = Mutex()
+
     private var cachedKeyPair: Secp256r1KeyPair? = null
+    private var tentativeKeyPair: Secp256r1KeyPair? = null
     private var pendingKeyPair = CompletableDeferred<Secp256r1KeyPair>()
     private val hasKey = MutableStateFlow(false)
 
     internal suspend fun sessionKeyPair(): Secp256r1KeyPair {
         cachedKeyPair?.let { return it }
+        tentativeKeyPair?.let { return it }
         val record = loadRecord() ?: return pendingKeyPair.await()
         return Secp256r1KeyPair.fromPrivateKey(record.privateKey)!!.also { cachedKeyPair = it }
     }
@@ -72,14 +80,15 @@ class AccountManagerImpl(
     }
 
     /** The session key was (re)generated — mint a fresh one and re-lock the room on reconnect. */
-    internal suspend fun regenerateSession() {
-        generateKey()
+    internal suspend fun regenerateSession() = identityMutex.withLock {
+        if (!hasSessionKey()) generateKey()
         roomInitialized = false
     }
 
-    internal suspend fun revokeSession() {
+    internal suspend fun revokeSession() = identityMutex.withLock {
         keyValueStore.delete<AccountRecord>(ACCOUNT_RECORD_KEY)
         cachedKeyPair = null
+        tentativeKeyPair = null
         pendingKeyPair = CompletableDeferred()
         hasKey.value = false
     }
@@ -116,17 +125,17 @@ class AccountManagerImpl(
     private var roomInitialized = false
     private var lockers: LockersClient? = null
 
-    override suspend fun createAccount(): ByteArray {
+    override suspend fun createAccount(): ByteArray = identityMutex.withLock {
         if (!hasSessionKey()) {
             generateKey()
         }
-        return accountId()
+        accountId()
     }
 
     override suspend fun localAccountRoom(): RoomId? =
         if (hasSessionKey()) privateRoomId() else null
 
-    override suspend fun restoreAccount(privateKeyBytes: ByteArray): ByteArray {
+    override suspend fun restoreAccount(privateKeyBytes: ByteArray): ByteArray = identityMutex.withLock {
         if (hasSessionKey()) throw IllegalStateException("an account already exists on this device")
         val keyPair = Secp256r1KeyPair.fromPrivateKey(privateKeyBytes)
             ?: throw IllegalArgumentException("invalid private key")
@@ -134,8 +143,10 @@ class AccountManagerImpl(
 
         // Let the connector open a session with this identity WITHOUT committing it: hasKey
         // stays false, so the lifecycle collector won't initialize (and create) the room yet.
-        cachedKeyPair = keyPair
+        tentativeKeyPair = keyPair
         pendingKeyPair.complete(keyPair)
+        var committed = false
+        try {
         client.awaitConnected()
 
         val account = client.typed(
@@ -161,8 +172,18 @@ class AccountManagerImpl(
             },
             AccountRecord::toByteArray,
         )
+        cachedKeyPair = keyPair
+        tentativeKeyPair = null
+        committed = true
         hasKey.value = true
-        return keyPair.publicKey.encode()
+        keyPair.publicKey.encode()
+        } finally {
+            if (!committed) withContext(NonCancellable) {
+                tentativeKeyPair = null
+                pendingKeyPair = CompletableDeferred()
+                hasKey.value = false
+            }
+        }
     }
 
     override suspend fun signOut() = revokeSession()
