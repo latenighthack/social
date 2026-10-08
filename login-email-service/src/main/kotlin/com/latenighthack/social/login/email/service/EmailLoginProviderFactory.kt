@@ -11,9 +11,11 @@ import com.latenighthack.social.login.core.service.LoginProviderFactory
  * `LOGIN_EMAIL_FROM` and the provider's credentials read from the environment.
  */
 class EmailLoginProviderFactory : LoginProviderFactory {
-    override fun create(context: LoginProviderContext): LoginHandler {
+    override fun create(context: LoginProviderContext): LoginHandler? {
         val from = context.env("LOGIN_EMAIL_FROM").orEmpty()
-        val sender: EmailSender = when (context.env("LOGIN_EMAIL_PROVIDER")?.lowercase()) {
+        val selected = context.env("LOGIN_EMAIL_PROVIDER")?.lowercase() ?: return null
+        val development = context.env("LOGIN_DEVELOPMENT_MODE")?.toBooleanStrict() ?: false
+        val sender: EmailSender = when (selected) {
             "smtp" -> SmtpEmailSender(
                 host = context.env("LOGIN_SMTP_HOST").orEmpty(),
                 port = context.env("LOGIN_SMTP_PORT")?.toIntOrNull() ?: 587,
@@ -26,7 +28,11 @@ class EmailLoginProviderFactory : LoginProviderFactory {
                 from = from,
                 httpClient = context.httpClient,
             )
-            else -> ConsoleEmailSender()
+            "console" -> {
+                require(development) { "console delivery requires explicit development mode" }
+                ConsoleEmailSender()
+            }
+            else -> error("unknown login delivery provider")
         }
         return LoginHandler.Email(sender)
     }

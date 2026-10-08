@@ -84,7 +84,7 @@ class LoginServerExtensionFactory : ServerExtensionFactory {
         val social = handlers.filterIsInstance<LoginHandler.SocialVerifier>()
         return LoginServerExtension(
             database = database,
-            custody = CustodyCrypto(config.masterKey),
+            custody = CustodyCrypto(config.masterKey, keyVersion = config.keyVersion, previousKeys = config.previousKeys),
             hasher = Pbkdf2Hasher(),
             appleVerifier = social.firstOrNull { it.provider == Provider.PROVIDER_APPLE }?.verifier,
             googleVerifier = social.firstOrNull { it.provider == Provider.PROVIDER_GOOGLE }?.verifier,
