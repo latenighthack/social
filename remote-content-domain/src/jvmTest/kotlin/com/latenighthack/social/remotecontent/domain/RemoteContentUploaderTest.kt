@@ -8,6 +8,7 @@ import assertk.assertions.hasSize
 import com.latenighthack.ktstore.Database
 import com.latenighthack.social.remotecontent.v1.ContentId
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -53,6 +54,39 @@ class RemoteContentUploaderTest {
 
     private suspend fun awaitUntil(condition: suspend () -> Boolean) =
         withTimeout(10_000) { while (!condition()) delay(10) }
+
+    @Test
+    fun `review queue registration must not overwrite a completed upload`() = runBlocking {
+        val base = com.latenighthack.ktstore.InMemoryStoreDelegate()
+        val saved = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val finishSave = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val delegate = object : com.latenighthack.ktstore.LifecycleStoreDelegate by base {
+            override suspend fun save(tableName: String, data: Any, keys: List<com.latenighthack.ktstore.BoundStoreKey>) {
+                base.save(tableName, data, keys)
+                saved.complete(Unit)
+                finishSave.await()
+            }
+        }
+        val database = Database(RemoteContentStorage.configuration("review-upload-race"), delegate)
+        database.open()
+        val fake = FakeRemoteContentClient()
+        val uploader = RemoteContentUploaderImpl(fake, database, retryIntervalMillis = 1)
+        uploader.prepare()
+        uploader.start()
+        try {
+            kotlinx.coroutines.coroutineScope {
+                val task = async { uploader.enqueue(byteArrayOf(1, 2), "image/png") }
+                saved.await()
+                delay(25)
+                kotlin.test.assertTrue(fake.uploaded.isEmpty(), "worker ran before queue registration committed")
+                finishSave.complete(Unit)
+                val upload = task.await()
+                awaitUntil { uploader.watchUpload(upload.contentId).first()?.status == UploadStatus.Completed }
+                kotlin.test.assertEquals(UploadStatus.Completed, uploader.watchUpload(upload.contentId).first()?.status,
+                    "durable row is gone but late queue registration replaced completion with Queued")
+            }
+        } finally { finishSave.complete(Unit); uploader.stop() }
+    }
 
     @Test
     fun `enqueue returns the download URL immediately and durably queues the bytes before transfer`() =

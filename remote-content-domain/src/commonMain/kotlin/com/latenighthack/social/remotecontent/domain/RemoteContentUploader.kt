@@ -21,6 +21,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Clock
 
@@ -86,6 +88,7 @@ class RemoteContentUploaderImpl(
 ) : RemoteContentUploader, DomainLifecycle {
 
     private val store = PendingUploadStore(database)
+    private val stateMutex = Mutex()
 
     // Observable status per upload, keyed by content id bytes. Completed entries are retained (bytes
     // already dropped from the durable store, so this is metadata only) so observers see completion.
@@ -119,6 +122,8 @@ class RemoteContentUploaderImpl(
         // Mint the id + URLs up front; this is the only step that needs the server to be reachable,
         // and it hands back the download URL before the bytes are transferred.
         val created = client.createContent(mimeType)
+        val upload = Upload(created.contentId, created.downloadUrl, UploadStatus.Queued)
+        stateMutex.withLock {
         store.savePending(PendingUpload {
             contentId = created.contentId
             uploadUrl = created.uploadUrl
@@ -126,8 +131,8 @@ class RemoteContentUploaderImpl(
             this.bytes = bytes
             createdAtMillis = Clock.System.now().toEpochMilliseconds()
         })
-        val upload = Upload(created.contentId, created.downloadUrl, UploadStatus.Queued)
         uploads.update { it + (created.contentId.rawValue.toList() to upload) }
+        }
         wake.trySend(Unit)
         return upload
     }
@@ -145,7 +150,7 @@ class RemoteContentUploaderImpl(
             val contentId = pending.contentId ?: return@mapNotNull null
             contentId.rawValue.toList() to Upload(contentId, pending.downloadUrl, UploadStatus.Queued)
         }.toMap()
-        uploads.update { resumed + it }
+        stateMutex.withLock { uploads.update { resumed + it } }
         while (true) {
             drainOnce()
             // Wait for a freshly enqueued upload, or fall through after the interval to retry
@@ -173,7 +178,7 @@ class RemoteContentUploaderImpl(
         }
     }
 
-    private fun setStatus(key: List<Byte>, status: UploadStatus) {
+    private suspend fun setStatus(key: List<Byte>, status: UploadStatus) = stateMutex.withLock {
         uploads.update { map -> map[key]?.let { map + (key to it.copy(status = status)) } ?: map }
     }
 
