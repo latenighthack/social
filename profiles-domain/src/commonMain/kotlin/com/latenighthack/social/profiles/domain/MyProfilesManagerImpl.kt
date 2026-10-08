@@ -30,6 +30,8 @@ import com.latenighthack.social.profiles.v1.toByteArray
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,7 +44,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.coroutineScope
 
 /**
  * Owns the user's profile key pairs (kept in memory, sourced from the account room) and drives
@@ -63,6 +65,7 @@ class MyProfilesManagerImpl(
     private val loadedOwner = MutableStateFlow<String?>(null)
     private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value
 
+    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private var job: Job? = null
     private var lockers: LockersClient? = null
 
@@ -72,7 +75,7 @@ class MyProfilesManagerImpl(
         this.lockers = lockers
         if (job?.isActive == true) return
         _isLoaded.value = false
-        job = scope.launch { run() }
+        job = scope.launch { recoverTask(taskHealth) { run() } }
     }
 
     override fun stop() {
@@ -142,7 +145,7 @@ class MyProfilesManagerImpl(
                 loadedOwner.value = ready?.accountId?.joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
                 if (accountRoom == null) return@collectLatest
                 val client = lockers ?: return@collectLatest
-                supervisorScope {
+                coroutineScope {
                     val observers = mutableMapOf<ProfileId, Job>()
                     var previous = emptySet<ProfileId>()
                     sourceClient(client).watchAll(accountRoom).collect { sources ->

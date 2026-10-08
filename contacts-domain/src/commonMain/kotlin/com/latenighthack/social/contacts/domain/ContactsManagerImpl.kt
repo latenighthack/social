@@ -17,6 +17,8 @@ import com.latenighthack.social.runtime.DomainLifecycle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -42,13 +44,14 @@ class ContactsManagerImpl(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : ContactsManager, DomainLifecycle {
 
+    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private var job: Job? = null
     private var lockers: LockersClient? = null
 
     override fun start(lockers: LockersClient) {
         this.lockers = lockers
         if (job?.isActive == true) return
-        job = scope.launch { run(lockers) }
+        job = scope.launch { recoverTask(taskHealth) { run(lockers) } }
     }
 
     override fun stop() {

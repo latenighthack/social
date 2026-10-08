@@ -12,6 +12,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,9 +43,10 @@ class DraftsManagerImpl(
     private var loadedOwner: String? = null
     private val _drafts = MutableStateFlow<Map<RoomId, Draft>>(emptyMap())
 
+    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private var job: Job? = null
     // Completes once the store has been loaded — gates all store access.
-    private val ready = CompletableDeferred<Unit>()
+    private var ready = CompletableDeferred<Unit>()
 
     override suspend fun prepare() {
         store.prepare()
@@ -51,7 +54,9 @@ class DraftsManagerImpl(
 
     override fun start(lockers: LockersClient) {
         if (job?.isActive == true) return
-        job = scope.launch {
+        job = scope.launch { recoverTask(taskHealth) {
+            if (ready.isCancelled) ready = CompletableDeferred()
+            try {
             session.ownerChanges().collectLatest { owner ->
                 mutex.withLock {
                     _drafts.value = emptyMap()
@@ -70,8 +75,13 @@ class DraftsManagerImpl(
                 }
                 kotlinx.coroutines.awaitCancellation()
             }
-        }
+            } catch (failure: Exception) {
+                if (!ready.isCompleted) ready.completeExceptionally(failure)
+                throw failure
+            }
+        } }
     }
+
 
     override fun stop() {
         job?.cancel()

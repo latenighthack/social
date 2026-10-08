@@ -18,6 +18,8 @@ import com.latenighthack.social.typing.v1.toByteArray
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -27,7 +29,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.time.Clock
@@ -65,13 +67,14 @@ class TypingManagerImpl(
     // Rooms we've already subscribed for events (mutated only by the watchRooms collector).
     private val subscribedRooms = mutableSetOf<RoomId>()
 
+    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private var job: Job? = null
     private var lockers: LockersClient? = null
 
     override fun start(lockers: LockersClient) {
         this.lockers = lockers
         if (job?.isActive == true) return
-        job = scope.launch { run(lockers) }
+        job = scope.launch { recoverTask(taskHealth) { run(lockers) } }
     }
 
     override fun stop() {
@@ -86,7 +89,7 @@ class TypingManagerImpl(
         // One collector drains every room's typing events (the notifications flow spans all rooms,
         // filtered to this keyspace); subscribing each room is what makes its events flow. Launched as
         // children of this coroutine so stop() tears them down; supervisorScope isolates failures.
-        supervisorScope {
+        coroutineScope {
             launch { typingClient(lockers).notifications.collect { onNotification(it) } }
 
             rooms.watchRooms().collect { roomIds ->

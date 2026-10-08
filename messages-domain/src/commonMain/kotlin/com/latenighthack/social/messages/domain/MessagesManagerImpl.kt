@@ -34,6 +34,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
@@ -46,7 +48,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -100,6 +102,7 @@ class MessagesManagerImpl(
     // Nudges the drain loop to attempt immediately when a new message is enqueued.
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
+    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private var job: Job? = null
     private var lockers: LockersClient? = null
 
@@ -112,7 +115,7 @@ class MessagesManagerImpl(
     override fun start(lockers: LockersClient) {
         this.lockers = lockers
         if (job?.isActive == true) return
-        job = scope.launch { run(lockers) }
+        job = scope.launch { recoverTask(taskHealth) { run(lockers) } }
     }
 
     override fun stop() {
@@ -161,7 +164,7 @@ class MessagesManagerImpl(
         }
         if (!ready.isCompleted) ready.complete(Unit)
 
-        supervisorScope {
+        coroutineScope {
             launch { drainLoop(lockers) }
             launch { messageClient(lockers).notifications.collect { onNotification(it) } }
 

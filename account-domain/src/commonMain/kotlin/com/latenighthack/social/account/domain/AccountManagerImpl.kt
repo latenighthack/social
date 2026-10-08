@@ -33,6 +33,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -145,6 +147,7 @@ class AccountManagerImpl(
     private val _lifecycle = MutableStateFlow<Lifecycle>(Lifecycle.NoAccount)
     override val lifecycle: StateFlow<Lifecycle> get() = _lifecycle
 
+    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private var job: Job? = null
     private var everReady = false
     private var roomInitialized = false
@@ -242,7 +245,7 @@ class AccountManagerImpl(
         this.lockers = lockers
         if (job?.isActive == true) return
         roomInitialized = false
-        job = scope.launch { run(lockers) }
+        job = scope.launch { recoverTask(taskHealth) { run(lockers) } }
     }
 
     override fun stop() {

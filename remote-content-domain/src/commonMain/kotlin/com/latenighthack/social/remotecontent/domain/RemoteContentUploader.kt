@@ -14,6 +14,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
@@ -103,6 +105,7 @@ class RemoteContentUploaderImpl(
     // out the retry interval. Conflated: coalesced nudges are fine since the loop drains everything.
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
+    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private var job: Job? = null
 
     override suspend fun prepare() {
@@ -112,7 +115,7 @@ class RemoteContentUploaderImpl(
     /** Launches the background drain loop. Idempotent; resumes a queue left by a prior [stop]. */
     fun start() {
         if (job?.isActive == true) return
-        job = scope.launch { run() }
+        job = scope.launch { recoverTask(taskHealth) { run() } }
     }
 
     /** [DomainLifecycle] entry point; the [lockers] client is unused (see the class doc). */
