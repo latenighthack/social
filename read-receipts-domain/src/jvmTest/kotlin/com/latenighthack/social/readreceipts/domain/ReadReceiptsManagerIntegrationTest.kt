@@ -73,7 +73,7 @@ class ReadReceiptsManagerIntegrationTest {
         val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
         val messages = MessagesManagerImpl(rooms, myProfiles, database)
         messages.prepare()
-        val readReceipts = ReadReceiptsManagerImpl(rooms, messages)
+        val readReceipts = ReadReceiptsManagerImpl(rooms, messages, myProfiles)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
             database = database,

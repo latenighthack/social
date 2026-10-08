@@ -22,6 +22,8 @@ import com.latenighthack.social.runtime.TaskHealth
 import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import com.latenighthack.social.typing.v1.copy
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
@@ -47,6 +49,7 @@ import kotlin.time.Clock
  */
 class TypingManagerImpl(
     private val rooms: RoomsManager,
+    private val myProfiles: com.latenighthack.social.profiles.domain.MyProfilesManager,
     private val debounceMillis: Long = 10_000,
     private val timeoutMillis: Long = 15_000,
     private val tickMillis: Long = 1_000,
@@ -107,6 +110,8 @@ class TypingManagerImpl(
     private suspend fun onNotification(notification: IncomingNotification) {
         val signal = runCatching { TypingPayload.fromByteArray(notification.payload) }.getOrNull() ?: return
         val profileId = ProfileId { rawValue = notification.lockerId.rawValue }
+        if (!com.latenighthack.social.common.domain.verifyProfileClaim(profileId.rawValue, notification.roomId.rawValue,
+            signal.profileId, signal.roomId, signal.proof, 5, signal.copy(proof = null).toByteArray())) return
         mutex.withLock {
             val current = _typing.value[notification.roomId].orEmpty()
             val updated = if (signal.startedTypingMillis > 0L) {
@@ -135,17 +140,20 @@ class TypingManagerImpl(
             }
         } ?: return
 
+        val claim = signal.copy(roomId = roomId.rawValue, profileId = me.rawValue)
+        val proof = myProfiles.sign(me, 5, claim.toByteArray()) ?: return
+        val authenticated = claim.copy(proof = proof)
         // An empty placeholder body ({ it } keeps it unchanged); the signal rides as the attached event.
         typingClient(lockers).updateLocker(
             roomId,
             LockerId(me.rawValue, TypingKeyspaces.TYPING),
-            notificationBuilder = { payload { rawValue = signal.toByteArray() } },
+            notificationBuilder = { payload { rawValue = authenticated.toByteArray() } },
         ) { it }
     }
 
     override fun watchTyping(roomId: RoomId): Flow<Set<ProfileId>> =
-        combine(_typing.map { it[roomId].orEmpty() }, ticker()) { entries, now ->
-            val fresh = entries.filterValues { now - it < timeoutMillis }.keys
+        combine(_typing.map { it[roomId].orEmpty() }, ticker(), rooms.watchMembers(roomId)) { entries, now, members ->
+            val fresh = entries.filterValues { now - it < timeoutMillis }.keys intersect members.toSet()
             val me = rooms.localProfile(roomId)
             if (me != null) fresh - me else fresh
         }.distinctUntilChanged()

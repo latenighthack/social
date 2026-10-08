@@ -71,7 +71,7 @@ class TypingManagerIntegrationTest {
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
         val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
-        val typing = TypingManagerImpl(rooms, debounceMillis, timeoutMillis, tickMillis)
+        val typing = TypingManagerImpl(rooms, myProfiles, debounceMillis, timeoutMillis, tickMillis)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
             database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),

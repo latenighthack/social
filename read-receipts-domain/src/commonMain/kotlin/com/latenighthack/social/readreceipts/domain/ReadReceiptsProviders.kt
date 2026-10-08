@@ -14,8 +14,8 @@ import me.tatarka.inject.annotations.Provides
 interface ReadReceiptsProviders {
     @Provides
     @SocialScope
-    fun readReceiptsManagerImpl(rooms: RoomsManager, messages: MessagesManager): ReadReceiptsManagerImpl =
-        ReadReceiptsManagerImpl(rooms, messages)
+    fun readReceiptsManagerImpl(rooms: RoomsManager, messages: MessagesManager, myProfiles: com.latenighthack.social.profiles.domain.MyProfilesManager): ReadReceiptsManagerImpl =
+        ReadReceiptsManagerImpl(rooms, messages, myProfiles)
 
     @Provides
     fun readReceiptsManager(impl: ReadReceiptsManagerImpl): ReadReceiptsManager = impl

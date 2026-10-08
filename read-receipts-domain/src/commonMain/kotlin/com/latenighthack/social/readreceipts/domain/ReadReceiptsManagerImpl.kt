@@ -12,6 +12,7 @@ import com.latenighthack.social.readreceipts.v1.fromByteArray
 import com.latenighthack.social.readreceipts.v1.toByteArray
 import com.latenighthack.social.rooms.domain.RoomsManager
 import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.readreceipts.v1.copy
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
@@ -32,6 +33,7 @@ import kotlinx.coroutines.flow.map
 class ReadReceiptsManagerImpl(
     private val rooms: RoomsManager,
     private val messages: MessagesManager,
+    private val myProfiles: com.latenighthack.social.profiles.domain.MyProfilesManager,
 ) : ReadReceiptsManager, DomainLifecycle {
 
     private var lockers: LockersClient? = null
@@ -52,14 +54,19 @@ class ReadReceiptsManagerImpl(
         // Skip a redundant write when the pointer already sits at the latest message — markRead is
         // called often (e.g. whenever the room is viewed) and each write is a network round-trip.
         if (client.getLocker(roomId, lockerId)?.messageId?.contentEquals(latest.rawValue) == true) return
-        client.updateLocker(roomId, lockerId) { ReadReceipt { messageId = latest.rawValue } }
+        val claim = ReadReceipt(messageId = latest.rawValue, roomId = roomId.rawValue, profileId = me.rawValue)
+        val proof = myProfiles.sign(me, 4, claim.toByteArray()) ?: return
+        client.updateLocker(roomId, lockerId) { claim.copy(proof = proof) }
     }
 
     override fun watchReadReceipts(roomId: RoomId): Flow<Map<ProfileId, MessageId>> = flow {
         val client = readReceiptClient(requireLockers())
         emitAll(
-            client.watchAll(roomId, ReadReceiptsKeyspaces.READ_RECEIPTS).map { receipts ->
-                receipts.entries.associate { (lockerId, receipt) ->
+            kotlinx.coroutines.flow.combine(client.watchAll(roomId, ReadReceiptsKeyspaces.READ_RECEIPTS), rooms.watchMembers(roomId)) { receipts, members ->
+                receipts.entries.filter { (lockerId, receipt) ->
+                    ProfileId(rawValue = lockerId.rawValue) in members && com.latenighthack.social.common.domain.verifyProfileClaim(lockerId.rawValue, roomId.rawValue,
+                        receipt.profileId, receipt.roomId, receipt.proof, 4, receipt.copy(proof = null).toByteArray())
+                }.associate { (lockerId, receipt) ->
                     ProfileId { rawValue = lockerId.rawValue } to MessageId(rawValue = receipt.messageId)
                 }
             },

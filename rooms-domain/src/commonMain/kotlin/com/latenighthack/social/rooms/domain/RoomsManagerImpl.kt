@@ -7,6 +7,7 @@ package com.latenighthack.social.rooms.domain
 import com.latenighthack.ktcrypto.SHA256
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.ktcrypto.digest
+import com.latenighthack.ktcrypto.decode
 import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.fromPrivateKey
 import com.latenighthack.ktcrypto.generate
@@ -398,7 +399,9 @@ class RoomsManagerImpl(
     // --- invite delivery + inbox ---
 
     private suspend fun sendInvite(lockers: LockersClient, recipient: ProfileId, invite: Invite) {
-        val envelope = Sealing.seal(recipient.rawValue, invite.toByteArray())
+        val signed = myProfiles.sign(ProfileId(rawValue = invite.inviterProfileId), 6, invite.toByteArray())
+            ?: error("inviter profile cannot sign")
+        val envelope = Sealing.seal(recipient.rawValue, signed.toByteArray())
         val inboxRoom = RoomKeying.publicKeyed(recipient.rawValue)
         // The inbox keyspace is unlocked, so this write stays open (no signing key is routed for it).
         // The locker id is sha256 of the random ephemeral key: unlinkable and unique per invite.
@@ -432,7 +435,10 @@ class RoomsManagerImpl(
         val payload = Sealing.unsealWith(secret, envelope) ?: return
         // The plaintext is attacker-chosen (anyone can seal to our inbox), so a malformed invite must
         // be skipped rather than allowed to crash this inbox collector.
-        val invite = runCatching { Invite.fromByteArray(payload) }.getOrNull() ?: return
+        val signed = runCatching { com.latenighthack.social.common.v1.SignedContent.fromByteArray(payload) }.getOrNull() ?: return
+        val invite = runCatching { Invite.fromByteArray(signed.content) }.getOrNull() ?: return
+        val author = com.latenighthack.ktcrypto.Secp256r1PublicKey.decode(invite.inviterProfileId)
+        if (!com.latenighthack.social.common.domain.verify(signed, 6, author)) return
         when (invite.kind) {
             RoomKind.ROOM_KIND_RENDEZVOUS -> {
                 val secretWithInviter = myProfiles.deriveSharedSecret(profileId, invite.inviterProfileId) ?: return

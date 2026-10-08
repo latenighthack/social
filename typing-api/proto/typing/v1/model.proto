@@ -4,10 +4,15 @@ package com.latenighthack.social.typing.v1;
 
 option java_package = "com.latenighthack.social.typing.v1";
 
+import "common/v1/signing.proto";
+
 // The typing signal, carried in the locker event (Notification.payload) attached to an update of a
 // member's typing locker. started_typing_millis is the wall-clock time the member started typing
 // while they are typing, and 0 (unset) when they stop. An empty instance is also written as the
 // locker's placeholder body — the keys hold nothing meaningful; the event is the whole signal.
 message TypingPayload {
   int64 started_typing_millis = 1;
+  bytes room_id = 2;
+  bytes profile_id = 3;
+  com.latenighthack.social.common.v1.SignedContent proof = 4;
 }

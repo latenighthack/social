@@ -14,6 +14,8 @@ kotlin {
                 // ProfileId appears in the manager's public API (watchTyping returns a Set<ProfileId>).
                 api(projects.profilesApi)
                 // DomainLifecycle (a manager supertype) + @SocialScope appear in the public API.
+                implementation(projects.socialCommonDomain)
+                api(projects.profilesDomain)
                 api(projects.socialRuntime)
                 api(libs.lockers.api)
                 api(libs.lockers.connector)
