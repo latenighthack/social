@@ -90,4 +90,8 @@ message RoomRecord {
   bytes encrypted_shared_private_key = 6;
   // Durable leave intent prevents historical inbox invitations from rejoining a room.
   bool left = 7;
+  // Durable saga intent, replayed until membership publication/cleanup completes.
+  bool membership_pending = 8;
+  bytes initial_info = 9;
+  bool leaving = 10;
 }

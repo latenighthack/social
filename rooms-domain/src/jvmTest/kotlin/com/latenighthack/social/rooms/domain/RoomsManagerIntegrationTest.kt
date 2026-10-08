@@ -12,6 +12,7 @@ import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.ktcrypto.digest
 import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.fromPrivateKey
+import com.latenighthack.ktcrypto.generate
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
 import com.latenighthack.ktstore.Database
 import com.latenighthack.ktstore.KeyValueStore
@@ -61,6 +62,32 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RoomsManagerIntegrationTest {
+
+    @Test(timeout = 30000)
+    fun `restart repairs a persisted join without redeeming another invitation`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            val party = newParty(server.rpcClient)
+            try {
+                val me = party.myProfiles.createProfile("Alice")
+                party.rooms.stopAndJoin()
+                val key = Secp256r1KeyPair.generate()
+                val room = RoomKeying.publicKeyed(key.publicKey.encode())
+                val accountRoom = party.account.localAccountRoom()!!
+                val encrypted = party.account.protectSecret("room/${room.rawValue.toList()}", key.privateKey.encode())
+                val client = party.lockers.typed(RoomsKeyspaces.ACCOUNT_ROOMS,
+                    com.latenighthack.social.rooms.v1.RoomRecord::toByteArray,
+                    com.latenighthack.social.rooms.v1.RoomRecord.Companion::fromByteArray)
+                client.updateLocker(accountRoom, LockerId(room.rawValue, RoomsKeyspaces.ACCOUNT_ROOMS)) {
+                    com.latenighthack.social.rooms.v1.RoomRecord(roomId = room.rawValue,
+                        kind = RoomKind.ROOM_KIND_GROUP, localProfileId = me.rawValue,
+                        encryptedSharedPrivateKey = encrypted, membershipPending = true)
+                }
+                party.rooms.start(party.lockers)
+                party.rooms.watchRooms().first { room in it }
+                assertTrue(me in party.rooms.watchMembers(room).first { me in it })
+                assertFalse(client.getLocker(accountRoom, LockerId(room.rawValue, RoomsKeyspaces.ACCOUNT_ROOMS))!!.membershipPending)
+            } finally { party.close() }
+        }
 
     private class Party(
         val account: AccountManagerImpl,

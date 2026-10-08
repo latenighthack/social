@@ -121,7 +121,7 @@ class RoomsManagerImpl(
     }
 
     /** The shared write key for a room the user is a member of, or null (not our room → open/other). */
-    internal fun writeKey(roomId: RoomId): Secp256r1KeyPair? = if (ownsKeys()) keyPairs[roomId] else null
+    internal fun writeKey(roomId: RoomId): Secp256r1KeyPair? = if (ownsKeys()) (keyPairs[roomId] ?: cleanupKeys.value[roomId]) else null
 
     private suspend fun run(lockers: LockersClient) {
         // A prior stop() cancelled the inbox collectors, so forget which inboxes were being watched
@@ -190,20 +190,14 @@ class RoomsManagerImpl(
             localProfileId = me.rawValue,
             updatedAtMillis = Clock.System.now().toEpochMilliseconds(),
         )
-        remember(lockers, stamped)
 
         val groupName = name
         val built = RoomInfo { replaceDisclosure { name { value = groupName } } }
         val info = built.copy { disclosures = built.disclosures.map {
             RoomInfoDisclosures.sign(groupKey, roomId, RoomInfo.DisclosurePayload.fromByteArray(it.content))
         } }
-        coroutineScope {
-            // Independent account room: await both operations before reporting creation complete.
-            launch { writeAccountRecord(lockers, stamped) }
-            lockers.lockers.updateLockers(roomId, listOf(
-                LockerClient.Change(RoomsKeyspaces.ROOM_INFO_LOCKER) { info.toByteArray() }
-            ) + membershipChanges(me), initialKey = groupKey)
-        }
+        adopt(lockers, stamped.copy(initialInfo = info.toByteArray()))
+        repairMembership(lockers, records.getValue(roomId))
         return roomId
     }
 
@@ -331,7 +325,7 @@ class RoomsManagerImpl(
         }
 
         val roomId = RoomId(rawValue = invite.roomId)
-        if (records.containsKey(roomId)) return roomId
+        records[roomId]?.let { repairMembership(lockers, it); return roomId }
         adopt(lockers, RoomRecord(
             roomId = invite.roomId,
             kind = RoomKind.ROOM_KIND_GROUP,
@@ -345,20 +339,11 @@ class RoomsManagerImpl(
     override suspend fun leave(roomId: RoomId) {
         val lockers = lockers ?: return
         val record = records[roomId] ?: return
-        val me = ProfileId { rawValue = record.localProfileId }
-        // Delete the in-room entries while the shared key is still routed for this room, then drop
-        // it locally and from the synced account-room list (the latter signed by the account key).
-        membershipClient(lockers).deleteLocker(roomId, LockerId(me.rawValue, RoomsKeyspaces.MEMBERSHIP))
-        memberProfileClient(lockers).deleteLocker(roomId, LockerId(me.rawValue, RoomsKeyspaces.MEMBER_PROFILES))
-        accountRoom()?.let {
-            writeAccountRecord(lockers, record.copy(left = true, sharedPrivateKey = ByteArray(0)))
-        }
-        stateMutex.withLock {
-            leftRooms = leftRooms + roomId
-            records = records - roomId
-            keyPairs = keyPairs - roomId
-            _rooms.value = sortedRoomIds()
-        }
+        val leaving = record.copy(left = true, leaving = true)
+        // Persist leave intent before any destructive room write; retain the encrypted key for repair.
+        writeAccountRecord(lockers, leaving)
+        stateMutex.withLock { records = records + (roomId to leaving); _rooms.value = sortedRoomIds() }
+        repairLeave(lockers, leaving)
     }
 
     override suspend fun updateInfo(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit) {
@@ -496,7 +481,7 @@ class RoomsManagerImpl(
         client.subscribeToRoom(accountRoom, waitForSubscription = false)
         for (record in sources) {
             val id = RoomId(rawValue = record.roomId)
-            if (record.left) {
+            if (record.left && !record.leaving) {
                 stateMutex.withLock {
                     leftRooms = leftRooms + id
                     records = records - id
@@ -511,6 +496,13 @@ class RoomsManagerImpl(
             val decrypted = record.copy(sharedPrivateKey = raw, encryptedSharedPrivateKey = ByteArray(0))
             remember(lockers, decrypted)
             if (record.encryptedSharedPrivateKey.isEmpty()) writeAccountRecord(lockers, decrypted)
+            if (record.membershipPending || record.leaving) {
+                CoroutineScope(kotlinx.coroutines.currentCoroutineContext()).launch {
+                    recoverTask(taskHealth) {
+                        if (record.leaving) repairLeave(lockers, decrypted) else repairMembership(lockers, decrypted)
+                    }
+                }
+            }
         }
     }
 
@@ -521,16 +513,16 @@ class RoomsManagerImpl(
      */
     private suspend fun adopt(lockers: LockersClient, record: RoomRecord) {
         // Stamp the join/create time so a newly adopted room sorts to the front of the list.
-        val stamped = record.copy(updatedAtMillis = Clock.System.now().toEpochMilliseconds())
+        val stamped = record.copy(updatedAtMillis = Clock.System.now().toEpochMilliseconds(), membershipPending = true)
         stateMutex.withLock { leftRooms = leftRooms - RoomId(rawValue = stamped.roomId) }
-        remember(lockers, stamped)
         writeAccountRecord(lockers, stamped)
+        remember(lockers, stamped)
     }
 
     /** Record the room in the synced account-room list so a fresh restore recovers it. */
     private suspend fun writeAccountRecord(lockers: LockersClient, stamped: RoomRecord) {
         val accountRoom = accountRoom() ?: error("account is not ready to persist room membership")
-        val encrypted = if (stamped.left) ByteArray(0)
+        val encrypted = if (stamped.left && !stamped.leaving) ByteArray(0)
             else account.protectSecret("room/${stamped.roomId.toList()}", stamped.sharedPrivateKey)
         val protected = stamped.copy(sharedPrivateKey = ByteArray(0), encryptedSharedPrivateKey = encrypted)
         accountRoomsClient(lockers).updateLocker(
@@ -552,7 +544,7 @@ class RoomsManagerImpl(
 
     /** The user's room ids ordered by `updated_at`, newest first. */
     private fun sortedRoomIds(): List<RoomId> =
-        records.entries.sortedByDescending { it.value.updatedAtMillis }.map { it.key }
+        records.entries.filter { !it.value.left && !it.value.membershipPending }.sortedByDescending { it.value.updatedAtMillis }.map { it.key }
 
     private fun accountRoom(): RoomId? =
         (account.lifecycle.value as? AccountManager.Lifecycle.Ready)?.privateRoom
@@ -579,6 +571,45 @@ class RoomsManagerImpl(
         )
     }
 
+    private suspend fun completeMembership(lockers: LockersClient, record: RoomRecord) {
+        val completed = record.copy(membershipPending = false, initialInfo = ByteArray(0))
+        writeAccountRecord(lockers, completed)
+        stateMutex.withLock {
+            records = records + (RoomId(rawValue = record.roomId) to completed)
+            _rooms.value = sortedRoomIds()
+        }
+    }
+
+    private suspend fun repairMembership(lockers: LockersClient, record: RoomRecord) {
+        if (!record.membershipPending || record.left) return
+        val id = RoomId(rawValue = record.roomId)
+        val key = Secp256r1KeyPair.fromPrivateKey(record.sharedPrivateKey) ?: error("invalid membership key")
+        infoClient(lockers).lockLocker(id, LockScope(kind = LockScopeKind.LOCK_SCOPE_ROOM), key,
+            parentKeyPair = if (record.kind == RoomKind.ROOM_KIND_RENDEZVOUS) null else key)
+        val changes = membershipChanges(ProfileId(rawValue = record.localProfileId))
+        lockers.lockers.updateLockers(id, if (record.initialInfo.isEmpty()) changes else
+            listOf(LockerClient.Change(RoomsKeyspaces.ROOM_INFO_LOCKER) { record.initialInfo }) + changes)
+        completeMembership(lockers, record)
+    }
+
+    private val cleanupKeys = MutableStateFlow<Map<RoomId, Secp256r1KeyPair>>(emptyMap())
+    private val repairMutex = Mutex()
+
+    private suspend fun repairLeave(lockers: LockersClient, record: RoomRecord) = repairMutex.withLock {
+        val id = RoomId(rawValue = record.roomId)
+        val cleanupKey = Secp256r1KeyPair.fromPrivateKey(record.sharedPrivateKey) ?: return@withLock
+        cleanupKeys.value = cleanupKeys.value + (id to cleanupKey)
+        try {
+        membershipClient(lockers).deleteLocker(id, LockerId(record.localProfileId, RoomsKeyspaces.MEMBERSHIP))
+        memberProfileClient(lockers).deleteLocker(id, LockerId(record.localProfileId, RoomsKeyspaces.MEMBER_PROFILES))
+        writeAccountRecord(lockers, record.copy(leaving = false, membershipPending = false, sharedPrivateKey = ByteArray(0)))
+        stateMutex.withLock {
+            leftRooms = leftRooms + id; records = records - id; keyPairs = keyPairs - id
+            _rooms.value = sortedRoomIds()
+        }
+        } finally { cleanupKeys.value = cleanupKeys.value - id }
+    }
+
     private fun membershipChanges(profileId: ProfileId): List<LockerClient.Change> {
         val now = Clock.System.now().toEpochMilliseconds()
         return listOf(
@@ -589,6 +620,7 @@ class RoomsManagerImpl(
 
     private suspend fun writeMembership(lockers: LockersClient, roomId: RoomId, profileId: ProfileId) {
         lockers.lockers.updateLockers(roomId, membershipChanges(profileId))
+        records[roomId]?.takeIf { it.membershipPending && !it.left }?.let { completeMembership(lockers, it) }
     }
 
     private suspend fun primaryProfileId(): ProfileId {
