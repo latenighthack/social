@@ -77,6 +77,7 @@ suspend fun AuthenticateResponse.toSignInResult(
                 try {
                     SignInResult.Recovered(account.restoreAccount(recovered.accountPrivateKey), merged)
                 } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
                     SignInResult.Failed(e.message ?: "failed to restore account")
                 }
             }

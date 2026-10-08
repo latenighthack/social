@@ -19,6 +19,7 @@ class BindCurrentAccountUseCase(
         val identity = try {
             account.exportIdentity()
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             return BindResult.Failed(e.message ?: "no account to bind")
         }
         val response = loginClient.bind(
