@@ -35,6 +35,21 @@ suspend fun Application.attachRemoteContent() {
 
 class RemoteContentIntegrationTest {
 
+    @Test fun `active content is downloaded without execution privileges`() =
+        runTestWithServer(Application::attachRemoteContent) { server, _ ->
+            val rpc = RemoteContentServiceRpc(server.rpcClient)
+            val base = server.serverUrl.trimEnd('/').let { if (it.startsWith("http")) it else "http://$it" }
+            HttpClient(CIO).use { http ->
+                val created = rpc.createContent(CreateContentRequest(mimeType = "text/html"))
+                http.put(base + created.uploadUrl) { setBody("<script>alert(1)</script>".encodeToByteArray()) }
+                val response = http.get(base + created.downloadUrl)
+                assertEquals("application/octet-stream", response.contentType()?.toString())
+                assertEquals("nosniff", response.headers["X-Content-Type-Options"])
+                assertTrue(response.headers["Content-Disposition"]!!.startsWith("attachment"))
+                assertTrue(response.headers["Content-Security-Policy"]!!.contains("sandbox"))
+            }
+        }
+
     @Test fun `oversized uploads are rejected before persistence`() =
         runTestWithServer({
             val store = InMemoryContentStore()

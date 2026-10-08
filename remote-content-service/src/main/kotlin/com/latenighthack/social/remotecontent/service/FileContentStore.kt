@@ -54,7 +54,16 @@ class FileContentStore(private val baseDir: File,
                     if (!MessageDigest.isEqual(capability.readBytes(), hash(uploadToken))) throw UploadRejected()
                     if (file.exists()) {
                         if (!file.readBytes().contentEquals(bytes)) throw UploadRejected(conflict = true)
-                    } else file.writeBytes(bytes)
+                    } else {
+                        val temporary = java.nio.file.Files.createTempFile(file.parentFile.toPath(), file.name + ".", ".tmp")
+                        try {
+                            java.io.FileOutputStream(temporary.toFile()).use { output ->
+                                output.write(bytes)
+                                output.fd.sync()
+                            }
+                            java.nio.file.Files.move(temporary, file.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+                        } finally { java.nio.file.Files.deleteIfExists(temporary) }
+                    }
                 }
             }
             }

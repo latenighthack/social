@@ -71,12 +71,18 @@ fun Routing.remoteContent(store: ContentStore, maxUploadBytes: Int = 16 * 1024 *
                 call.respond(HttpStatusCode.NotFound)
                 return@get
             }
-            val contentType = content.mimeType
-                ?.let { runCatching { ContentType.parse(it) }.getOrNull() }
-                ?: ContentType.Application.OctetStream
+            val declaredType = content.mimeType?.let { runCatching { ContentType.parse(it) }.getOrNull() }
+            val safeInline = declaredType?.withoutParameters()?.toString() in SAFE_INLINE_TYPES
+            val contentType = if (safeInline) declaredType!! else ContentType.Application.OctetStream
+            call.response.headers.append("X-Content-Type-Options", "nosniff")
+            call.response.headers.append("Content-Security-Policy", "default-src 'none'; sandbox")
+            if (!safeInline) call.response.headers.append("Content-Disposition", "attachment; filename=content")
             call.respondBytes(content.bytes, contentType)
         }
     }
 }
 
 private class ContentTooLarge : Exception()
+
+private val SAFE_INLINE_TYPES = setOf("image/png", "image/jpeg", "image/gif", "image/webp", "image/avif",
+    "video/mp4", "video/webm", "audio/mpeg", "audio/ogg", "audio/wav", "audio/mp4")
