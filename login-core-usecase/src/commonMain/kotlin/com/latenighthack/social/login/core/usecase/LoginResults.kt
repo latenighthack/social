@@ -84,6 +84,7 @@ suspend fun AuthenticateResponse.toSignInResult(
         }
         LoginResult.LOGIN_RESULT_NEEDS_BINDING -> SignInResult.NeedsBinding(bindTicket, merged)
         LoginResult.LOGIN_RESULT_EXPIRED -> SignInResult.Failed("the sign-in challenge expired")
+        LoginResult.LOGIN_RESULT_RATE_LIMITED -> SignInResult.Failed("please wait before trying again")
         LoginResult.LOGIN_RESULT_EXHAUSTED -> SignInResult.Failed("too many attempts")
         LoginResult.LOGIN_RESULT_UNAUTHORIZED -> SignInResult.Failed("the sign-in token was rejected")
         LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE -> SignInResult.Failed("this sign-in method is not available")

@@ -37,6 +37,7 @@ enum LoginResult {
   LOGIN_RESULT_UNAUTHORIZED = 7;
   // The provider for this method is not enabled on the server (its handler is not on the classpath).
   LOGIN_RESULT_PROVIDER_UNAVAILABLE = 8;
+  LOGIN_RESULT_RATE_LIMITED = 9;
 }
 
 // The custodial secret returned on a successful recovery: the account's 33-byte compressed public

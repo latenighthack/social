@@ -35,6 +35,21 @@ suspend fun Application.attachRemoteContent() {
 
 class RemoteContentIntegrationTest {
 
+    @Test fun `oversized uploads are rejected before persistence`() =
+        runTestWithServer({
+            val store = InMemoryContentStore()
+            val service = RemoteContentServiceImpl(store, ContentUrls(""))
+            routing { serveAll(service, RemoteContentServer.Descriptor); remoteContent(store, maxUploadBytes = 32) }
+        }) { server, _ ->
+            val rpc = RemoteContentServiceRpc(server.rpcClient)
+            val base = server.serverUrl.trimEnd('/').let { if (it.startsWith("http")) it else "http://$it" }
+            val created = rpc.createContent(CreateContentRequest { })
+            HttpClient(CIO).use { http ->
+                assertEquals(HttpStatusCode.PayloadTooLarge, http.put(base + created.uploadUrl) { setBody(ByteArray(33)) }.status)
+                assertEquals(HttpStatusCode.NotFound, http.get(base + created.downloadUrl).status)
+            }
+        }
+
     @Test
     fun `create, upload, then download round-trips the bytes and mime type`() =
         runTestWithServer(Application::attachRemoteContent) { server, _ ->

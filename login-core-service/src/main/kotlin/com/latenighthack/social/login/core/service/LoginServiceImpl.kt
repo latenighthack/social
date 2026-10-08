@@ -18,6 +18,9 @@ import com.latenighthack.social.login.v1.StartEmailLinkRequest
 import com.latenighthack.social.login.v1.StartPhoneCodeRequest
 import com.latenighthack.social.login.v1.VerifyPhoneCodeRequest
 import com.latenighthack.social.login.v1.copy
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -58,25 +61,30 @@ class LoginServiceImpl(
     private val maxAttempts: Int = 5,
     private val otpDigits: Int = 6,
     private val tokenBytes: Int = 32,
+    private val requestsPerMinute: Int = 240,
+    private val startCooldownMillis: Long = 60_000,
 ) : LoginServer {
 
+    private val hashSlots = kotlinx.coroutines.sync.Semaphore(4)
+
     init {
+        require(requestsPerMinute > 0 && startCooldownMillis >= 0)
         require(credentials.database === challenges.database) { "login stores must share one database" }
     }
 
-    override suspend fun requestNonce(
-        context: GrpcRequestContext,
-        request: RequestNonceRequest,
-    ): RequestNonceResponse = RequestNonceResponse {
-        result = LoginResult.LOGIN_RESULT_OK
-        nonce = nonces.issue()
-        expiresInSeconds = nonces.expiresInSeconds
+    override suspend fun requestNonce(context: GrpcRequestContext, request: RequestNonceRequest): RequestNonceResponse {
+        if (!reserveBudget()) return RequestNonceResponse { result = LoginResult.LOGIN_RESULT_RATE_LIMITED }
+        return RequestNonceResponse {
+            result = LoginResult.LOGIN_RESULT_OK; nonce = nonces.issue(); expiresInSeconds = nonces.expiresInSeconds
+        }
     }
 
     override suspend fun authenticateSocial(
         context: GrpcRequestContext,
         request: AuthenticateSocialRequest,
     ): AuthenticateResponse {
+        if (request.idToken.length !in 1..16_384 || request.nonce.length > 128) return authResult(LoginResult.LOGIN_RESULT_INVALID)
+        if (!reserveBudget()) return authResult(LoginResult.LOGIN_RESULT_RATE_LIMITED)
         val verifier = when (request.provider) {
             Provider.PROVIDER_APPLE -> appleVerifier
             Provider.PROVIDER_GOOGLE -> googleVerifier
@@ -105,7 +113,10 @@ class LoginServiceImpl(
     ): StartChallengeResponse {
         val sender = emailSender ?: return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE }
         val email = request.email.trim()
-        if (email.isEmpty()) return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (email.length !in 3..254 || !email.contains('@') || email.any { it.isWhitespace() || it.code < 32 })
+            return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (!reserveBudget(providerNumber(Provider.PROVIDER_EMAIL), subjectBytes(email)))
+            return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_RATE_LIMITED }
         val token = randomToken()
         storeChallenge(providerNumber(Provider.PROVIDER_EMAIL), subjectBytes(email), token)
         sender.sendMagicLink(email, buildLink(email, token))
@@ -126,7 +137,10 @@ class LoginServiceImpl(
     ): StartChallengeResponse {
         val sender = smsSender ?: return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE }
         val phone = request.phoneNumber.trim()
-        if (phone.isEmpty()) return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (phone.length !in 4..32 || phone.any { it !in "+0123456789" })
+            return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (!reserveBudget(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(phone)))
+            return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_RATE_LIMITED }
         val code = randomCode()
         storeChallenge(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(phone), code)
         sender.sendCode(phone, code)
@@ -141,8 +155,11 @@ class LoginServiceImpl(
         return verifyChallenge(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(request.phoneNumber.trim()), request.code)
     }
 
-    override suspend fun bind(context: GrpcRequestContext, request: BindRequest): BindResponse =
-        challenges.database.transaction("social.login.credentials") {
+    override suspend fun bind(context: GrpcRequestContext, request: BindRequest): BindResponse {
+        if (request.bindTicket.size !in 16..128 || request.accountId.size > 65 || request.accountPrivateKey.size > 512)
+            return BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (!reserveBudget(excludeLookup = ticketKey(request.bindTicket))) return BindResponse { result = LoginResult.LOGIN_RESULT_RATE_LIMITED }
+        return challenges.database.transaction("social.login.credentials") {
         val ticketLookup = ticketKey(request.bindTicket)
         val ticket = challenges.getByLookup(ticketLookup)
             ?: return@transaction BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
@@ -175,6 +192,8 @@ class LoginServiceImpl(
             },
         )
         BindResponse { result = LoginResult.LOGIN_RESULT_OK }
+    }
+
     }
 
     /** After a method is proven, recover its bound key or, if none, issue a single-use bind ticket. */
@@ -228,9 +247,9 @@ class LoginServiceImpl(
         }
     }
 
-    private suspend fun storeChallenge(provider: Int, subject: ByteArray, secret: String) =
+    private suspend fun storeChallenge(provider: Int, subject: ByteArray, secret: String) {
+        val hashed = hashSlots.withPermit { withContext(Dispatchers.Default) { hasher.hash(secret) } }
         challenges.database.transaction("social.login.credentials") {
-        val hashed = hasher.hash(secret)
         challenges.put(
             ChallengeRecord {
                 lookupKey = challengeKey(provider, subject)
@@ -245,29 +264,55 @@ class LoginServiceImpl(
         )
     }
 
-    private suspend fun verifyChallenge(provider: Int, subject: ByteArray, presented: String): AuthenticateResponse =
-        challenges.database.transaction("social.login.credentials") {
+    }
+
+    private suspend fun verifyChallenge(provider: Int, subject: ByteArray, presented: String): AuthenticateResponse {
+        if (subject.size !in 1..254 || presented.length !in 1..512) return authResult(LoginResult.LOGIN_RESULT_INVALID)
         val lookup = challengeKey(provider, subject)
-        val record = challenges.getByLookup(lookup) ?: return@transaction authResult(LoginResult.LOGIN_RESULT_INVALID)
-        if (record.expiryMillis != 0L && clock() >= record.expiryMillis) {
-            challenges.deleteByLookup(lookup)
-            return@transaction authResult(LoginResult.LOGIN_RESULT_EXPIRED)
-        }
-        if (record.attemptsRemaining <= 0) {
-            challenges.deleteByLookup(lookup)
-            return@transaction authResult(LoginResult.LOGIN_RESULT_EXHAUSTED)
-        }
-        if (!hasher.verify(presented, record.secretHash, record.salt, record.kdfIterations)) {
-            val remaining = record.attemptsRemaining - 1
-            if (remaining <= 0) {
+        if (!reserveBudget(excludeLookup = lookup)) return authResult(LoginResult.LOGIN_RESULT_RATE_LIMITED)
+        val snapshot = challenges.getByLookup(lookup) ?: return authResult(LoginResult.LOGIN_RESULT_INVALID)
+        val valid = if (snapshot.attemptsRemaining <= 0 || clock() >= snapshot.expiryMillis) false else
+            hashSlots.withPermit { withContext(Dispatchers.Default) {
+                hasher.verify(presented, snapshot.secretHash, snapshot.salt, snapshot.kdfIterations)
+            } }
+        return challenges.database.transaction("social.login.credentials") {
+            val record = challenges.getByLookup(lookup) ?: return@transaction authResult(LoginResult.LOGIN_RESULT_INVALID)
+            if (record.expiryMillis != 0L && clock() >= record.expiryMillis) {
                 challenges.deleteByLookup(lookup)
-                return@transaction authResult(LoginResult.LOGIN_RESULT_EXHAUSTED)
+                return@transaction authResult(LoginResult.LOGIN_RESULT_EXPIRED)
             }
-            challenges.put(record.copy { attemptsRemaining = remaining })
-            return@transaction authResult(LoginResult.LOGIN_RESULT_INVALID)
+            if (!record.secretHash.contentEquals(snapshot.secretHash) || !record.salt.contentEquals(snapshot.salt) ||
+                record.kdfIterations != snapshot.kdfIterations || record.expiryMillis != snapshot.expiryMillis)
+                return@transaction authResult(LoginResult.LOGIN_RESULT_INVALID)
+            if (record.attemptsRemaining <= 0) return@transaction authResult(LoginResult.LOGIN_RESULT_EXHAUSTED)
+            if (!valid) {
+                val remaining = record.attemptsRemaining - 1
+                challenges.put(record.copy(attemptsRemaining = remaining))
+                return@transaction authResult(if (remaining <= 0) LoginResult.LOGIN_RESULT_EXHAUSTED else LoginResult.LOGIN_RESULT_INVALID)
+            }
+            challenges.deleteByLookup(lookup)
+            recoverOrIssueTicket(provider, subject)
         }
-        challenges.deleteByLookup(lookup)
-        recoverOrIssueTicket(provider, subject)
+    }
+
+    /** Database-backed global cost budget and per-subject delivery cooldown, shared by replicas. */
+    private suspend fun reserveBudget(provider: Int? = null, subject: ByteArray? = null, excludeLookup: ByteArray? = null): Boolean {
+        challenges.pruneExpired(clock(), excludeLookup)
+        return challenges.database.transaction("social.login.credentials") {
+            val now = clock()
+            val globalKey = byteArrayOf(3, 0)
+            val global = challenges.getByLookup(globalKey)
+            val remaining = if (global == null || global.expiryMillis <= now) requestsPerMinute else global.attemptsRemaining
+            if (remaining <= 0) return@transaction false
+            val subjectKey = if (provider == null || subject == null) null else byteArrayOf(3, 1) + sha256(credentialKey(provider, subject))
+            if (subjectKey != null && challenges.getByLookup(subjectKey)?.expiryMillis?.let { it > now } == true)
+                return@transaction false
+            challenges.put(ChallengeRecord(lookupKey = globalKey, expiryMillis = if (global != null && global.expiryMillis > now)
+                global.expiryMillis else now + 60_000, attemptsRemaining = remaining - 1))
+            if (subjectKey != null) challenges.put(ChallengeRecord(lookupKey = subjectKey, expiryMillis = now + startCooldownMillis))
+            true
+        }
+
     }
 
     private fun authResult(result: LoginResult) = AuthenticateResponse { this.result = result }

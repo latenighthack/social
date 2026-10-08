@@ -14,7 +14,10 @@ class AuthenticationConcurrencyRegressionTest {
         var reads = 0
         val firstRead = CompletableDeferred<Unit>()
         val releaseRead = CompletableDeferred<Unit>()
-        val delegate = object : LifecycleStoreDelegate by base, ScopedStoreDelegate {
+        val delegate = object : LifecycleStoreDelegate by base, ScopedStoreDelegate, IndexedQueryDelegate {
+            override suspend fun query(tableName: String, query: IndexedQuery, identity: String, version: Int) = base.query(tableName, query, identity, version)
+            override suspend fun count(tableName: String, query: IndexedQuery) = base.count(tableName, query)
+            override suspend fun deleteBatch(tableName: String, query: IndexedQuery, identity: String, version: Int) = base.deleteBatch(tableName, query, identity, version)
             override suspend fun <T> transaction(stores: Set<String>, mode: TransactionMode, block: suspend () -> T): T = base.transaction(stores, mode, block)
             override suspend fun <T> transaction(block: suspend () -> T): T = base.transaction(block)
             override suspend fun <T> transaction(lockKey: String, block: suspend () -> T): T = base.transaction(lockKey, block)

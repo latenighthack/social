@@ -45,7 +45,9 @@ class RemoteContentExtensionFactory : ServerExtensionFactory {
         val publicBaseUrl = System.getenv(ENV_PUBLIC_URL).orEmpty()
         val storagePath = System.getenv(ENV_PATH)?.takeIf { it.isNotBlank() } ?: DEFAULT_PATH
         return RemoteContentExtension(
-            store = FileContentStore(File(storagePath)),
+            store = FileContentStore(File(storagePath),
+                maxStoredBytes = System.getenv("REMOTE_CONTENT_MAX_STORED_BYTES")?.toLong() ?: 2L * 1024 * 1024 * 1024,
+                maxContentCount = System.getenv("REMOTE_CONTENT_MAX_CONTENT_COUNT")?.toInt() ?: 10_000),
             urls = ContentUrls(publicBaseUrl),
         )
     }

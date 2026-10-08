@@ -16,12 +16,15 @@ class RemoteContentServiceImpl(
     private val contentStore: ContentStore,
     private val urls: ContentUrls,
 ) : RemoteContentServer {
+    private val reservations = ReservationBudget()
     private val random = SecureRandom()
 
     override suspend fun createContent(
         context: GrpcRequestContext,
         request: CreateContentRequest,
     ): CreateContentResponse {
+        require(request.mimeType.length <= 128 && request.mimeType.none { it.code < 32 }) { "invalid MIME type" }
+        check(reservations.reserve()) { "content reservation budget exhausted; retry later" }
         val id = ByteArray(CONTENT_ID_BYTES).also(random::nextBytes)
         val token = ByteArray(32).also(random::nextBytes)
         contentStore.create(id, request.mimeType.takeIf { it.isNotBlank() }, token)
@@ -35,5 +38,16 @@ class RemoteContentServiceImpl(
 
     private companion object {
         const val CONTENT_ID_BYTES = 16
+    }
+}
+
+/** Bounded service-instance admission, in addition to the host's network and disk quotas. */
+internal class ReservationBudget(private val capacity: Int = 120, private val now: () -> Long = System::currentTimeMillis) {
+    private var start = now()
+    private var remaining = capacity
+    @Synchronized fun reserve(): Boolean {
+        if (now() - start >= 60_000) { start = now(); remaining = capacity }
+        if (remaining <= 0) return false
+        remaining--; return true
     }
 }
