@@ -88,4 +88,6 @@ message RoomRecord {
   int64 updated_at_millis = 5;
   // Account-bound authenticated ciphertext; shared_private_key is legacy read-only.
   bytes encrypted_shared_private_key = 6;
+  // Durable leave intent prevents historical inbox invitations from rejoining a room.
+  bool left = 7;
 }

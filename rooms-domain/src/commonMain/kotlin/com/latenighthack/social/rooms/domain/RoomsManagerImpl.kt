@@ -95,6 +95,7 @@ class RoomsManagerImpl(
 
     private val watchedInboxes = mutableSetOf<ProfileId>()
     private val processedInvites = mutableSetOf<LockerId>()
+    private var leftRooms: Set<RoomId> = emptySet()
 
     private var job: Job? = null
     private var lockers: LockersClient? = null
@@ -322,13 +323,14 @@ class RoomsManagerImpl(
         // it locally and from the synced account-room list (the latter signed by the account key).
         membershipClient(lockers).deleteLocker(roomId, LockerId(me.rawValue, RoomsKeyspaces.MEMBERSHIP))
         memberProfileClient(lockers).deleteLocker(roomId, LockerId(me.rawValue, RoomsKeyspaces.MEMBER_PROFILES))
+        accountRoom()?.let {
+            writeAccountRecord(lockers, record.copy(left = true, sharedPrivateKey = ByteArray(0)))
+        }
         stateMutex.withLock {
+            leftRooms = leftRooms + roomId
             records = records - roomId
             keyPairs = keyPairs - roomId
             _rooms.value = sortedRoomIds()
-        }
-        accountRoom()?.let { accountRoom ->
-            accountRoomsClient(lockers).deleteLocker(accountRoom, LockerId(roomId.rawValue, RoomsKeyspaces.ACCOUNT_ROOMS))
         }
     }
 
@@ -421,7 +423,7 @@ class RoomsManagerImpl(
             RoomKind.ROOM_KIND_RENDEZVOUS -> {
                 val secretWithInviter = myProfiles.deriveSharedSecret(profileId, invite.inviterProfileId) ?: return
                 val roomId = rendezvousRoomId(secretWithInviter)
-                if (records.containsKey(roomId)) return
+                if (roomId in leftRooms || records.containsKey(roomId)) return
                 val lockKey = rendezvousLockKey(secretWithInviter) ?: return
                 adopt(lockers, RoomRecord(
                     roomId = roomId.rawValue,
@@ -443,7 +445,7 @@ class RoomsManagerImpl(
                 val groupKey = Secp256r1KeyPair.fromPrivateKey(invite.groupPrivateKey) ?: return
                 if (!RoomKeying.publicKeyed(groupKey.publicKey.encode()).rawValue.contentEquals(invite.roomId)) return
                 val roomId = RoomId(rawValue = invite.roomId)
-                if (records.containsKey(roomId)) return
+                if (roomId in leftRooms || records.containsKey(roomId)) return
                 adopt(lockers, RoomRecord(
                     roomId = invite.roomId,
                     kind = RoomKind.ROOM_KIND_GROUP,
@@ -464,6 +466,16 @@ class RoomsManagerImpl(
         // no ACK wait: offline, the cached room list must still load (reconnect reconciles the sub)
         client.subscribeToRoom(accountRoom, waitForSubscription = false)
         for ((_, record) in client.getAllLockers(accountRoom)) {
+            val id = RoomId(rawValue = record.roomId)
+            if (record.left) {
+                stateMutex.withLock {
+                    leftRooms = leftRooms + id
+                    records = records - id
+                    keyPairs = keyPairs - id
+                    _rooms.value = sortedRoomIds()
+                }
+                continue
+            }
             val raw = if (record.encryptedSharedPrivateKey.isNotEmpty()) {
                 account.unprotectSecret("room/${record.roomId.toList()}", record.encryptedSharedPrivateKey)
             } else record.sharedPrivateKey
@@ -481,6 +493,7 @@ class RoomsManagerImpl(
     private suspend fun adopt(lockers: LockersClient, record: RoomRecord) {
         // Stamp the join/create time so a newly adopted room sorts to the front of the list.
         val stamped = record.copy(updatedAtMillis = Clock.System.now().toEpochMilliseconds())
+        stateMutex.withLock { leftRooms = leftRooms - RoomId(rawValue = stamped.roomId) }
         remember(lockers, stamped)
         writeAccountRecord(lockers, stamped)
     }
@@ -488,7 +501,8 @@ class RoomsManagerImpl(
     /** Record the room in the synced account-room list so a fresh restore recovers it. */
     private suspend fun writeAccountRecord(lockers: LockersClient, stamped: RoomRecord) {
         val accountRoom = accountRoom() ?: error("account is not ready to persist room membership")
-        val encrypted = account.protectSecret("room/${stamped.roomId.toList()}", stamped.sharedPrivateKey)
+        val encrypted = if (stamped.left) ByteArray(0)
+            else account.protectSecret("room/${stamped.roomId.toList()}", stamped.sharedPrivateKey)
         val protected = stamped.copy(sharedPrivateKey = ByteArray(0), encryptedSharedPrivateKey = encrypted)
         accountRoomsClient(lockers).updateLocker(
             accountRoom, LockerId(stamped.roomId, RoomsKeyspaces.ACCOUNT_ROOMS),

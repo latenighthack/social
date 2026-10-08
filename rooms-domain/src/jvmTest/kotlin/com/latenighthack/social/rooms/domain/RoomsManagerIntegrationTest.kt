@@ -118,6 +118,33 @@ class RoomsManagerIntegrationTest {
         ): Unit = throw RpcResponseException(path = "test", verb = "POST", code = Codes.UNAVAILABLE, errorMessage = "offline")
     }
 
+    @Test(timeout = 30000)
+    fun `leaving an invited room must survive reconstructing managers`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val inviter = newParty(server.rpcClient)
+            val inviteeStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
+            val invitee = newParty(server.rpcClient, inviteeStore)
+            var restarted: Party? = null
+            try {
+                inviter.myProfiles.createProfile("inviter")
+                val recipient = invitee.myProfiles.createProfile("invitee")
+                val room = inviter.rooms.createGroup("review")
+                inviter.rooms.inviteToRoom(room, recipient)
+                kotlinx.coroutines.withTimeout(5000) { invitee.rooms.watchRooms().first { room in it } }
+                // Ensure the original processing run has finished its membership writes.
+                kotlinx.coroutines.withTimeout(5000) { inviter.rooms.watchMembers(room).first { recipient in it } }
+                delay(100)
+                invitee.rooms.leave(room)
+                invitee.close()
+                restarted = newParty(server.rpcClient, inviteeStore)
+                restarted.myProfiles.isLoaded.first { it }
+                val rejoined = kotlinx.coroutines.withTimeoutOrNull(2000) { restarted.rooms.watchRooms().first { room in it } }
+                assertNull(rejoined, "the still-present inbox invite silently rejoined a room after leave")
+            } finally { restarted?.close(); invitee.close(); inviter.close() }
+            }
+        }
+
     @Test(timeout = 60_000)
     fun `an invite code grants group access and a revoked code cannot`() =
         runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
