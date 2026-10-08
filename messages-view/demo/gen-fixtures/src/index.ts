@@ -75,9 +75,18 @@ const span = (base: string, sub: string, rule: Rule): TextInline => {
 
 // ---- fixtures -------------------------------------------------------------
 
+const UNICODE = "😀 café é secret";
+const UNICODE_TEXT = text(UNICODE, Text_Style.DEFAULT, [
+  span(UNICODE, "café", { case: "bold", value: {} }),
+  span(UNICODE, "é", { case: "italic", value: {} }),
+  span(UNICODE, "secret", { case: "redaction", value: {} }),
+]);
+
 const RICH = "This is bold, italic, struck, a link, @mention and hidden.";
 
 const fixtures: { name: string; incoming: boolean; mode: Mode; component: ComponentInit }[] = [
+  { name: "unicode-rich", incoming: true, mode: "message", component: UNICODE_TEXT },
+  { name: "unicode-preview", incoming: true, mode: "preview", component: UNICODE_TEXT },
   { name: "incoming-text", incoming: true, mode: "message", component: bubble(text("Hey! Are we still on for tonight?")) },
   { name: "outgoing-text", incoming: false, mode: "message", component: bubble(text("Yeah — 7pm works for me.")) },
   {

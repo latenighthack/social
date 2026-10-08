@@ -279,15 +279,13 @@ class MessageLayoutBuilder(
     private fun createSpannableInlines(theme: MessageTheme, text: String, inlines: List<Inline>): Spannable {
         val visible = text.toCharArray()
         for (inline in inlines) if (inline.rule?.contents?.getRedaction() != null) {
-            val start = inline.offset.coerceIn(0, visible.size)
-            val end = (inline.offset.toLong() + inline.length.coerceAtLeast(0)).coerceIn(start.toLong(), visible.size.toLong()).toInt()
+            val (start, end) = com.latenighthack.social.messages.v1.inlineRange(text, inline.offset, inline.length)
             for (index in start until end) visible[index] = '█'
         }
         val builder = SpannableStringBuilder(visible.concatToString())
         val flags = Spannable.SPAN_INCLUSIVE_INCLUSIVE
         for (inline in inlines) {
-            val start = inline.offset.coerceIn(0, text.length)
-            val end = (inline.offset + inline.length).coerceIn(start, text.length)
+            val (start, end) = com.latenighthack.social.messages.v1.inlineRange(text, inline.offset, inline.length)
             if (end <= start) continue
             val rule = inline.rule?.contents ?: continue
             when {

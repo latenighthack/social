@@ -1,4 +1,5 @@
 import React from "react";
+import { inlineRange } from "./inlineRange.js";
 import type { CSSProperties, ReactNode } from "react";
 import {
   type Action,
@@ -247,22 +248,17 @@ function renderText(text: Text, ctx: Ctx, key: number): ReactNode {
 // Splits the string at every inline boundary and renders each run with the union of
 // rules covering it, so overlapping inlines (e.g. bold + italic) compose correctly.
 function renderInlines(source: string, inlines: Inline[], ctx: Ctx): ReactNode[] {
-  const chars = Array.from(source);
-  const boundaries = new Set<number>([0, chars.length]);
-  for (const inline of inlines) {
-    boundaries.add(clampIndex(inline.offset, chars.length));
-    boundaries.add(clampIndex(inline.offset + inline.length, chars.length));
-  }
+  const ranges = inlines.map((inline) => ({ inline, range: inlineRange(source, inline.offset, inline.length) }));
+  const boundaries = new Set<number>([0, source.length]);
+  for (const { range: [start, end] } of ranges) { boundaries.add(start); boundaries.add(end); }
   const cuts = Array.from(boundaries).sort((a, b) => a - b);
   const runs: ReactNode[] = [];
   for (let i = 0; i < cuts.length - 1; i++) {
     const start = cuts[i];
     const end = cuts[i + 1];
     if (end <= start) continue;
-    const active = inlines.filter(
-      (inline) => inline.offset <= start && inline.offset + inline.length >= end,
-    );
-    runs.push(renderRun(chars.slice(start, end).join(""), active, ctx, i));
+    const active = ranges.filter(({ range }) => range[0] <= start && range[1] >= end).map(({ inline }) => inline);
+    runs.push(renderRun(source.slice(start, end), active, ctx, i));
   }
   return runs;
 }

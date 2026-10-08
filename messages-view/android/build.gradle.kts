@@ -35,3 +35,5 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
 }
+
+tasks.withType<Test>().configureEach { systemProperty("social.fixtureDirectory", rootProject.file("messages-view/demo/bundles").absolutePath) }

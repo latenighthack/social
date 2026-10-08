@@ -57,9 +57,8 @@ public final class MessagePreviewView: UIView {
         var units = Array(text.text.utf16)
         for inline in text.inlines {
             guard case .redaction? = inline.rule.contents else { continue }
-            let start = max(0, min(Int(inline.offset), units.count))
-            let end = max(start, min(Int(inline.offset) + max(0, Int(inline.length)), units.count))
-            for index in start..<end { units[index] = 0x2588 }
+            let range = MessageInlineRanges.range(text.text, offset: inline.offset, length: inline.length)
+            for index in range.location..<(range.location + range.length) { units[index] = 0x2588 }
         }
         return String(decoding: units, as: UTF16.self)
     }

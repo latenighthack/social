@@ -141,6 +141,8 @@ message ImageReference {
   string alternateText = 5;
 }
 
+// Ranges use UTF-16 code units on every platform (not Unicode code points or UTF-8 bytes).
+// Clamp out-of-range endpoints and expand endpoints splitting a surrogate pair to cover the pair.
 message Inline {
   int32 offset = 1;
   int32 length = 2;

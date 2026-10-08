@@ -357,10 +357,8 @@ struct MessageRenderer {
         )
         let full = text.text as NSString
         for inline in text.inlines {
-            let start = max(0, min(Int(inline.offset), full.length))
-            let length = max(0, min(Int(inline.length), full.length - start))
-            if length == 0 { continue }
-            let range = NSRange(location: start, length: length)
+            let range = MessageInlineRanges.range(text.text, offset: inline.offset, length: inline.length)
+            if range.length == 0 { continue }
             guard let rule = inline.rule.contents else { continue }
             switch rule {
             case .bold:
