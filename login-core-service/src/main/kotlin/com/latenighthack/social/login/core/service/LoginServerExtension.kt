@@ -28,7 +28,7 @@ class LoginServerExtension(
     smsSender: SmsSender?,
     linkBaseUrl: String,
     nonces: NonceService = NonceService(),
-    requireNonce: Boolean = false,
+    requireNonce: Boolean = true,
 ) : ServerExtension {
     private val credentials = CredentialStore(database)
     private val challenges = ChallengeStore(database)

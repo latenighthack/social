@@ -8,13 +8,23 @@ import io.ktor.client.engine.cio.CIO
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
 
 class GoogleLoginProviderFactoryTest {
 
     @Test
+    fun `missing audiences cannot enable a verifier`() {
+        HttpClient(CIO).use { httpClient ->
+            assertFailsWith<IllegalArgumentException> {
+                GoogleLoginProviderFactory().create(LoginProviderContext(env = { null }, httpClient = httpClient))
+            }
+        }
+    }
+
+    @Test
     fun `contributes a google social verifier`() {
         HttpClient(CIO).use { httpClient ->
-            val context = LoginProviderContext(env = { null }, httpClient = httpClient)
+            val context = LoginProviderContext(env = { key -> if (key == "LOGIN_GOOGLE_AUDIENCES") "test.client" else null }, httpClient = httpClient)
             val handler = GoogleLoginProviderFactory().create(context)
             assertTrue(handler is LoginHandler.SocialVerifier)
             val googleProvider: Provider = Provider.PROVIDER_GOOGLE

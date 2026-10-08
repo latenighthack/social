@@ -24,6 +24,8 @@ class OidcTokenVerifier(
     jwksUrl: String,
     private val audiences: Set<String>,
 ) : SocialTokenVerifier {
+    init { require(audiences.isNotEmpty()) { "OIDC audiences must be configured" } }
+
     private val processor = DefaultJWTProcessor<SecurityContext>().apply {
         val source: JWKSource<SecurityContext> = JWKSourceBuilder.create<SecurityContext>(URL(jwksUrl)).build()
         jwsKeySelector = JWSVerificationKeySelector(JWSAlgorithm.RS256, source)
@@ -37,7 +39,7 @@ class OidcTokenVerifier(
         }
         if (claims.issuer !in issuers) return@withContext null
         val audience = claims.audience ?: emptyList()
-        if (audiences.isNotEmpty() && audience.none { it in audiences }) return@withContext null
+        if (audience.none { it in audiences }) return@withContext null
         val subject = claims.subject ?: return@withContext null
         VerifiedClaims(
             subject = subject,

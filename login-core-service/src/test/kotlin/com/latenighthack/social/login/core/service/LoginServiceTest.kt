@@ -73,6 +73,7 @@ private suspend fun Application.attachLogin(
         emailSender = email,
         smsSender = sms,
         linkBaseUrl = "https://app.test/login",
+        requireNonce = false,
         clock = clock,
         maxAttempts = maxAttempts,
     )
@@ -258,6 +259,7 @@ class LoginServiceTest {
             emailSender = null,
             smsSender = null,
             linkBaseUrl = "https://app.test/login",
+        requireNonce = false,
         )
         val rpc = LocalLoginServiceRpc(service)
 

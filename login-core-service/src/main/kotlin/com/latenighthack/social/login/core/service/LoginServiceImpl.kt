@@ -50,7 +50,7 @@ class LoginServiceImpl(
     private val nonces: NonceService = NonceService(),
     // When true, AuthenticateSocial rejects requests whose nonce is absent or fails the single-use
     // check. Off by default for rollout: legacy clients carry no nonce.
-    private val requireNonce: Boolean = false,
+    private val requireNonce: Boolean = true,
     private val clock: () -> Long = System::currentTimeMillis,
     private val random: SecureRandom = SecureRandom(),
     private val challengeTtlMillis: Long = 15 * 60 * 1000L,
