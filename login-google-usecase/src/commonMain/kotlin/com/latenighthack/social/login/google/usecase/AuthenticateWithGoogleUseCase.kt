@@ -19,14 +19,17 @@ class AuthenticateWithGoogleUseCase(
     private val account: AccountManager,
 ) {
     suspend fun authenticate(): SignInResult {
-        // Replay defense: bind a server-issued single-use nonce into the native request. Best-effort —
-        // enforcement (and thus failure) is server-side.
+        // Native authorization is admitted only after a successful single-use nonce request.
         val nonce = try {
-            loginClient.requestNonce().nonce.ifEmpty { null }
+            val response = loginClient.requestNonce()
+            if (response.result != com.latenighthack.social.login.v1.LoginResult.LOGIN_RESULT_OK || response.nonce.isBlank()) {
+                return SignInResult.Failed("Could not obtain a sign-in nonce")
+            }
+            response.nonce
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            null
+            return SignInResult.Failed(e.message ?: "Could not obtain a sign-in nonce")
         }
         val idToken = try {
             googleSignIn.signIn(nonce)
@@ -39,7 +42,7 @@ class AuthenticateWithGoogleUseCase(
             AuthenticateSocialRequest {
                 provider = Provider.PROVIDER_GOOGLE
                 this.idToken = idToken
-                nonce?.let { this.nonce = it }
+                this.nonce = nonce
             },
         )
         return response.toSignInResult(account)
