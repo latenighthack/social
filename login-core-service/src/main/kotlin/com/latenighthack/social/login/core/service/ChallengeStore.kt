@@ -11,7 +11,7 @@ import com.latenighthack.social.login.v1.toByteArray
  * the prior one; a bind ticket is keyed by a hash of the high-entropy ticket. Challenge secrets are
  * stored only as PBKDF2 salted hashes (see [Pbkdf2Hasher]). Backed by ktstore, in-memory by default.
  */
-class ChallengeStore(database: Database) : Store<ChallengeRecord>(database, ChallengeStoreDefinitionV1) {
+class ChallengeStore(internal val database: Database) : Store<ChallengeRecord>(database, ChallengeStoreDefinitionV1) {
     private val lookupKey = ChallengeStoreDefinitionV1.lookupKey
 
     suspend fun getByLookup(lookup: ByteArray): ChallengeRecord? = get(lookupKey.eq(lookup))

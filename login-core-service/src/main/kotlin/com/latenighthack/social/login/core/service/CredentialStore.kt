@@ -11,7 +11,7 @@ import com.latenighthack.social.login.v1.toByteArray
  * (see [CustodyCrypto]), never plaintext. Backed by ktstore so a persistent [Database] is a
  * drop-in; the default deployment supplies an in-memory database (MVP, does not survive a restart).
  */
-class CredentialStore(database: Database) : Store<CredentialRecord>(database, CredentialStoreDefinitionV1) {
+class CredentialStore(internal val database: Database) : Store<CredentialRecord>(database, CredentialStoreDefinitionV1) {
     private val lookupKey = CredentialStoreDefinitionV1.lookupKey
 
     suspend fun getByLookup(lookup: ByteArray): CredentialRecord? = get(lookupKey.eq(lookup))

@@ -60,6 +60,10 @@ class LoginServiceImpl(
     private val tokenBytes: Int = 32,
 ) : LoginServer {
 
+    init {
+        require(credentials.database === challenges.database) { "login stores must share one database" }
+    }
+
     override suspend fun requestNonce(
         context: GrpcRequestContext,
         request: RequestNonceRequest,
@@ -137,20 +141,21 @@ class LoginServiceImpl(
         return verifyChallenge(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(request.phoneNumber.trim()), request.code)
     }
 
-    override suspend fun bind(context: GrpcRequestContext, request: BindRequest): BindResponse {
+    override suspend fun bind(context: GrpcRequestContext, request: BindRequest): BindResponse =
+        challenges.database.transaction("social.login.credentials") {
         val ticketLookup = ticketKey(request.bindTicket)
         val ticket = challenges.getByLookup(ticketLookup)
-            ?: return BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+            ?: return@transaction BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
         // Single-use: a ticket is spent whether or not the bind succeeds.
         challenges.deleteByLookup(ticketLookup)
         if (ticket.expiryMillis != 0L && clock() >= ticket.expiryMillis) {
-            return BindResponse { result = LoginResult.LOGIN_RESULT_EXPIRED }
+            return@transaction BindResponse { result = LoginResult.LOGIN_RESULT_EXPIRED }
         }
 
         val credentialLookup = credentialKey(ticket.provider, ticket.subject)
         val existing = credentials.getByLookup(credentialLookup)
         if (existing != null && !existing.accountId.contentEquals(request.accountId)) {
-            return BindResponse { result = LoginResult.LOGIN_RESULT_ALREADY_BOUND }
+            return@transaction BindResponse { result = LoginResult.LOGIN_RESULT_ALREADY_BOUND }
         }
 
         val sealed = custody.encrypt(request.accountPrivateKey, CustodyCrypto.Binding(ticket.provider, ticket.subject))
@@ -169,7 +174,7 @@ class LoginServiceImpl(
                 updatedAtMillis = now
             },
         )
-        return BindResponse { result = LoginResult.LOGIN_RESULT_OK }
+        BindResponse { result = LoginResult.LOGIN_RESULT_OK }
     }
 
     /** After a method is proven, recover its bound key or, if none, issue a single-use bind ticket. */
@@ -177,7 +182,7 @@ class LoginServiceImpl(
         provider: Int,
         subject: ByteArray,
         claims: VerifiedClaims? = null,
-    ): AuthenticateResponse {
+    ): AuthenticateResponse = challenges.database.transaction("social.login.credentials") {
         val credential = credentials.getByLookup(credentialKey(provider, subject))
         if (credential != null) {
             val binding = CustodyCrypto.Binding(provider, subject)
@@ -197,7 +202,7 @@ class LoginServiceImpl(
                     },
                 )
             }
-            return AuthenticateResponse {
+            return@transaction AuthenticateResponse {
                 result = LoginResult.LOGIN_RESULT_OK
                 identity {
                     accountId = credential.accountId
@@ -216,14 +221,15 @@ class LoginServiceImpl(
                 attemptsRemaining = 1
             },
         )
-        return AuthenticateResponse {
+        AuthenticateResponse {
             result = LoginResult.LOGIN_RESULT_NEEDS_BINDING
             bindTicket = ticket
             applyPrefill(claims)
         }
     }
 
-    private suspend fun storeChallenge(provider: Int, subject: ByteArray, secret: String) {
+    private suspend fun storeChallenge(provider: Int, subject: ByteArray, secret: String) =
+        challenges.database.transaction("social.login.credentials") {
         val hashed = hasher.hash(secret)
         challenges.put(
             ChallengeRecord {
@@ -239,28 +245,29 @@ class LoginServiceImpl(
         )
     }
 
-    private suspend fun verifyChallenge(provider: Int, subject: ByteArray, presented: String): AuthenticateResponse {
+    private suspend fun verifyChallenge(provider: Int, subject: ByteArray, presented: String): AuthenticateResponse =
+        challenges.database.transaction("social.login.credentials") {
         val lookup = challengeKey(provider, subject)
-        val record = challenges.getByLookup(lookup) ?: return authResult(LoginResult.LOGIN_RESULT_INVALID)
+        val record = challenges.getByLookup(lookup) ?: return@transaction authResult(LoginResult.LOGIN_RESULT_INVALID)
         if (record.expiryMillis != 0L && clock() >= record.expiryMillis) {
             challenges.deleteByLookup(lookup)
-            return authResult(LoginResult.LOGIN_RESULT_EXPIRED)
+            return@transaction authResult(LoginResult.LOGIN_RESULT_EXPIRED)
         }
         if (record.attemptsRemaining <= 0) {
             challenges.deleteByLookup(lookup)
-            return authResult(LoginResult.LOGIN_RESULT_EXHAUSTED)
+            return@transaction authResult(LoginResult.LOGIN_RESULT_EXHAUSTED)
         }
         if (!hasher.verify(presented, record.secretHash, record.salt, record.kdfIterations)) {
             val remaining = record.attemptsRemaining - 1
             if (remaining <= 0) {
                 challenges.deleteByLookup(lookup)
-                return authResult(LoginResult.LOGIN_RESULT_EXHAUSTED)
+                return@transaction authResult(LoginResult.LOGIN_RESULT_EXHAUSTED)
             }
             challenges.put(record.copy { attemptsRemaining = remaining })
-            return authResult(LoginResult.LOGIN_RESULT_INVALID)
+            return@transaction authResult(LoginResult.LOGIN_RESULT_INVALID)
         }
         challenges.deleteByLookup(lookup)
-        return recoverOrIssueTicket(provider, subject)
+        recoverOrIssueTicket(provider, subject)
     }
 
     private fun authResult(result: LoginResult) = AuthenticateResponse { this.result = result }
