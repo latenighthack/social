@@ -52,8 +52,14 @@ class RemoteContentIntegrationTest {
                 assertEquals(HttpStatusCode.NotFound, http.get(base + created.downloadUrl).status)
 
                 val bytes = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8, 9)
+                assertTrue(created.uploadUrl != created.downloadUrl)
+                assertEquals(HttpStatusCode.Forbidden, http.put(base + created.downloadUrl) { setBody(bytes) }.status)
+                assertEquals(HttpStatusCode.Forbidden, http.put(base + created.uploadUrl.replaceAfter("upload_token=", ContentUrls.encodeId(ByteArray(32)))) { setBody(bytes) }.status)
                 val put = http.put(base + created.uploadUrl) { setBody(bytes) }
                 assertEquals(HttpStatusCode.OK, put.status)
+                // Retrying the same authorized bytes is idempotent; replacing published bytes is forbidden.
+                assertEquals(HttpStatusCode.OK, http.put(base + created.uploadUrl) { setBody(bytes) }.status)
+                assertEquals(HttpStatusCode.Conflict, http.put(base + created.uploadUrl) { setBody(byteArrayOf(99)) }.status)
 
                 val download = http.get(base + created.downloadUrl)
                 assertEquals(HttpStatusCode.OK, download.status)

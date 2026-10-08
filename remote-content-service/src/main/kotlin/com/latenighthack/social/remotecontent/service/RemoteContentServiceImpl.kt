@@ -23,11 +23,12 @@ class RemoteContentServiceImpl(
         request: CreateContentRequest,
     ): CreateContentResponse {
         val id = ByteArray(CONTENT_ID_BYTES).also(random::nextBytes)
-        contentStore.create(id, request.mimeType.takeIf { it.isNotBlank() })
+        val token = ByteArray(32).also(random::nextBytes)
+        contentStore.create(id, request.mimeType.takeIf { it.isNotBlank() }, token)
         val url = urls.forContent(id)
         return CreateContentResponse {
             contentId = ContentId { rawValue = id }
-            uploadUrl = url
+            uploadUrl = urls.forUpload(id, token)
             downloadUrl = url
         }
     }

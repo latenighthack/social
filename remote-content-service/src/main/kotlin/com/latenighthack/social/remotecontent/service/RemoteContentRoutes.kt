@@ -23,7 +23,17 @@ fun Routing.remoteContent(store: ContentStore) {
                 call.respond(HttpStatusCode.BadRequest)
                 return@put
             }
-            store.put(id, call.receive<ByteArray>())
+            val token = call.request.queryParameters["upload_token"]?.let(ContentUrls::decodeId)
+            if (token == null || token.size != 32) {
+                call.respond(HttpStatusCode.Forbidden)
+                return@put
+            }
+            try {
+                store.put(id, call.receive<ByteArray>(), token)
+            } catch (error: UploadRejected) {
+                call.respond(if (error.conflict) HttpStatusCode.Conflict else HttpStatusCode.Forbidden)
+                return@put
+            }
             call.respond(HttpStatusCode.OK)
         }
         get("/{id}") {

@@ -3,6 +3,11 @@ package com.latenighthack.social.remotecontent.service
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.security.MessageDigest
+import java.nio.channels.FileChannel
+import java.nio.file.StandardOpenOption
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Filesystem-backed [ContentStore]. Each content id maps to a bytes file plus a
@@ -11,10 +16,12 @@ import java.io.File
  * variable at startup.
  */
 class FileContentStore(private val baseDir: File) : ContentStore {
-    override suspend fun create(id: ByteArray, mimeType: String?) {
+    private val writeMutex = Mutex()
+    override suspend fun create(id: ByteArray, mimeType: String?, uploadToken: ByteArray) {
         withContext(Dispatchers.IO) {
             val file = fileFor(id)
             file.parentFile.mkdirs()
+            File(file.path + ".upload").writeBytes(hash(uploadToken))
             val mimeFile = File(file.path + MIME_SUFFIX)
             if (mimeType != null) {
                 mimeFile.writeText(mimeType)
@@ -24,13 +31,23 @@ class FileContentStore(private val baseDir: File) : ContentStore {
         }
     }
 
-    override suspend fun put(id: ByteArray, bytes: ByteArray) {
+    override suspend fun put(id: ByteArray, bytes: ByteArray, uploadToken: ByteArray) = writeMutex.withLock {
         withContext(Dispatchers.IO) {
             val file = fileFor(id)
-            file.parentFile.mkdirs()
-            file.writeBytes(bytes)
+            val capability = File(file.path + ".upload")
+            if (!capability.exists()) throw UploadRejected()
+            FileChannel.open(File(file.path + ".lock").toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { channel ->
+                channel.lock().use {
+                    if (!MessageDigest.isEqual(capability.readBytes(), hash(uploadToken))) throw UploadRejected()
+                    if (file.exists()) {
+                        if (!file.readBytes().contentEquals(bytes)) throw UploadRejected(conflict = true)
+                    } else file.writeBytes(bytes)
+                }
+            }
         }
     }
+
+    private fun hash(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes)
 
     override suspend fun get(id: ByteArray): StoredContent? {
         return withContext(Dispatchers.IO) {
