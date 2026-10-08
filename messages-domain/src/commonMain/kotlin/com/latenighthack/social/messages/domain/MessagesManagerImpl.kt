@@ -215,7 +215,7 @@ class MessagesManagerImpl(
 
     private suspend fun tryIngest(roomId: RoomId, signed: SignedContent) {
         val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull() ?: return
-        if (!payload.roomId.contentEquals(roomId.rawValue)) return
+        if (!payload.roomId.contentEquals(roomId.rawValue) || payload.orderingCounter < 0 || payload.orderingCounter == Long.MAX_VALUE) return
         val senderId = ProfileId { rawValue = payload.senderProfileId }
 
         val isMember = mutex.withLock {
@@ -260,12 +260,14 @@ class MessagesManagerImpl(
                 Component { contents.text { this.text = text } }
             })
 
-        val prepared = components.map { component ->
+        val counters = list.reserveCounters(components.size)
+        val prepared = components.mapIndexed { index, component ->
             val messageId = MessageId(rawValue = Random.nextBytes(32))
             val payload = MessagePayload(
                 roomId = roomId.rawValue,
                 senderProfileId = senderId.rawValue,
                 sentAtMillis = Clock.System.now().toEpochMilliseconds(),
+                orderingCounter = counters[index],
                 component = component,
                 messageId = messageId.rawValue,
             )
@@ -387,6 +389,13 @@ class MessagesManagerImpl(
         private val seen = mutableSetOf<List<Byte>>()
         private val mutex = Mutex()
         private var loaded = false
+        private var lastCounter = 0L
+
+        suspend fun reserveCounters(count: Int): List<Long> = mutex.withLock {
+            loadLocked()
+            check(lastCounter <= Long.MAX_VALUE - count) { "message counter exhausted" }
+            List(count) { ++lastCounter }
+        }
 
         suspend fun ensureLoaded() = mutex.withLock { loadLocked() }
 
@@ -399,7 +408,8 @@ class MessagesManagerImpl(
                     ?: return@mapNotNull null
                 seen.add(messageId.rawValue.toList())
                 MessageEntry(payload, local.status)
-            }.sortedBy { it.payload.sentAtMillis }
+            }.sortedWith(messageOrder)
+            lastCounter = entries.value.maxOfOrNull { it.payload.orderingCounter } ?: 0L
             loaded = true
         }
 
@@ -455,9 +465,10 @@ class MessagesManagerImpl(
         // id set current. Callers hold [mutex].
         private fun putLocked(payload: MessagePayload, status: MessageDeliveryStatus) {
             val idList = payload.messageId.toList()
+            lastCounter = maxOf(lastCounter, payload.orderingCounter)
             seen.add(idList)
             val without = entries.value.filterNot { it.payload.messageId.toList() == idList }
-            entries.value = (without + MessageEntry(payload, status)).sortedBy { it.payload.sentAtMillis }
+            entries.value = (without + MessageEntry(payload, status)).sortedWith(messageOrder)
         }
 
         private fun local(messageId: MessageId, signed: SignedContent, status: MessageDeliveryStatus): LocalMessage {

@@ -57,6 +57,9 @@ class TypingManagerImpl(
 ) : TypingManager, DomainLifecycle {
 
     // Rooms → (profile id → started-at millis) for every member with an outstanding typing signal.
+    private val timeOrigin = kotlin.time.TimeSource.Monotonic.markNow()
+    private fun elapsedMillis() = timeOrigin.elapsedNow().inWholeMilliseconds
+
     private val _typing = MutableStateFlow<Map<RoomId, Map<ProfileId, Long>>>(emptyMap())
 
     // Guards _typing (mutated by the notification collector) and lastStartedSentAt (read-modify-write
@@ -96,6 +99,17 @@ class TypingManagerImpl(
         // children of this coroutine so stop() tears them down; supervisorScope isolates failures.
         coroutineScope {
             launch { typingClient(lockers).notifications.collect { onNotification(it) } }
+            launch {
+                while (true) {
+                    delay(tickMillis)
+                    val now = elapsedMillis()
+                    mutex.withLock {
+                        _typing.value = _typing.value.mapValues { (_, signals) ->
+                            signals.filterValues { now - it < timeoutMillis }
+                        }.filterValues { it.isNotEmpty() }
+                    }
+                }
+            }
 
             rooms.watchRooms().collect { roomIds ->
                 for (roomId in roomIds) {
@@ -115,7 +129,7 @@ class TypingManagerImpl(
         mutex.withLock {
             val current = _typing.value[notification.roomId].orEmpty()
             val updated = if (signal.startedTypingMillis > 0L) {
-                current + (profileId to signal.startedTypingMillis)
+                current + (profileId to elapsedMillis())
             } else {
                 current - profileId
             }
@@ -126,14 +140,14 @@ class TypingManagerImpl(
     override suspend fun setTyping(roomId: RoomId, isTyping: Boolean) {
         val lockers = lockers ?: error("setTyping requires start(lockers) first")
         val me = rooms.localProfile(roomId) ?: return
-        val now = Clock.System.now().toEpochMilliseconds()
+        val now = elapsedMillis()
 
         val signal = mutex.withLock {
             if (isTyping) {
                 val last = lastStartedSentAt[roomId]
                 if (last != null && now - last < debounceMillis) return@withLock null
                 lastStartedSentAt[roomId] = now
-                TypingPayload { startedTypingMillis = now }
+                TypingPayload { startedTypingMillis = 1 }
             } else {
                 if (lastStartedSentAt.remove(roomId) == null) return@withLock null
                 TypingPayload { startedTypingMillis = 0L }
@@ -152,18 +166,10 @@ class TypingManagerImpl(
     }
 
     override fun watchTyping(roomId: RoomId): Flow<Set<ProfileId>> =
-        combine(_typing.map { it[roomId].orEmpty() }, ticker(), rooms.watchMembers(roomId)) { entries, now, members ->
-            val fresh = entries.filterValues { now - it < timeoutMillis }.keys intersect members.toSet()
+        combine(_typing.map { it[roomId].orEmpty() }, rooms.watchMembers(roomId)) { entries, members ->
             val me = rooms.localProfile(roomId)
-            if (me != null) fresh - me else fresh
+            (entries.keys intersect members.toSet()) - setOfNotNull(me)
         }.distinctUntilChanged()
-
-    private fun ticker(): Flow<Long> = flow {
-        while (true) {
-            emit(Clock.System.now().toEpochMilliseconds())
-            delay(tickMillis)
-        }
-    }
 
     private fun typingClient(lockers: LockersClient): TypedLockerClient<TypingPayload> =
         lockers.typed(TypingKeyspaces.TYPING, TypingPayload::toByteArray, TypingPayload.Companion::fromByteArray)

@@ -48,7 +48,8 @@ class ReadReceiptsManagerImpl(
 
     override suspend fun markRead(roomId: RoomId) {
         val me = rooms.localProfile(roomId) ?: return
-        val latest = messages.watchMessageIds(roomId).first().lastOrNull() ?: return
+        val ordered = messages.watchMessageIds(roomId).first()
+        val latest = ordered.lastOrNull() ?: return
         val client = readReceiptClient(requireLockers())
         val lockerId = LockerId(me.rawValue, ReadReceiptsKeyspaces.READ_RECEIPTS)
         // Skip a redundant write when the pointer already sits at the latest message — markRead is
@@ -56,7 +57,17 @@ class ReadReceiptsManagerImpl(
         if (client.getLocker(roomId, lockerId)?.messageId?.contentEquals(latest.rawValue) == true) return
         val claim = ReadReceipt(messageId = latest.rawValue, roomId = roomId.rawValue, profileId = me.rawValue)
         val proof = myProfiles.sign(me, 4, claim.toByteArray()) ?: return
-        client.updateLocker(roomId, lockerId) { claim.copy(proof = proof) }
+        com.latenighthack.social.runtime.rebasedUpdate(
+            client.getLocker(roomId, lockerId) ?: ReadReceipt { },
+            prepare = { current ->
+                val verified = com.latenighthack.social.common.domain.verifyProfileClaim(me.rawValue, roomId.rawValue,
+                    current.profileId, current.roomId, current.proof, 4, current.copy(proof = null).toByteArray())
+                val index = ordered.indexOfFirst { it.rawValue.contentEquals(current.messageId) }
+                // A verified pointer unknown to this device may be ahead; preserve it until sync.
+                if (verified && (index < 0 || index >= ordered.lastIndex)) current else claim.copy(proof = proof)
+            },
+            commit = { transform -> client.updateLocker(roomId, lockerId, builder = transform) },
+        )
     }
 
     override fun watchReadReceipts(roomId: RoomId): Flow<Map<ProfileId, MessageId>> = flow {

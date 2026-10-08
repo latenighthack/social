@@ -34,6 +34,8 @@ message MessagePayload {
   int64 sent_at_millis = 3;
   Component component = 4;
   bytes message_id = 5;
+  // Signed Lamport counter; clocks are display metadata. Concurrent ties use message_id bytes.
+  int64 ordering_counter = 6;
 }
 
 // Device-local ktstore cache of an observed or composed message: received, sent, and not-yet-sent
