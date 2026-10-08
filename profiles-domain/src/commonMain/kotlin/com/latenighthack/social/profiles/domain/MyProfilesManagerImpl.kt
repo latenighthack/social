@@ -248,19 +248,18 @@ class MyProfilesManagerImpl(
         check(ownsKeys()) { "account is signed out" }
         val keyPair = keyPairs.value[profileId] ?: error("unknown profile")
 
-        // Apply the caller's builder to the current profile, then re-sign every disclosure over
-        // its payload so signatures always match the written content.
-        val built = (getProfile(profileId) ?: Profile { }).copy(builder)
-        val signed = mutableListOf<SignedContent>()
-        for (disclosure in built.disclosures) {
-            val payload = Profile.DisclosurePayload.fromByteArray(disclosure.content)
-            signed.add(Disclosures.sign(keyPair, profileId, payload))
-        }
-        val updatedProfile = built.copy { disclosures = signed }
-
-        val stored = profileClient(lockers)
-            .updateLocker(profileId.toRoomId(), profileId.toProfileLockerId()) { updatedProfile }
-            ?: updatedProfile
+        val client = profileClient(lockers)
+        val stored = com.latenighthack.social.runtime.rebasedUpdate(
+            client.getLocker(profileId.toRoomId(), profileId.toProfileLockerId()) ?: Profile { },
+            prepare = { current ->
+                val built = current.copy(builder)
+                val signed = built.disclosures.map {
+                    Disclosures.sign(keyPair, profileId, Profile.DisclosurePayload.fromByteArray(it.content))
+                }
+                built.copy { disclosures = signed }
+            },
+            commit = { transform -> client.updateLocker(profileId.toRoomId(), profileId.toProfileLockerId(), builder = transform) },
+        )
         _profiles.update { it + (profileId to stored) }
     }
 

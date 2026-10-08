@@ -83,13 +83,11 @@ class ContactsManagerImpl(
 
     override suspend fun unfriend(profileId: ProfileId) = clearField(
         profileId,
-        otherPresent = { it.block != null },
         keep = { current -> ContactRecord(friend = null, block = current.block) },
     )
 
     override suspend fun unblock(profileId: ProfileId) = clearField(
         profileId,
-        otherPresent = { it.friend != null },
         keep = { current -> ContactRecord(friend = current.friend, block = null) },
     )
 
@@ -98,7 +96,7 @@ class ContactsManagerImpl(
         account.lifecycle.flatMapLatest { state ->
             if (state !is AccountManager.Lifecycle.Ready) flowOf(emptyList())
             else contactsClient(requireLockers()).watchAll(state.privateRoom, ContactsKeyspaces.CONTACTS).map { records ->
-                records.map { (lockerId, record) ->
+                records.filterValues { it.friend != null || it.block != null }.map { (lockerId, record) ->
                     Contact(ProfileId { rawValue = lockerId.rawValue }, record.friend?.addedAtMillis, record.block?.blockedAtMillis)
                 }
             }
@@ -108,18 +106,12 @@ class ContactsManagerImpl(
     // (per [otherPresent]), otherwise deletes the locker so an empty record is never stored.
     private suspend fun clearField(
         profileId: ProfileId,
-        otherPresent: (ContactRecord) -> Boolean,
         keep: (ContactRecord) -> ContactRecord,
     ) {
         val client = contactsClient(requireLockers())
         val room = accountRoom()
         val id = lockerId(profileId)
-        val current = client.getLocker(room, id) ?: return
-        if (otherPresent(current)) {
-            client.updateLocker(room, id) { keep(it) }
-        } else {
-            client.deleteLocker(room, id)
-        }
+        client.updateLocker(room, id) { keep(it) }
     }
 
     private suspend fun accountRoom(): RoomId =

@@ -566,15 +566,17 @@ class RoomsManagerImpl(
         builder: RoomInfoBuilder.() -> Unit,
     ) {
         val client = infoClient(lockers)
-        // Apply the caller's builder to the current info, then re-sign every disclosure over its
-        // payload with the shared room key so signatures always match the written content.
-        val base = if (fresh) null else client.getLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER)
-        val built = (base ?: RoomInfo { }).copy(builder)
-        val signed = built.disclosures.map {
-            RoomInfoDisclosures.sign(roomKey, roomId, RoomInfo.DisclosurePayload.fromByteArray(it.content))
-        }
-        val updated = built.copy { disclosures = signed }
-        client.updateLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER) { updated }
+        com.latenighthack.social.runtime.rebasedUpdate(
+            (if (fresh) null else client.getLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER)) ?: RoomInfo { },
+            prepare = { current ->
+                val built = current.copy(builder)
+                val signed = built.disclosures.map {
+                    RoomInfoDisclosures.sign(roomKey, roomId, RoomInfo.DisclosurePayload.fromByteArray(it.content))
+                }
+                built.copy { disclosures = signed }
+            },
+            commit = { transform -> client.updateLocker(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER, builder = transform) },
+        )
     }
 
     private fun membershipChanges(profileId: ProfileId): List<LockerClient.Change> {
