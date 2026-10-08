@@ -39,7 +39,7 @@ message MessagePayload {
 }
 
 // Device-local ktstore cache of an observed or composed message: received, sent, and not-yet-sent
-// messages all live here (it is the durable message record, since the MESSAGING locker carries no
+// messages all live here (it is the durable message record, while each MESSAGING locker also retains its signed
 // body). `message` is the signed envelope; message_id is the store's primary key; status is the
 // local delivery state.
 message LocalMessage {
@@ -52,7 +52,7 @@ message LocalMessage {
 
 // Device-local durable outbox entry for a composed message awaiting delivery, stored duplicated
 // outside the room so it survives restarts and is retried by a single global loop. `message` is the
-// pre-signed envelope delivered as the MESSAGING locker's notification payload; attempts and
+// pre-signed envelope persisted in its message locker and also delivered as a notification; attempts and
 // next_attempt_millis drive the exponential backoff; created_at_millis orders the drain. Reused as
 // the dead-letter store's row once retries are exhausted.
 message PendingMessage {

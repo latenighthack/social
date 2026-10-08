@@ -1,151 +1,80 @@
-# Wiring the feature modules with kotlin-inject
+# Wiring and lifetime ownership
 
-Every client-side `-domain` and `-usecase` module ships a kotlin-inject **`@Provides` interface** —
-`AccountProviders`, `AccountUseCaseProviders`, `ProfilesProviders`, `ProfilesUseCaseProviders`,
-`RoomsProviders`, `RoomsUseCaseProviders`. The feature classes themselves stay annotation-free; all
-the bindings live in these interfaces. A consuming app builds one `@Component` that implements the
-interfaces it wants, and kotlin-inject resolves the manager graph, the use cases, and the key-source
-fallback chain by type.
+Use one configured ktstore `Database` for the connector, caches, drafts and durable queues.
+Compose `ConnectorStorage.definitions`, `ProfilesStorage.definitions`,
+`MessagesStorage.definitions`, `RemoteContentStorage.definitions` and host definitions
+before opening it. `ConnectorStorage.configuration(name, additionalDefinitions)` builds
+this configuration for a new installation. Keep account identity and connector session
+`KeyValueStore` handles distinct. Neither manager nor connector shutdown closes the host database.
 
-The modules depend only on `kotlin-inject-runtime` (for the annotations). **Only the app runs the
-KSP compiler** — you do not need KSP configured in the feature modules.
+The [compiled component](../bootstrap-example/src/main/kotlin/com/latenighthack/social/example/SocialComponent.kt)
+implements the provider interfaces, supplies `Database`, identity `KeyValueStore`, RPC and
+HTTP clients, and chooses `RoomsKeySource` as the top `LockKeySource`. Account providers bind
+`AccountSession` automatically. The shared `SocialTaskScope` owns all manager jobs; override
+its provider to use an application-owned parent if needed. Only the consuming component runs
+kotlin-inject KSP. The example is compiled and exercised by `:bootstrap-example:test`.
 
-## What the app must supply
+The [bootstrap functions](../bootstrap-example/src/main/kotlin/com/latenighthack/social/example/SocialBootstrap.kt)
+show the required sequence:
 
-The interfaces reference a few types they don't provide; the app binds them:
+1. Host composes the complete schema and opens the database.
+2. Construct the component and call every lifecycle's suspending `prepare()`.
+3. Create the suspending `LockersClient.create(...)` outside `@Provides`, passing the same database.
+4. Start every lifecycle with that client. Collect `taskHealth` for retries and failures.
+5. On shutdown, request `stop()` for all lifecycles, then await every `stopAndJoin()`.
+6. Close the connector and cancel the graph scope. Host then closes its HTTP client and database.
 
-- `KeyValueStore` — the device-local store `AccountManagerImpl` persists the identity key in.
-- `StoreDelegate` — the store the observed-profiles cache (`ProfilesManagerImpl`), the messages
-  cache, and the remote-content upload queue are created from.
-- `HttpClient` — a ktor client (with a platform engine) the remote-content transport uses to PUT/GET
-  raw content bytes.
-- The client's own `rpcClient`, `appVersion`, and its *own* `StoreDelegate` + `KeyValueStore` — the
-  connector persists its session state separately from the managers, so these are distinct instances
-  (keep them out of the graph as plain fields to avoid ambiguous `KeyValueStore`/`StoreDelegate`
-  bindings).
-- The **top of the lock-key chain**. Each feature provides its concrete key source
-  (`AccountKeySource` → `ProfileKeySource` → `RoomsKeySource`), but which one is the client's
-  `LockKeySource` depends on the feature set, so the app picks it. `AuthenticationKeySource` is
-  always the account key and is already bound by `AccountProviders`.
+`start` is idempotent for the same client. Await shutdown before replacing a client. Flow collectors
+belong to their callers; cancel UI collections with the screen lifetime. Local drafts, pending
+messages and uploads belong to the committed account; sign-out immediately withdraws access.
+Persisted credentials may adopt legacy ownerless rows, but a new identity never inherits them.
+Background work retries within its owned coroutine tree; cancellation propagates.
 
-## The two-phase bootstrap
+An app without rooms chooses `ProfileKeySource` as its top lock source and implements only the
+provider interfaces required by its features. Contacts, receipts and typing use synced lockers;
+they do not introduce separate local databases.
 
-The managers deliberately take the `LockersClient` at `start(lockers)`, not in their constructor —
-and the client is built *from* the managers' key sources. So construction and start are two phases:
+# Server configuration
 
-1. `SocialComponent::class.create(...)` — builds every manager, key source, and use case.
-2. Get the `LockersClient` (provided from the key sources) and `start` every manager over it.
+Compose `LoginStorage.definitions` and `RoomsServiceStorage.definitions` into the lockers host
+schema. Factories receive that shared database and never open or close it. An existing configured
+V3 installation must apply `RoomsServiceStorage.upgrade(previousConfiguration)` to add the invite
+code table in a consecutive migration; changing definitions under an existing version is rejected.
 
-Each manager implements `DomainLifecycle` and is contributed `@IntoSet`, so the app starts and stops
-them all through one `Set<DomainLifecycle>` without naming each.
+Production requires stable login custody and room invite master keys, configured OIDC audiences,
+and single-use nonce enforcement. `ROOMS_MASTER_KEY` is base64 for 32 random bytes; custodial login
+uses its documented key-id configuration for rotation. Development-only construction requires an
+explicit development flag. Persist nonce challenges and encrypted invite codes in the host database.
+See [storage](storage.md) and [protocol/keyspaces](keyspaces.md).
 
-## Example component
+# Security boundaries
 
-```kotlin
-import com.latenighthack.social.runtime.DomainLifecycle
-import com.latenighthack.social.runtime.SocialScope
-import com.latenighthack.social.account.domain.AccountProviders
-import com.latenighthack.social.account.usecase.AccountUseCaseProviders
-import com.latenighthack.social.profiles.domain.ProfilesProviders
-import com.latenighthack.social.profiles.usecase.ProfilesUseCaseProviders
-import com.latenighthack.social.rooms.domain.RoomsProviders
-import com.latenighthack.social.rooms.domain.RoomsKeySource
-import com.latenighthack.social.rooms.usecase.RoomsUseCaseProviders
-import com.latenighthack.social.remotecontent.domain.RemoteContentProviders
-import com.latenighthack.social.avatars.usecase.AvatarsUseCaseProviders
-import com.latenighthack.social.avatars.usecase.SetMyAvatarUseCase
-import com.latenighthack.social.debug.domain.DebugProviders
-import com.latenighthack.social.debug.domain.LockerCodecs
-import com.latenighthack.social.debug.usecase.DebugUseCaseProviders
-import com.latenighthack.social.debug.usecase.WatchLockersUseCase
-import com.latenighthack.social.account.v1.AccountState
-import com.latenighthack.social.account.v1.fromByteArray
-import com.latenighthack.social.messages.v1.MessagePayload
-import io.ktor.client.HttpClient
-import com.latenighthack.lockers.connector.AuthenticationKeySource
-import com.latenighthack.lockers.connector.LockKeySource
-import com.latenighthack.lockers.connector.LockersClient
-import me.tatarka.inject.annotations.Component
-import me.tatarka.inject.annotations.Provides
+Account-owned profile and room private keys are encrypted before synchronization. Profile signatures
+bind message authors, typing, read receipts and direct invites to their room and protocol label.
+A group member holds shared room authority, so membership is not an administrator hierarchy. The
+current protocol does not provide end-to-end message or attachment confidentiality: content bytes,
+public profiles and traffic metadata retain their documented server visibility. Invite codes grant
+membership and must be treated as capabilities.
 
-@SocialScope
-@Component
-abstract class SocialComponent(
-    // Manager-owned stores enter the graph.
-    @get:Provides protected val keyValueStore: KeyValueStore,
-    @get:Provides protected val storeDelegate: StoreDelegate,
-    // The ktor client the remote-content transport uploads/downloads bytes with.
-    @get:Provides protected val httpClient: HttpClient,
-    // The gRPC channel. Shared: the connector uses it, and the remote-content client makes its
-    // CreateContent call over it, so unlike the stores it enters the graph (no ambiguity — one RpcClient).
-    @get:Provides protected val rpcClient: RpcClient,
-    // Connector-owned stores: plain fields, NOT @Provides (distinct from the manager stores).
-    private val appVersion: Version,
-    private val connectorStoreDelegate: StoreDelegate,
-    private val connectorKeyValueStore: KeyValueStore,
-) : AccountProviders,
-    AccountUseCaseProviders,
-    ProfilesProviders,
-    ProfilesUseCaseProviders,
-    RoomsProviders,
-    RoomsUseCaseProviders,
-    RemoteContentProviders,
-    AvatarsUseCaseProviders,
-    DebugProviders,
-    DebugUseCaseProviders {
+Uploads use an independent expiring capability, immutable publication, a 16 MiB limit and bounded
+admission. File hosting defaults to a 2 GiB/10,000-content quota. Active HTML/SVG are downloads with
+restrictive headers. HTTP content sharing still requires a host policy appropriate for its users.
+Uploads stop automatic retries after eight attempts or a permanent rejection and retain bytes with
+an observable `UploadStatus.Failed`. Hosts expose explicit retry/discard actions; an expired upload
+capability requires reattaching content and using the new download URL.
 
-    // This app includes rooms, so the room key source is the top of the lock chain.
-    @Provides
-    fun lockKeySource(roomsKeySource: RoomsKeySource): LockKeySource = roomsKeySource
+Synchronization encryption does not encrypt the entire local database. Hosts protect the account
+identity `KeyValueStore`, draft/cache/upload bytes and database files using their platform storage
+policy (including OS credential storage and disk encryption).
 
-    // The debug feature decodes locker bytes for introspection. The app knows every feature's proto
-    // types, so it registers a codec per keyspace here; keyspaces with no codec render as raw base64.
-    @Provides
-    @SocialScope
-    fun lockerCodecs(): LockerCodecs = LockerCodecs.builder()
-        .register(1L, "account") { AccountState.fromByteArray(it).toValue() }
-        .register(9L, "messages") { MessagePayload.fromByteArray(it).toValue() }
-        // …one per keyspace worth decoding.
-        .build()
+# Validation and dependency development
 
-    @Provides
-    @SocialScope
-    fun lockersClient(auth: AuthenticationKeySource, lock: LockKeySource): LockersClient =
-        LockersClient.create(
-            rpcClient = rpcClient,
-            storeDelegate = connectorStoreDelegate,
-            keyValueStore = connectorKeyValueStore,
-            keySource = auth,
-            appVersion = appVersion,
-            lockKeySource = lock,
-        )
+`scripts/verify.sh` runs enforced Detekt, JVM/server regressions, Android tests and compilation,
+Kotlin/JS tests and compilation, and Apple tests and compilation. CI also runs web and UIKit renderer
+regressions and makes publication depend on validation. Detekt's checked-in baseline comes from the
+pre-review tree; it records historical findings rather than accepting new violations.
 
-    // Use cases the UI layer collects.
-    abstract val createAccount: CreateAccountUseCase
-    abstract val watchRooms: WatchRoomsUseCase
-    abstract val createGroup: CreateGroupUseCase
-    abstract val setMyAvatar: SetMyAvatarUseCase
-    abstract val watchLockers: WatchLockersUseCase
-    // …the rest as needed.
-
-    // Everything to drive over the client. The remote-content uploader is contributed @IntoSet like
-    // every manager, so it starts and stops with this same set (its start ignores the client).
-    abstract val client: LockersClient
-    abstract val lifecycles: Set<DomainLifecycle>
-}
-
-// Bootstrap:
-val component = SocialComponent::class.create(
-    keyValueStore, storeDelegate, httpClient, rpcClient, appVersion, connectorStoreDelegate, connectorKeyValueStore,
-)
-val client = component.client
-component.lifecycles.forEach { it.start(client) }
-// …on shutdown: component.lifecycles.forEach { it.stop() }
-```
-
-## Dropping a feature
-
-Include only the providers you want. An app without rooms implements just the account and profiles
-interfaces and binds `lockKeySource(profileKeySource: ProfileKeySource): LockKeySource = profileKeySource`
-— the chain, use cases, and lifecycle set shrink to match. No feature binds an unqualified
-`LockKeySource`, so there is never a duplicate-binding clash; the app always names the top.
+Released builds resolve published dependencies without global Maven Local. Paired Fullhouse work
+uses `./fh deps resolve` and `./fh deps publish --library social`, with explicit library paths in the
+ignored `.fh/workspace.json`. Publish prerequisites first; never change bytes under an existing
+version. External publication and application release remain separate operations.

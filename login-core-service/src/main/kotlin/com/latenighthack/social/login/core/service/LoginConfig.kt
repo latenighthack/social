@@ -12,7 +12,7 @@ class LoginConfig(
     val masterKey: ByteArray,
     val linkBaseUrl: String,
     // When true, AuthenticateSocial rejects requests without a valid server-issued nonce
-    // (LOGIN_REQUIRE_NONCE=true). Off by default so pre-nonce clients keep working during rollout.
+    // (LOGIN_REQUIRE_NONCE=true). Production requires it; only explicit development may disable it.
     val requireNonce: Boolean = true,
     val keyVersion: Int = 1,
     val previousKeys: Map<Int, ByteArray> = emptyMap(),

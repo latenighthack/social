@@ -16,3 +16,15 @@ legacy Android text blob keys to actual BLOB bindings. Optional legacy stores ab
 from an installation are created. Frozen SQLite fixtures verify every owned store,
 unknown fields, key lookups and reopen. Keep V1 contracts unchanged for future
 migrations; introduce new definitions and consecutive version transitions instead.
+
+## Membership and restart recovery
+
+Join/create persist an encrypted membership intent before publishing room membership. A restart
+repairs unfinished work without redeeming an invite again. Leave records a durable tombstone before
+removing membership and completes cleanup before discarding its encrypted key. Continuous source
+observation keeps other devices synchronized. Each message has its own durable locker; local outbox
+and echo status are committed together. Bounded live windows retain full history in durable storage.
+Room history uses a signed causal counter and stable id tie-breaker; wall-clock timestamps are for display.
+
+Nonce and invite state must survive service reconstruction. `RoomsServiceStorage.upgrade` demonstrates
+an explicit host migration for an already-opened V3 schema; do not silently append stores at V3.

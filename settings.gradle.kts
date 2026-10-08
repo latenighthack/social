@@ -138,3 +138,6 @@ project(":messages-view-demo-android").projectDir = file("messages-view/demo/and
 
 // Explicit isolated library development; release builds use published dependencies.
 apply(from = "gradle/fh-workspace.settings.gradle")
+
+// Compiled documentation/DI contract, intentionally not published.
+include(":bootstrap-example")

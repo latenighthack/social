@@ -9,7 +9,8 @@ import java.util.concurrent.ConcurrentHashMap
  * Single-use, short-lived nonces for the social authenticate flow. The client binds an issued nonce
  * into the native Apple/Google auth request; the provider echoes it (Apple: its SHA-256 hex) into the
  * id token's `nonce` claim, and the server consumes it here — so a captured id token cannot be
- * replayed to recover the account key. In-memory only: a nonce is bound to the server that issued it.
+ * replayed to recover the account key. Production uses the host challenge store so consumption
+ * survives restart and is shared across instances. The standalone test fallback is in memory.
  */
 class NonceService(
     private val ttlMillis: Long = 5 * 60 * 1000L,
