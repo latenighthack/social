@@ -1,3 +1,6 @@
+// Manager recovery / untrusted input boundaries catch transport-specific failures; cancellation escapes.
+@file:Suppress("TooGenericExceptionCaught")
+
 // kotlin.time.Clock replaces kotlinx-datetime's (removed in datetime 0.7): stdlib-only, still
 // experimental on Kotlin 2.2.x. Only .now().toEpochMilliseconds() is used.
 @file:OptIn(kotlin.time.ExperimentalTime::class)
@@ -230,8 +233,9 @@ class MessagesManagerImpl(
 
         if (signed.content.size > 65_536 || payload.messageId.size != 32) return
         val senderKey = try { Secp256r1PublicKey.decode(payload.senderProfileId) }
-            catch (failure: Exception) {
-                if (failure is CancellationException) throw failure
+            catch (failure: CancellationException) {
+                throw failure
+            } catch (_: Exception) {
                 return
             }
         if (!MessageSigning.verify(signed, senderKey)) return
@@ -344,10 +348,11 @@ class MessagesManagerImpl(
                 pending.deletePending(roomId, messageId)
             }
             }
-        } catch (e: CancellationException) {
+        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (e !is kotlinx.coroutines.TimeoutCancellationException) throw e
             recordSendFailure(entry, roomId, messageId, signed)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             recordSendFailure(entry, roomId, messageId, signed)
         }

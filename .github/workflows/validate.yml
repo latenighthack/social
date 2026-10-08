@@ -1,0 +1,49 @@
+name: Validate
+on:
+  pull_request:
+  push:
+    branches: [main, 'fix/**']
+  workflow_call:
+jobs:
+  validation:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9'
+      - name: Install generators
+        run: |
+          go install latenighthack.com/protoc-gen-kt@v0.0.0-20251214023608-0fa742406fbf
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          brew install bufbuild/buf/buf xcodegen
+      - name: Verify the failure gate
+        run: scripts/tests/verify-gate.sh
+      - name: Generate renderer bindings and fixtures
+        run: |
+          pnpm --dir messages-view install --frozen-lockfile
+          export PATH="$PWD/messages-view/web/node_modules/.bin:$PATH"
+          buf generate
+          pnpm --dir messages-view --filter @social/messages-view-fixtures start
+          make -C messages-view sync-assets
+      - name: Kotlin correctness and all target checks
+        run: scripts/verify.sh
+      - name: Web renderer regressions
+        run: pnpm --dir messages-view/web test
+      - name: UIKit renderer regressions
+        run: |
+          xcodegen generate --spec messages-view/demo/ios/project.yml
+          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for ds in json.load(sys.stdin)["devices"].values() for d in ds if d["name"].startswith("iPhone")))')
+          xcodebuild test -project messages-view/demo/ios/MessagesViewDemo.xcodeproj -scheme MessagesViewDemoTests -destination "platform=iOS Simulator,id=$device" -only-testing:MessagesViewDemoTests/ImageLoadingTests -only-testing:MessagesViewDemoTests/UnicodeRangeTests -only-testing:MessagesViewDemoTests/RedactionTests -quiet

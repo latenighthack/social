@@ -1,0 +1,11 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>LoopWithTooManyJumpStatements:MyProfilesManagerImpl.kt$MyProfilesManagerImpl$for</ID>
+    <ID>TooManyFunctions:MyProfilesManager.kt$MyProfilesManager</ID>
+    <ID>TooManyFunctions:MyProfilesManagerImpl.kt$MyProfilesManagerImpl : MyProfilesManagerDomainLifecycle</ID>
+    <ID>TooManyFunctions:ProfilesManagerImpl.kt$ProfilesManagerImpl : ProfilesManagerDomainLifecycle</ID>
+    <ID>UnusedParameter:MyProfilesManagerImpl.kt$MyProfilesManagerImpl$lockerId: LockerId</ID>
+  </CurrentIssues>
+</SmellBaseline>

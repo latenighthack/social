@@ -1,3 +1,6 @@
+// Manager recovery / untrusted input boundaries catch transport-specific failures; cancellation escapes.
+@file:Suppress("TooGenericExceptionCaught")
+
 package com.latenighthack.social.profiles.domain
 
 import com.latenighthack.ktcrypto.Secp256r1PublicKey

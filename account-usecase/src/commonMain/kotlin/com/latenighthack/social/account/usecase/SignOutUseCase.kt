@@ -13,8 +13,9 @@ class SignOutUseCase(
         try {
             manager.signOut()
             AccountResult.SignedOut
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
             AccountResult.Error(e.message ?: "failed to sign out")
         }
 }

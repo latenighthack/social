@@ -10,7 +10,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validation:
+    uses: ./.github/workflows/validate.yml
   publish:
+    needs: validation
     name: Publish to Maven Central
     # macOS is required so the KMP iOS targets compile — an ubuntu run would silently skip them
     # and publish an incomplete artifact set.
@@ -23,6 +26,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
 
       - name: Set up Go
         uses: actions/setup-go@v5

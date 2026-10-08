@@ -1,0 +1,10 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>LongParameterList:LoginServiceImpl.kt$LoginServiceImpl$( private val credentials: CredentialStore, private val challenges: ChallengeStore, private val custody: CustodyCrypto, private val hasher: Pbkdf2Hasher, private val appleVerifier: SocialTokenVerifier?, private val googleVerifier: SocialTokenVerifier?, private val emailSender: EmailSender?, private val smsSender: SmsSender?, private val linkBaseUrl: String, private val nonces: NonceService = NonceService(), // When true, AuthenticateSocial rejects requests whose nonce is absent or fails the single-use // check. Off by default for rollout: legacy clients carry no nonce. private val requireNonce: Boolean = false, private val clock: () -&gt; Long = System::currentTimeMillis, private val random: SecureRandom = SecureRandom(), private val challengeTtlMillis: Long = 15 * 60 * 1000L, private val ticketTtlMillis: Long = 10 * 60 * 1000L, private val maxAttempts: Int = 5, private val otpDigits: Int = 6, private val tokenBytes: Int = 32, )</ID>
+    <ID>MatchingDeclarationName:ChallengeStoreDefinitionsV1.kt$ChallengeStoreDefinitionV1 : StoreDefinition</ID>
+    <ID>MatchingDeclarationName:CredentialStoreDefinitionsV1.kt$CredentialStoreDefinitionV1 : StoreDefinition</ID>
+    <ID>TooManyFunctions:LoginServiceImpl.kt$LoginServiceImpl : LoginServer</ID>
+  </CurrentIssues>
+</SmellBaseline>

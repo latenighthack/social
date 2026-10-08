@@ -1,3 +1,6 @@
+// Manager recovery / untrusted input boundaries catch transport-specific failures; cancellation escapes.
+@file:Suppress("TooGenericExceptionCaught")
+
 package com.latenighthack.social.common.domain
 
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
@@ -10,8 +13,9 @@ suspend fun verifyProfileClaim(expectedProfile: ByteArray, expectedRoom: ByteArr
     if (!expectedProfile.contentEquals(claimedProfile) || !expectedRoom.contentEquals(claimedRoom)) return false
     if (proof == null || !proof.content.contentEquals(content)) return false
     return try { verify(proof, label, Secp256r1PublicKey.decode(expectedProfile)) }
-    catch (failure: Exception) {
-        if (failure is kotlinx.coroutines.CancellationException) throw failure
+    catch (failure: kotlinx.coroutines.CancellationException) {
+        throw failure
+    } catch (_: Exception) {
         false
     }
 }

@@ -208,10 +208,11 @@ class RemoteContentUploaderImpl(
             kotlinx.coroutines.withTimeout(30_000) { client.upload(pending.uploadUrl, pending.bytes) }
             store.deletePending(contentId)
             setStatus(key, UploadStatus.Completed)
-        } catch (e: CancellationException) {
+        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (e !is kotlinx.coroutines.TimeoutCancellationException) throw e
             setStatus(key, UploadStatus.Queued)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             setStatus(key, UploadStatus.Queued)
         }

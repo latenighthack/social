@@ -1,0 +1,7 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>TooManyFunctions:ContactsManagerImpl.kt$ContactsManagerImpl : ContactsManagerDomainLifecycle</ID>
+  </CurrentIssues>
+</SmellBaseline>

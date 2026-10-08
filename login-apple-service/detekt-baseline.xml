@@ -1,0 +1,8 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>SwallowedException:OidcTokenVerifier.kt$OidcTokenVerifier$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:OidcTokenVerifier.kt$OidcTokenVerifier$e: Exception</ID>
+  </CurrentIssues>
+</SmellBaseline>

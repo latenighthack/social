@@ -25,14 +25,16 @@ class AuthenticateWithAppleUseCase(
         // authenticate call fails with a clear result anyway.
         val nonce = try {
             loginClient.requestNonce().nonce.ifEmpty { null }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
             return SignInResult.Failed(e.message ?: "Could not obtain a sign-in nonce")
         }
         val native = try {
             appleSignIn.signIn(nonce)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
             return SignInResult.Failed(e.message ?: "Apple sign-in failed")
         }
         val response = loginClient.authenticateSocial(

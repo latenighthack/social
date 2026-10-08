@@ -1,3 +1,6 @@
+// Manager recovery / untrusted input boundaries catch transport-specific failures; cancellation escapes.
+@file:Suppress("TooGenericExceptionCaught")
+
 package com.latenighthack.social.messages.domain
 
 import com.latenighthack.ktstore.Database

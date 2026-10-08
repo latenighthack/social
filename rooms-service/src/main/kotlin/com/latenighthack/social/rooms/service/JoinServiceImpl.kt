@@ -81,8 +81,9 @@ class JoinServiceImpl(
         }
         val sealed = try {
             Sealing.seal(request.inviteeProfileId, invite.toByteArray())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
             return JoinResponse { result = JoinResult.JOIN_RESULT_NOT_ALLOWED }
         }
 

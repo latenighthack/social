@@ -12,8 +12,9 @@ class CreateAccountUseCase(
     suspend fun create(): AccountResult =
         try {
             AccountResult.Ready(manager.createAccount())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
             AccountResult.Error(e.message ?: "failed to create account")
         }
 }

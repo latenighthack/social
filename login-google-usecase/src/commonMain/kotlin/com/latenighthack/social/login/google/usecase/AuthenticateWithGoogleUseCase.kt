@@ -23,14 +23,16 @@ class AuthenticateWithGoogleUseCase(
         // enforcement (and thus failure) is server-side.
         val nonce = try {
             loginClient.requestNonce().nonce.ifEmpty { null }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
             null
         }
         val idToken = try {
             googleSignIn.signIn(nonce)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
             return SignInResult.Failed(e.message ?: "Google sign-in failed")
         }
         val response = loginClient.authenticateSocial(

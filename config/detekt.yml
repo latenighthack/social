@@ -1,0 +1,33 @@
+# Formatting is handled by the Kotlin style convention. Keep correctness, exception,
+# coroutine and complexity checks active; generated protobuf sources live outside src.
+style:
+  WildcardImport:
+    active: false
+  MagicNumber:
+    active: false
+  MaxLineLength:
+    active: false
+  ReturnCount:
+    active: false
+  ThrowsCount:
+    active: false
+  ForbiddenComment:
+    active: false
+  LoopWithTooManyJumpStatements:
+    active: false # Paging loops distinguish expired, excluded and end-of-page records.
+  UseCheckOrError:
+    active: false
+complexity:
+  LongMethod:
+    threshold: 100
+  LongParameterList:
+    functionThreshold: 12
+    constructorThreshold: 21
+  CyclomaticComplexMethod:
+    threshold: 20
+  ComplexCondition:
+    threshold: 5
+  TooManyFunctions:
+    thresholdInClasses: 20
+  NestedBlockDepth:
+    threshold: 5
