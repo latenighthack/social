@@ -86,4 +86,6 @@ message RoomRecord {
   // Personal, local ordering signal: when this room was last created/joined or bumped via
   // markUpdated(). Drives the newest-first order of the room list; not shared room state.
   int64 updated_at_millis = 5;
+  // Account-bound authenticated ciphertext; shared_private_key is legacy read-only.
+  bytes encrypted_shared_private_key = 6;
 }

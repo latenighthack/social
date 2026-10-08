@@ -133,7 +133,16 @@ class MyProfilesManagerImpl(
 
         for ((_, source) in sourceClient.getAllLockers(accountRoom)) {
             val profileId = source.profileId ?: continue
-            val keyPair = Secp256r1KeyPair.fromPrivateKey(source.privateKey) ?: continue
+            val privateBytes = if (source.encryptedPrivateKey.isNotEmpty()) {
+                account.unprotectSecret("profile/${profileId.rawValue.toList()}", source.encryptedPrivateKey)
+            } else source.privateKey
+            val keyPair = Secp256r1KeyPair.fromPrivateKey(privateBytes) ?: continue
+            if (source.encryptedPrivateKey.isEmpty() && source.privateKey.isNotEmpty()) {
+                val encrypted = account.protectSecret("profile/${profileId.rawValue.toList()}", privateBytes)
+                sourceClient.updateLocker(accountRoom, profileId.toSourceLockerId()) {
+                    it.copy { privateKey = ByteArray(0); encryptedPrivateKey = encrypted }
+                }
+            }
             keyPairs = keyPairs + (profileId to keyPair)
             // Key material first, then best-effort server work: the room re-lock is a no-op for an
             // established profile and the profile read is cache-served, so an offline failure here
@@ -158,13 +167,15 @@ class MyProfilesManagerImpl(
         val profileId = ProfileId { rawValue = publicKey }
         keyPairs = keyPairs + (profileId to keyPair)
 
-        // Store the secret half in the account room (protected by the account room lock).
+        val encrypted = account.protectSecret("profile/${profileId.rawValue.toList()}", privateKeyBytes)
+        // The account room lock authenticates writes; encryption provides confidentiality.
         val sourceClient = sourceClient(lockers)
         sourceClient.subscribeToRoom(accountRoom)
         sourceClient.updateLocker(accountRoom, profileId.toSourceLockerId()) {
             it.copy {
                 this.profileId = profileId
-                privateKey = privateKeyBytes
+                privateKey = ByteArray(0)
+                encryptedPrivateKey = encrypted
             }
         }
 

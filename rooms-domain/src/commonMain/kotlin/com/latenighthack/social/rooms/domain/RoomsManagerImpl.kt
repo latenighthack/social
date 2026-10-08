@@ -348,10 +348,7 @@ class RoomsManagerImpl(
             }
         }
         accountRoom()?.let { accountRoom ->
-            accountRoomsClient(lockers).updateLocker(
-                accountRoom,
-                LockerId(roomId.rawValue, RoomsKeyspaces.ACCOUNT_ROOMS),
-            ) { bumped }
+            writeAccountRecord(lockers, bumped)
         }
     }
 
@@ -467,7 +464,12 @@ class RoomsManagerImpl(
         // no ACK wait: offline, the cached room list must still load (reconnect reconciles the sub)
         client.subscribeToRoom(accountRoom, waitForSubscription = false)
         for ((_, record) in client.getAllLockers(accountRoom)) {
-            remember(lockers, record)
+            val raw = if (record.encryptedSharedPrivateKey.isNotEmpty()) {
+                account.unprotectSecret("room/${record.roomId.toList()}", record.encryptedSharedPrivateKey)
+            } else record.sharedPrivateKey
+            val decrypted = record.copy(sharedPrivateKey = raw, encryptedSharedPrivateKey = ByteArray(0))
+            remember(lockers, decrypted)
+            if (record.encryptedSharedPrivateKey.isEmpty()) writeAccountRecord(lockers, decrypted)
         }
     }
 
@@ -486,9 +488,11 @@ class RoomsManagerImpl(
     /** Record the room in the synced account-room list so a fresh restore recovers it. */
     private suspend fun writeAccountRecord(lockers: LockersClient, stamped: RoomRecord) {
         val accountRoom = accountRoom() ?: error("account is not ready to persist room membership")
+        val encrypted = account.protectSecret("room/${stamped.roomId.toList()}", stamped.sharedPrivateKey)
+        val protected = stamped.copy(sharedPrivateKey = ByteArray(0), encryptedSharedPrivateKey = encrypted)
         accountRoomsClient(lockers).updateLocker(
             accountRoom, LockerId(stamped.roomId, RoomsKeyspaces.ACCOUNT_ROOMS),
-        ) { stamped }
+        ) { protected }
     }
 
     /** Set in-memory key material + record and (re)subscribe. Idempotent; no account-room write. */

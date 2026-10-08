@@ -45,7 +45,9 @@ message Profile {
 // profile-source keyspace, keyed by profile id. Protected by the account room's lock.
 message ProfileSource {
   ProfileId profile_id = 1;
+  // Legacy plaintext: accepted for migration only and cleared on the next write.
   bytes private_key = 2;
+  bytes encrypted_private_key = 3;
 }
 
 // Device-local ktstore cache wrapper for an observed profile.

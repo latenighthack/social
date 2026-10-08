@@ -4,6 +4,11 @@
 
 package com.latenighthack.social.account.domain
 
+import com.latenighthack.ktcrypto.AES
+import com.latenighthack.ktcrypto.digest
+import com.latenighthack.ktcrypto.AESSymmetricKey
+import com.latenighthack.ktcrypto.SHA256
+import com.latenighthack.ktcrypto.decodeKey
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.fromPrivateKey
@@ -193,6 +198,20 @@ class AccountManagerImpl(
         val keyPair = sessionKeyPair()
         return AccountManager.Identity(keyPair.publicKey.encode(), keyPair.privateKey.encode())
     }
+
+    private suspend fun secretKey(context: String): AESSymmetricKey {
+        require(context.isNotBlank())
+        check(hasSessionKey()) { "account has no committed identity" }
+        return AESSymmetricKey.decodeKey(SHA256.digest(
+            "social/account-secret/v1/$context".encodeToByteArray() + sessionKeyPair().privateKey.encode(),
+        ))
+    }
+
+    override suspend fun protectSecret(context: String, plaintext: ByteArray): ByteArray =
+        AES.GCM.encrypt(secretKey(context), plaintext)
+
+    override suspend fun unprotectSecret(context: String, ciphertext: ByteArray): ByteArray =
+        AES.GCM.decrypt(secretKey(context), ciphertext)
 
     override fun start(lockers: LockersClient) {
         this.lockers = lockers
