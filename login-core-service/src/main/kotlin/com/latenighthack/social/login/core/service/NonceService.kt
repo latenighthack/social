@@ -15,17 +15,20 @@ class NonceService(
     private val ttlMillis: Long = 5 * 60 * 1000L,
     private val clock: () -> Long = System::currentTimeMillis,
     private val random: SecureRandom = SecureRandom(),
+    private val store: ChallengeStore? = null,
 ) {
     // nonce -> expiry epoch millis
     private val issued = ConcurrentHashMap<String, Long>()
 
     val expiresInSeconds: Long = ttlMillis / 1000
 
-    fun issue(): String {
+    suspend fun issue(): String {
         prune()
         val nonce = Base64.getUrlEncoder().withoutPadding()
             .encodeToString(ByteArray(32).also(random::nextBytes))
-        issued[nonce] = clock() + ttlMillis
+        if (store == null) issued[nonce] = clock() + ttlMillis else store.put(
+            com.latenighthack.social.login.v1.ChallengeRecord(lookupKey = lookup(nonce), expiryMillis = clock() + ttlMillis,
+                attemptsRemaining = 1))
         return nonce
     }
 
@@ -34,17 +37,24 @@ class NonceService(
      * verbatim (Google) or as its SHA-256 hex (Apple hashes the request nonce). Single-use: the nonce
      * is spent whether or not the claim matched.
      */
-    fun consume(rawNonce: String, tokenNonceClaim: String?): Boolean {
+    suspend fun consume(rawNonce: String, tokenNonceClaim: String?): Boolean {
         if (rawNonce.isEmpty()) return false
-        val expiry = issued.remove(rawNonce) ?: return false
-        if (expiry < clock()) return false
+        val expiry = if (store == null) issued.remove(rawNonce) else store.database.transaction("social.login.credentials") {
+            val record = store.getByLookup(lookup(rawNonce)) ?: return@transaction null
+            store.deleteByLookup(lookup(rawNonce))
+            record.expiryMillis
+        }
+        if (expiry == null) return false
+        if (expiry <= clock()) return false
         if (tokenNonceClaim.isNullOrEmpty()) return false
         return tokenNonceClaim == rawNonce || tokenNonceClaim.equals(sha256Hex(rawNonce), ignoreCase = true)
     }
 
+    private fun lookup(nonce: String) = byteArrayOf(2) + MessageDigest.getInstance("SHA-256").digest(nonce.encodeToByteArray())
+
     private fun prune() {
         val now = clock()
-        issued.entries.removeIf { it.value < now }
+        issued.entries.removeIf { it.value <= now }
     }
 
     private fun sha256Hex(value: String): String =

@@ -12,9 +12,11 @@ import io.micrometer.core.instrument.MeterRegistry
  * backed by a single [InviteCodeStore].
  */
 class RoomsServerExtension(
-    store: InviteCodeStore,
+    private val store: InviteCodeStore,
 ) : ServerExtension {
     private val serviceImpl = JoinServiceImpl(store)
+
+    override suspend fun start() { (store as? DurableInviteCodeStore)?.prepare() }
 
     override val services: List<GrpcRouteProvider<*>> = listOf(
         object : GrpcRouteProvider<JoinServer> {
@@ -33,6 +35,19 @@ class RoomsServerExtension(
  * at rest under a service master key.
  */
 class RoomsServerExtensionFactory : ServerExtensionFactory {
-    override fun create(meterRegistry: MeterRegistry): ServerExtension =
-        RoomsServerExtension(InMemoryInviteCodeStore())
+    override val storeDefinitions get() = RoomsServiceStorage.definitions
+    override fun create(meterRegistry: MeterRegistry): ServerExtension {
+        check(System.getenv("ROOMS_DEVELOPMENT_MODE").equals("true", ignoreCase = true)) {
+            "production rooms service requires the host-owned database overload"
+        }
+        return RoomsServerExtension(InMemoryInviteCodeStore())
+    }
+    override fun create(meterRegistry: MeterRegistry, database: com.latenighthack.ktstore.Database): ServerExtension {
+        val configured = System.getenv("ROOMS_MASTER_KEY")
+        val key = configured?.let { java.util.Base64.getDecoder().decode(it) } ?: run {
+            check(System.getenv("ROOMS_DEVELOPMENT_MODE").equals("true", ignoreCase = true)) { "ROOMS_MASTER_KEY is required" }
+            ByteArray(32) { 0x52 }
+        }
+        return RoomsServerExtension(DurableInviteCodeStore(database, key))
+    }
 }

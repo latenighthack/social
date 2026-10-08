@@ -3,6 +3,8 @@ plugins {
 }
 
 dependencies {
+    implementation(libs.ktstore.library)
+    testImplementation("org.xerial:sqlite-jdbc:3.45.3.0")
     // JoinServer / JoinServiceRpc + the Invite proto (SealedEnvelope comes transitively via
     // social-common-api).
     implementation(projects.roomsApi)

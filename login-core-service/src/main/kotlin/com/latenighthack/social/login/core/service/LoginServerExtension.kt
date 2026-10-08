@@ -27,8 +27,10 @@ class LoginServerExtension(
     emailSender: EmailSender?,
     smsSender: SmsSender?,
     linkBaseUrl: String,
-    nonces: NonceService = NonceService(),
+    nonces: NonceService = NonceService(store = ChallengeStore(database)),
     requireNonce: Boolean = true,
+    private val ownsDatabase: Boolean = false,
+    private val releaseResources: () -> Unit = {},
 ) : ServerExtension {
     private val credentials = CredentialStore(database)
     private val challenges = ChallengeStore(database)
@@ -53,11 +55,12 @@ class LoginServerExtension(
         },
     )
 
+    override fun stop() = releaseResources()
+
     override suspend fun start() {
-        database.open()
+        if (ownsDatabase) database.open()
         credentials.prepare()
         challenges.prepare()
-        database.open()
     }
 }
 
@@ -74,8 +77,15 @@ class LoginServerExtension(
  */
 class LoginServerExtensionFactory : ServerExtensionFactory {
     override val storeDefinitions get() = LoginStorage.definitions
-    override fun create(meterRegistry: MeterRegistry): ServerExtension = create(meterRegistry, LoginStorage.inMemory())
-    override fun create(meterRegistry: MeterRegistry, database: Database): ServerExtension {
+    override fun create(meterRegistry: MeterRegistry): ServerExtension {
+        check(System.getenv("LOGIN_DEVELOPMENT_MODE").equals("true", ignoreCase = true)) {
+            "production login service requires the host-owned database overload"
+        }
+        return createConfigured(LoginStorage.inMemory(), ownsDatabase = true)
+    }
+    override fun create(meterRegistry: MeterRegistry, database: Database): ServerExtension = createConfigured(database)
+
+    private fun createConfigured(database: Database, ownsDatabase: Boolean = false): ServerExtension {
         val config = LoginConfig.fromEnv()
         val httpClient = HttpClient(CIO)
         val context = LoginProviderContext(System::getenv, httpClient)
@@ -92,6 +102,8 @@ class LoginServerExtensionFactory : ServerExtensionFactory {
             smsSender = handlers.filterIsInstance<LoginHandler.Sms>().firstOrNull()?.sender,
             linkBaseUrl = config.linkBaseUrl,
             requireNonce = config.requireNonce,
+            ownsDatabase = ownsDatabase,
+            releaseResources = { httpClient.close() },
         )
     }
 }

@@ -50,7 +50,7 @@ class LoginServiceImpl(
     private val emailSender: EmailSender?,
     private val smsSender: SmsSender?,
     private val linkBaseUrl: String,
-    private val nonces: NonceService = NonceService(),
+    private val nonces: NonceService = NonceService(store = challenges),
     // When true, AuthenticateSocial rejects requests whose nonce is absent or fails the single-use
     // check. Off by default for rollout: legacy clients carry no nonce.
     private val requireNonce: Boolean = true,
