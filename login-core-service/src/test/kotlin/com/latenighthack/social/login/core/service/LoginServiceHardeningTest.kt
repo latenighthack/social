@@ -1,5 +1,9 @@
 package com.latenighthack.social.login.core.service
 
+import com.latenighthack.ktcrypto.Secp256r1KeyPair
+import com.latenighthack.ktcrypto.fromPrivateKey
+import com.latenighthack.ktcrypto.encode
+
 import com.latenighthack.ktstore.Database
 import com.latenighthack.social.login.v1.AuthenticateSocialRequest
 import com.latenighthack.social.login.v1.BindRequest
@@ -69,6 +73,18 @@ private class Harness(
 }
 
 class LoginServiceHardeningTest {
+    @Test fun mismatchedAndMalformedCustodialIdentitiesCannotBeBound() = runTest {
+        val h = Harness(ClaimsVerifier()).prepare()
+        val ticket = h.rpc.authenticateSocial(AuthenticateSocialRequest {
+            provider = Provider.PROVIDER_APPLE; idToken = "mismatch"
+        }).bindTicket
+        val valid = validKeyBinding(ticket)
+        assertEquals(LoginResult.LOGIN_RESULT_INVALID, h.rpc.bind(valid.copy(accountId = ByteArray(33))).result)
+        assertEquals(LoginResult.LOGIN_RESULT_INVALID, h.rpc.bind(valid.copy(accountPrivateKey = ByteArray(0))).result)
+        assertEquals(LoginResult.LOGIN_RESULT_INVALID, h.rpc.bind(valid.copy(accountPrivateKey = ByteArray(32))).result)
+        assertEquals(LoginResult.LOGIN_RESULT_OK, h.rpc.bind(valid).result)
+    }
+
 
     @Test
     fun `a valid nonce round-trips and is single-use`() = runTest {
@@ -157,7 +173,7 @@ class LoginServiceHardeningTest {
             AuthenticateSocialRequest { provider = Provider.PROVIDER_APPLE; idToken = "bob" },
         )
         h.rpc.bind(
-            BindRequest { bindTicket = auth.bindTicket; accountId = Random.nextBytes(33); accountPrivateKey = Random.nextBytes(32) },
+            validKeyBinding(auth.bindTicket),
         )
         val lookup = byteArrayOf(APPLE.value.toByte()) + "bob".encodeToByteArray()
         val record = assertNotNull(h.credentials.getByLookup(lookup))
@@ -199,4 +215,9 @@ class LoginServiceHardeningTest {
         assertTrue(rewrapped.kdfSalt.isNotEmpty(), "legacy record must be re-wrapped after use")
         assertEquals(CustodyCrypto.CURRENT_KEY_VERSION, rewrapped.keyVersion)
     }
+}
+
+private suspend fun validKeyBinding(ticket: ByteArray, privateKey: ByteArray = Random.nextBytes(32)): BindRequest {
+    val publicKey = Secp256r1KeyPair.fromPrivateKey(privateKey)!!.publicKey.encode()
+    return BindRequest { bindTicket = ticket; accountId = publicKey; accountPrivateKey = privateKey }
 }

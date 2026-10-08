@@ -1,5 +1,9 @@
 package com.latenighthack.social.login.core.service
 
+import com.latenighthack.ktcrypto.Secp256r1KeyPair
+import com.latenighthack.ktcrypto.fromPrivateKey
+import com.latenighthack.ktcrypto.encode
+
 import com.latenighthack.ktbuf.net.GrpcRequestContext
 import com.latenighthack.social.login.v1.AuthenticateResponse
 import com.latenighthack.social.login.v1.AuthenticateSocialRequest
@@ -156,9 +160,15 @@ class LoginServiceImpl(
     }
 
     override suspend fun bind(context: GrpcRequestContext, request: BindRequest): BindResponse {
-        if (request.bindTicket.size !in 16..128 || request.accountId.size > 65 || request.accountPrivateKey.size > 512)
+        if (request.bindTicket.size !in 16..128 || request.accountId.size != 33 || request.accountPrivateKey.size != 32)
             return BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
         if (!reserveBudget(excludeLookup = ticketKey(request.bindTicket))) return BindResponse { result = LoginResult.LOGIN_RESULT_RATE_LIMITED }
+        val identity = try { Secp256r1KeyPair.fromPrivateKey(request.accountPrivateKey) }
+            catch (_: IllegalArgumentException) { null }
+            catch (_: java.security.GeneralSecurityException) { null }
+        if (identity == null || !identity.publicKey.encode().contentEquals(request.accountId)) {
+            return BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        }
         return challenges.database.transaction("social.login.credentials") {
         val ticketLookup = ticketKey(request.bindTicket)
         val ticket = challenges.getByLookup(ticketLookup)

@@ -1,5 +1,9 @@
 package com.latenighthack.social.login.core.service
 
+import com.latenighthack.ktcrypto.Secp256r1KeyPair
+import com.latenighthack.ktcrypto.fromPrivateKey
+import com.latenighthack.ktcrypto.encode
+
 import com.latenighthack.ktbuf.server.serveAll
 import com.latenighthack.ktbuf.test.server.runTestWithServer
 import com.latenighthack.ktstore.Database
@@ -86,8 +90,8 @@ class LoginServiceTest {
     fun `social new user gets a bind ticket, binds, then recovers the same key`() =
         runTestWithServer({ attachLogin() }) { server, _ ->
             val rpc = LoginServiceRpc(server.rpcClient)
-            val accountId = Random.nextBytes(33)
             val privateKey = Random.nextBytes(32)
+            val accountId = Secp256r1KeyPair.fromPrivateKey(privateKey)!!.publicKey.encode()
 
             val first = rpc.authenticateSocial(
                 AuthenticateSocialRequest { provider = Provider.PROVIDER_APPLE; idToken = "apple-sub-alice" },
@@ -198,12 +202,12 @@ class LoginServiceTest {
             ).bindTicket
 
             val bindFirst = rpc.bind(
-                BindRequest { bindTicket = ticketOne; accountId = Random.nextBytes(33); accountPrivateKey = Random.nextBytes(32) },
+                validKeyBinding(ticketOne),
             )
             assertEquals(LoginResult.LOGIN_RESULT_OK, bindFirst.result)
 
             val bindSecond = rpc.bind(
-                BindRequest { bindTicket = ticketTwo; accountId = Random.nextBytes(33); accountPrivateKey = Random.nextBytes(32) },
+                validKeyBinding(ticketTwo),
             )
             assertEquals(LoginResult.LOGIN_RESULT_ALREADY_BOUND, bindSecond.result)
         }
@@ -217,12 +221,12 @@ class LoginServiceTest {
             ).bindTicket
 
             val firstBind = rpc.bind(
-                BindRequest { bindTicket = ticket; accountId = Random.nextBytes(33); accountPrivateKey = Random.nextBytes(32) },
+                validKeyBinding(ticket),
             )
             assertEquals(LoginResult.LOGIN_RESULT_OK, firstBind.result)
 
             val reuse = rpc.bind(
-                BindRequest { bindTicket = ticket; accountId = Random.nextBytes(33); accountPrivateKey = Random.nextBytes(32) },
+                validKeyBinding(ticket),
             )
             assertEquals(LoginResult.LOGIN_RESULT_INVALID, reuse.result)
         }
@@ -268,7 +272,7 @@ class LoginServiceTest {
             AuthenticateSocialRequest { provider = Provider.PROVIDER_APPLE; idToken = "carol" },
         )
         rpc.bind(
-            BindRequest { bindTicket = auth.bindTicket; accountId = Random.nextBytes(33); accountPrivateKey = privateKey },
+            validKeyBinding(auth.bindTicket, privateKey),
         )
 
         val appleProvider: Provider = Provider.PROVIDER_APPLE
@@ -277,4 +281,9 @@ class LoginServiceTest {
         assertFalse(record.encPrivateKey.contentEquals(privateKey), "the key must be ciphertext at rest")
         assertTrue(record.encPrivateKey.isNotEmpty())
     }
+}
+
+private suspend fun validKeyBinding(ticket: ByteArray, privateKey: ByteArray = Random.nextBytes(32)): BindRequest {
+    val publicKey = Secp256r1KeyPair.fromPrivateKey(privateKey)!!.publicKey.encode()
+    return BindRequest { bindTicket = ticket; accountId = publicKey; accountPrivateKey = privateKey }
 }
