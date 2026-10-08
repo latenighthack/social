@@ -121,6 +121,42 @@ class MessagesManagerIntegrationTest {
     }
 
     @Test(timeout = 30000)
+    fun `messages received while consumer is stopped must recover on restart`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val alice = newParty(server.rpcClient)
+                val bob = newParty(server.rpcClient)
+                try {
+                    alice.myProfiles.createProfile("Alice")
+                    bob.myProfiles.createProfile("Bob")
+                    val roomId = alice.rooms.createGroup("review-durable")
+                    bob.rooms.joinByCode(alice.rooms.createInviteCode(roomId))
+                    alice.rooms.watchMembers(roomId).first { it.size == 2 }
+                    bob.rooms.watchMembers(roomId).first { it.size == 2 }
+                    // First confirm that this party and room can actually receive messages.
+                    alice.messages.send(roomId, Draft { text = "before-stop" })
+                    kotlinx.coroutines.withTimeout(5000) {
+                        bob.messages.watchMessages(roomId).first { it.any { m -> m.payload.component?.text == "before-stop" } }
+                    }
+                    bob.messages.stop()
+                    kotlinx.coroutines.delay(100)
+                    alice.messages.send(roomId, Draft { text = "during-stop" })
+                    kotlinx.coroutines.withTimeout(5000) {
+                        alice.messages.watchMessages(roomId).first { it.any { m ->
+                            m.payload.component?.text == "during-stop" && m.status == MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT
+                        } }
+                    }
+                    kotlinx.coroutines.delay(500)
+                    bob.messages.start(bob.lockers)
+                    val recovered = kotlinx.coroutines.withTimeoutOrNull(2000) {
+                        bob.messages.watchMessages(roomId).first { it.any { m -> m.payload.component?.text == "during-stop" } }
+                    }
+                    assertTrue(recovered != null, "connector consumed and acknowledged the notification without a durable message consumer")
+                } finally { bob.close(); alice.close() }
+            }
+        }
+
+    @Test(timeout = 30000)
     fun `failed outbox persistence rolls back every optimistic echo`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val base = com.latenighthack.ktstore.InMemoryStoreDelegate()

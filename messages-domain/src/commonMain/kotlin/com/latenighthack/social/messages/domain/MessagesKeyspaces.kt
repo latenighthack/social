@@ -9,9 +9,9 @@ import com.latenighthack.lockers.common.v1.LockerKeyspace
  */
 internal object MessagesKeyspaces {
     /**
-     * The single MESSAGING locker per room. A send bumps its version with an empty body and rides the
-     * message as the locker's notification payload; the room's existing lock gates the write to
-     * members and the shared locker's read-before-write version bump linearizes concurrent sends.
+     * Durable message lockers, keyed by the signed sender-minted message id. Observers replay the
+     * snapshot after restart; notification payloads are only a latency optimization. Room locks gate
+     * member writes, and profile signatures authenticate individual authors.
      */
     val MESSAGING = LockerKeyspace { value = 9L }
 

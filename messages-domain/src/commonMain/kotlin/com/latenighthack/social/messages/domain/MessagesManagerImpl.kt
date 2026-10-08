@@ -8,6 +8,7 @@ import com.latenighthack.ktcrypto.Secp256r1PublicKey
 import com.latenighthack.ktcrypto.decode
 import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.common.v1.RoomId
+import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.connector.IncomingNotification
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
@@ -133,6 +134,15 @@ class MessagesManagerImpl(
                     if (mutex.withLock { subscribedRooms.add(roomId) }) {
                         launch { messageClient(lockers).subscribeToRoom(roomId) }
                         launch { watchMembership(roomId) }
+                        launch {
+                            messageClient(lockers).watchAll(roomId).collect { snapshot ->
+                                for ((id, signed) in snapshot) {
+                                    val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull() ?: continue
+                                    if (!payload.messageId.contentEquals(id.rawValue)) continue
+                                    tryIngest(roomId, signed)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -262,9 +272,12 @@ class MessagesManagerImpl(
             // Empty body ({ it } keeps it unchanged); the message rides as the notification payload.
             messageClient(lockers).updateLocker(
                 roomId,
-                MessagesKeyspaces.MESSAGING_LOCKER,
+                LockerId(messageId.rawValue, MessagesKeyspaces.MESSAGING),
                 notificationBuilder = { payload { rawValue = signed.toByteArray() } },
-            ) { it }
+            ) { current ->
+                check(current.content.isEmpty() || current == signed) { "message id already contains different content" }
+                signed
+            }
             roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT) {
                 pending.deletePending(roomId, messageId)
             }
