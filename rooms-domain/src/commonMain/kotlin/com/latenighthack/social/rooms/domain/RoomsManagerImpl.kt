@@ -4,6 +4,9 @@
 
 package com.latenighthack.social.rooms.domain
 
+import com.latenighthack.social.runtime.withAccount
+import com.latenighthack.social.runtime.requireOperationOwner
+
 import com.latenighthack.ktcrypto.SHA256
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.ktcrypto.digest
@@ -178,7 +181,11 @@ class RoomsManagerImpl(
 
     // --- room operations ---
 
-    override suspend fun createGroup(name: String): RoomId {
+    override suspend fun createGroup(name: String): RoomId = account.withAccount {
+        createGroupOwned(name)
+    }
+
+    private suspend fun createGroupOwned(name: String): RoomId {
         val lockers = lockers ?: error("createGroup requires start(lockers) first")
         val me = primaryProfileId()
 
@@ -202,7 +209,11 @@ class RoomsManagerImpl(
         return roomId
     }
 
-    override suspend fun openRendezvous(peerProfileId: ProfileId): RoomId {
+    override suspend fun openRendezvous(peerProfileId: ProfileId): RoomId = account.withAccount {
+        openRendezvousOwned(peerProfileId)
+    }
+
+    private suspend fun openRendezvousOwned(peerProfileId: ProfileId): RoomId {
         val lockers = lockers ?: error("openRendezvous requires start(lockers) first")
         val me = primaryProfileId()
 
@@ -234,9 +245,14 @@ class RoomsManagerImpl(
     }
 
     override suspend fun deriveChildRoomId(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId =
-        RoomKeying.publicKeyed(deriveChildKey(parentRoomId, purpose, salt).publicKey.encode())
+        account.withAccount { RoomKeying.publicKeyed(deriveChildKey(parentRoomId, purpose, salt).publicKey.encode()) }
 
-    override suspend fun openDerivedRoom(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId {
+    override suspend fun openDerivedRoom(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId = account.withAccount {
+        openDerivedRoomOwned(parentRoomId, purpose, salt)
+    }
+
+    private suspend fun openDerivedRoomOwned(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId {
+        check(ownsKeys()) { "room keys belong to a different account" }
         val lockers = requireLockers()
         val parent = records[parentRoomId] ?: error("not a member of the parent room")
         val me = ProfileId(rawValue = parent.localProfileId)
@@ -264,6 +280,7 @@ class RoomsManagerImpl(
     }
 
     private suspend fun deriveChildKey(parentRoomId: RoomId, purpose: String, salt: ByteArray): Secp256r1KeyPair {
+        check(ownsKeys()) { "room keys belong to a different account" }
         val record = records[parentRoomId] ?: error("not a member of the parent room")
         val seed = SHA256.digest(
             DERIVED_ROOM_DOMAIN + purpose.encodeToByteArray() + record.sharedPrivateKey + salt,
@@ -271,7 +288,12 @@ class RoomsManagerImpl(
         return Secp256r1KeyPair.fromPrivateKey(seed) ?: error("could not derive a child room key")
     }
 
-    override suspend fun createInviteCode(roomId: RoomId): InviteCode {
+    override suspend fun createInviteCode(roomId: RoomId): InviteCode = account.withAccount {
+        createInviteCodeOwned(roomId)
+    }
+
+    private suspend fun createInviteCodeOwned(roomId: RoomId): InviteCode {
+        check(ownsKeys()) { "room keys belong to a different account" }
         val record = records[roomId] ?: error("not a member of this room")
         require(record.kind == RoomKind.ROOM_KIND_GROUP) { "invite codes are for group rooms; rendezvous is 1:1" }
         // Hand the server the shared key so it can seal per-joiner grants; whoever holds the key is a
@@ -284,7 +306,12 @@ class RoomsManagerImpl(
         return response.code ?: error("invite code creation returned no code")
     }
 
-    override suspend fun revokeInviteCode(roomId: RoomId, code: InviteCode) {
+    override suspend fun revokeInviteCode(roomId: RoomId, code: InviteCode): Unit = account.withAccount {
+        revokeInviteCodeOwned(roomId, code)
+    }
+
+    private suspend fun revokeInviteCodeOwned(roomId: RoomId, code: InviteCode) {
+        check(ownsKeys()) { "room keys belong to a different account" }
         val record = records[roomId] ?: return
         joinClient.revokeInviteCode(RevokeInviteCodeRequest {
             this.code = code
@@ -292,7 +319,12 @@ class RoomsManagerImpl(
         })
     }
 
-    override suspend fun inviteToRoom(roomId: RoomId, peerProfileId: ProfileId) {
+    override suspend fun inviteToRoom(roomId: RoomId, peerProfileId: ProfileId): Unit = account.withAccount {
+        inviteToRoomOwned(roomId, peerProfileId)
+    }
+
+    private suspend fun inviteToRoomOwned(roomId: RoomId, peerProfileId: ProfileId) {
+        check(ownsKeys()) { "room keys belong to a different account" }
         val lockers = lockers ?: error("inviteToRoom requires start(lockers) first")
         val record = records[roomId] ?: error("not a member of this room")
         require(record.kind == RoomKind.ROOM_KIND_GROUP) { "direct invites are for group rooms; rendezvous is 1:1" }
@@ -304,7 +336,11 @@ class RoomsManagerImpl(
         ))
     }
 
-    override suspend fun joinByCode(code: InviteCode): RoomId {
+    override suspend fun joinByCode(code: InviteCode): RoomId = account.withAccount {
+        joinByCodeOwned(code)
+    }
+
+    private suspend fun joinByCodeOwned(code: InviteCode): RoomId {
         val lockers = lockers ?: error("joinByCode requires start(lockers) first")
         val me = primaryProfileId()
         val response = joinClient.join(JoinRequest {
@@ -337,7 +373,12 @@ class RoomsManagerImpl(
         return roomId
     }
 
-    override suspend fun leave(roomId: RoomId) {
+    override suspend fun leave(roomId: RoomId): Unit = account.withAccount {
+        leaveOwned(roomId)
+    }
+
+    private suspend fun leaveOwned(roomId: RoomId) {
+        check(ownsKeys()) { "room keys belong to a different account" }
         val lockers = lockers ?: return
         val record = records[roomId] ?: return
         val leaving = record.copy(left = true, leaving = true)
@@ -347,13 +388,23 @@ class RoomsManagerImpl(
         repairLeave(lockers, leaving)
     }
 
-    override suspend fun updateInfo(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit) {
+    override suspend fun updateInfo(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit): Unit = account.withAccount {
+        updateInfoOwned(roomId, builder)
+    }
+
+    private suspend fun updateInfoOwned(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit) {
+        check(ownsKeys()) { "room keys belong to a different account" }
         val lockers = lockers ?: error("updateInfo requires start(lockers) first")
         val roomKey = keyPairs[roomId] ?: error("not a member of this room")
         writeInfo(lockers, roomId, roomKey, builder = builder)
     }
 
-    override suspend fun markUpdated(roomId: RoomId) {
+    override suspend fun markUpdated(roomId: RoomId): Unit = account.withAccount {
+        markUpdatedOwned(roomId)
+    }
+
+    private suspend fun markUpdatedOwned(roomId: RoomId) {
+        check(ownsKeys()) { "room keys belong to a different account" }
         val lockers = lockers ?: return
         val bumped = stateMutex.withLock {
             val record = records[roomId] ?: return
@@ -420,7 +471,7 @@ class RoomsManagerImpl(
                 // transiently-failing invite (e.g. a write lost to shutdown) tear down this collector —
                 // leaving it unprocessed lets a later emission retry it. processInvite is idempotent.
                 try {
-                    processInvite(lockers, profileId, envelope)
+                    account.withAccount { processInvite(lockers, profileId, envelope) }
                     stateMutex.withLock { processedInvites.add(lockerId) }
                 } catch (e: CancellationException) {
                     throw e
@@ -505,7 +556,7 @@ class RoomsManagerImpl(
             if (record.membershipPending || record.leaving) {
                 CoroutineScope(kotlinx.coroutines.currentCoroutineContext()).launch {
                     recoverTask(taskHealth) {
-                        if (record.leaving) repairLeave(lockers, decrypted) else repairMembership(lockers, decrypted)
+                        account.withAccount { if (record.leaving) repairLeave(lockers, decrypted) else repairMembership(lockers, decrypted) }
                     }
                 }
             }
@@ -527,19 +578,24 @@ class RoomsManagerImpl(
 
     /** Record the room in the synced account-room list so a fresh restore recovers it. */
     private suspend fun writeAccountRecord(lockers: LockersClient, stamped: RoomRecord) {
+        account.requireOperationOwner()
+        val commandOwner = account.owner.value
+        val commandGeneration = account.generation.value
         val accountRoom = accountRoom() ?: error("account is not ready to persist room membership")
         val encrypted = if (stamped.left && !stamped.leaving) ByteArray(0)
             else account.protectSecret("room/${stamped.roomId.toList()}", stamped.sharedPrivateKey)
+        account.requireOperationOwner()
         val protected = stamped.copy(sharedPrivateKey = ByteArray(0), encryptedSharedPrivateKey = encrypted)
         accountRoomsClient(lockers).updateLocker(
             accountRoom, LockerId(stamped.roomId, RoomsKeyspaces.ACCOUNT_ROOMS),
-        ) { protected }
+        ) { check(account.owner.value == commandOwner && account.generation.value == commandGeneration); protected }
     }
 
     /** Set in-memory key material + record and (re)subscribe. Idempotent; no account-room write. */
     private suspend fun remember(lockers: LockersClient, record: RoomRecord) {
         val roomId = RoomId(rawValue = record.roomId)
         val keyPair = Secp256r1KeyPair.fromPrivateKey(record.sharedPrivateKey) ?: return
+        account.requireOperationOwner()
         stateMutex.withLock {
             keyPairs = keyPairs + (roomId to keyPair)
             records = records + (roomId to record)

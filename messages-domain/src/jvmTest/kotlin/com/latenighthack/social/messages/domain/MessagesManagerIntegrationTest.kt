@@ -53,6 +53,7 @@ import kotlin.jvm.Volatile
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -123,6 +124,38 @@ class MessagesManagerIntegrationTest {
     }
 
     @Test(timeout = 30000)
+    fun `sign out cancels an admitted join before its grant can install old membership`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+                val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+                val gated = object : JoinClient by sharedJoinClient {
+                    override suspend fun join(request: JoinRequest): JoinResponse {
+                        val response = sharedJoinClient.join(request)
+                        entered.complete(Unit)
+                        release.await()
+                        return response
+                    }
+                }
+                val alice = newParty(server.rpcClient)
+                val bob = newParty(server.rpcClient, joinClient = gated)
+                try {
+                    alice.myProfiles.createProfile("Alice")
+                    bob.myProfiles.createProfile("Bob")
+                    val room = alice.rooms.createGroup("admitted join")
+                    val code = alice.rooms.createInviteCode(room)
+                    val joining = async { bob.rooms.joinByCode(code) }
+                    entered.await()
+                    bob.account.signOut()
+                    bob.account.createAccount()
+                    assertFailsWith<kotlinx.coroutines.CancellationException> { joining.await() }
+                    release.complete(Unit)
+                    assertTrue(bob.rooms.watchRooms().first().isEmpty())
+                } finally { release.complete(Unit); bob.close(); alice.close() }
+            }
+        }
+
+    @Test(timeout = 30000)
     fun `sign out and immediate account creation hide prior drafts messages and signing keys`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
@@ -135,6 +168,8 @@ class MessagesManagerIntegrationTest {
                     party.messages.send(room, Draft { text = "private queued message" })
                     party.account.signOut()
                     party.account.createAccount()
+                    assertFailsWith<IllegalStateException> { party.rooms.createInviteCode(room) }
+                    assertFailsWith<IllegalStateException> { party.rooms.deriveChildRoomId(room, "private", byteArrayOf(1)) }
                     party.messages.start(party.lockers)
                     assertTrue(party.messages.watchMessages(room).first().isEmpty())
                     kotlin.test.assertNull(party.drafts.watchDraft(room).first())

@@ -64,6 +64,8 @@ class AccountManagerImpl(
     private val identityMutex = Mutex()
     private val _owner = MutableStateFlow<String?>(null)
     override val owner: StateFlow<String?> get() = _owner
+    private val _generation = MutableStateFlow(0L)
+    override val generation: StateFlow<Long> get() = _generation
     override var mayAdoptLegacyStorage: Boolean = false
         private set
 
@@ -109,6 +111,7 @@ class AccountManagerImpl(
         pendingKeyPair = CompletableDeferred()
         hasKey.value = false
         mayAdoptLegacyStorage = false
+        _generation.value += 1
         _owner.value = null
         roomInitialized = false
         _lifecycle.value = if (everReady) Lifecycle.SignedOut else Lifecycle.NoAccount

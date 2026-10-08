@@ -1,5 +1,8 @@
 package com.latenighthack.social.profiles.domain
 
+import com.latenighthack.social.runtime.withAccount
+import com.latenighthack.social.runtime.requireOperationOwner
+
 import com.latenighthack.ktcrypto.ECDH
 import com.latenighthack.ktcrypto.Secp256r1
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
@@ -188,7 +191,8 @@ class MyProfilesManagerImpl(
                 account.unprotectSecret("profile/${profileId.rawValue.toList()}", source.encryptedPrivateKey)
             } else source.privateKey
             val keyPair = Secp256r1KeyPair.fromPrivateKey(privateBytes) ?: continue
-            keyPairs.update { it + (profileId to keyPair) }
+            account.requireOperationOwner()
+        keyPairs.update { it + (profileId to keyPair) }
             profileClient.subscribeToRoom(profileId.toRoomId(), waitForSubscription = false)
             val cached = profileClient.watch(profileId.toRoomId(), profileId.toProfileLockerId()).first()
             if (cached is TypedLockerUpdate.Present) {
@@ -205,17 +209,21 @@ class MyProfilesManagerImpl(
         }
     }
 
-    override suspend fun createProfile(displayName: String): ProfileId {
+    override suspend fun createProfile(displayName: String): ProfileId = account.withAccount { createProfileOwned(displayName) }
+
+    private suspend fun createProfileOwned(displayName: String): ProfileId {
         val lockers = lockers ?: error("createProfile requires start(lockers) first")
         val accountRoom = (account.lifecycle.value as? AccountManager.Lifecycle.Ready)?.privateRoom
             ?: error("account must be Ready to create a profile")
 
         val owner = account.owner.value
-        loadedOwner.first { it == owner && it != null }
+        val commandGeneration = account.generation.value
+        combine(loadedOwner, _isLoaded) { loaded, ready -> loaded == owner && ready }.first { it }
         val keyPair = Secp256r1KeyPair.generate()
         val publicKey = keyPair.publicKey.encode()
         val privateKeyBytes = keyPair.privateKey.encode()
         val profileId = ProfileId { rawValue = publicKey }
+        account.requireOperationOwner()
         keyPairs.update { it + (profileId to keyPair) }
 
         val encrypted = account.protectSecret("profile/${profileId.rawValue.toList()}", privateKeyBytes)
@@ -223,6 +231,7 @@ class MyProfilesManagerImpl(
         val sourceClient = sourceClient(lockers)
         sourceClient.subscribeToRoom(accountRoom)
         sourceClient.updateLocker(accountRoom, profileId.toSourceLockerId()) {
+            check(account.owner.value == owner && account.generation.value == commandGeneration)
             it.copy {
                 this.profileId = profileId
                 privateKey = ByteArray(0)
@@ -243,7 +252,9 @@ class MyProfilesManagerImpl(
         return profileId
     }
 
-    override suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit) {
+    override suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit): Unit = account.withAccount { updateProfileOwned(profileId, builder) }
+
+    private suspend fun updateProfileOwned(profileId: ProfileId, builder: ProfileBuilder.() -> Unit) {
         val lockers = lockers ?: error("updateProfile requires start(lockers) first")
         check(ownsKeys()) { "account is signed out" }
         val keyPair = keyPairs.value[profileId] ?: error("unknown profile")
@@ -260,6 +271,7 @@ class MyProfilesManagerImpl(
             },
             commit = { transform -> client.updateLocker(profileId.toRoomId(), profileId.toProfileLockerId(), builder = transform) },
         )
+        account.requireOperationOwner()
         _profiles.update { it + (profileId to stored) }
     }
 
