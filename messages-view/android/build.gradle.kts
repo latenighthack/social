@@ -32,6 +32,8 @@ dependencies {
     // The Component types are part of this library's public API (callers pass a Component).
     api(projects.messagesApi)
 
+    api(libs.coroutines.core)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:${libs.versions.coroutines.get()}")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
 }

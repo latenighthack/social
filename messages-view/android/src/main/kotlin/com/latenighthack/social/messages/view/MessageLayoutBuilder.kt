@@ -68,7 +68,7 @@ class MessageLayoutBuilder(
             if (preview.inlines.isEmpty()) {
                 view.text = preview.text
             } else {
-                view.setText(createSpannableInlines(theme, preview.text, preview.inlines), TextView.BufferType.SPANNABLE)
+                view.setText(createSpannableInlines(theme, preview.text, preview.inlines, view), TextView.BufferType.SPANNABLE)
             }
         }
         return view
@@ -157,7 +157,7 @@ class MessageLayoutBuilder(
         if (text.inlines.isEmpty()) {
             view.text = text.text
         } else {
-            view.setText(createSpannableInlines(theme, text.text, text.inlines), TextView.BufferType.SPANNABLE)
+            view.setText(createSpannableInlines(theme, text.text, text.inlines, view), TextView.BufferType.SPANNABLE)
             view.isClickable = true
         }
         view.setLinkTextColor(if (inOverlay) theme.overlayTextColor else theme.linkTextColor)
@@ -193,8 +193,10 @@ class MessageLayoutBuilder(
         val previewColor = (ref?.previewColor ?: 0) or 0xff000000.toInt()
         val aspect = ref?.aspectRatio ?: 1f
         val view = MessageImageView(context, previewColor, aspect, image.style)
+        view.contentDescription = ref?.alternateText?.ifEmpty { "Photo" } ?: "Photo"
+        view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         val url = ref?.url ?: ""
-        if (url.isNotEmpty()) imageLoader?.load(url) { view.bitmap = it }
+        bindImage(view, imageLoader, url) { host, bitmap -> host.bitmap = bitmap }
         return attachActionHandler(view, root)
     }
 
@@ -276,7 +278,7 @@ class MessageLayoutBuilder(
         return view
     }
 
-    private fun createSpannableInlines(theme: MessageTheme, text: String, inlines: List<Inline>): Spannable {
+    private fun createSpannableInlines(theme: MessageTheme, text: String, inlines: List<Inline>, view: TextView): Spannable {
         val visible = text.toCharArray()
         for (inline in inlines) if (inline.rule?.contents?.getRedaction() != null) {
             val (start, end) = com.latenighthack.social.messages.v1.inlineRange(text, inline.offset, inline.length)
@@ -301,7 +303,8 @@ class MessageLayoutBuilder(
                     val icon = IconSpan(context)
                     builder.setSpan(icon, start, end, flags)
                     rule.getIcon()?.image?.url?.takeIf { it.isNotEmpty() }?.let { url ->
-                        imageLoader?.load(url) { icon.bitmap = it }
+                        val reference = java.lang.ref.WeakReference(icon)
+                        bindImage(view, imageLoader, url) { host, bitmap -> reference.get()?.bitmap = bitmap; host.invalidate(); host.requestLayout() }
                     }
                 }
                 rule.getTappable() != null -> {

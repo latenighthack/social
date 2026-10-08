@@ -51,6 +51,17 @@ export function MessageComponent(props: MessageComponentProps): React.JSX.Elemen
 }
 
 function renderComponent(component: Component, ctx: Ctx, key: number): ReactNode {
+  const rendered = renderContents(component, ctx, key);
+  const action = component.action;
+  if (!action || !ctx.onAction || component.contents.case === "button") return rendered;
+  return <div key={key} role="button" tabIndex={0}
+    onClick={(event) => { event.stopPropagation(); ctx.onAction!(action); }}
+    onKeyDown={(event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); ctx.onAction!(action); }
+    }}>{rendered}</div>;
+}
+
+function renderContents(component: Component, ctx: Ctx, key: number): ReactNode {
   const c = component.contents;
   switch (c.case) {
     case "container":
@@ -334,7 +345,11 @@ function renderRun(runText: string, active: Inline[], ctx: Ctx, key: number): Re
   }
 
   return (
-    <span key={key} style={style} onClick={onClick} role={onClick ? "button" : undefined}>
+    <span key={key} style={style} onClick={onClick ? (event) => { event.stopPropagation(); onClick(); } : undefined}
+      role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); onClick(); }
+      } : undefined}>
       {runText}
     </span>
   );
@@ -349,15 +364,15 @@ function renderImage(image: Image, ctx: Ctx, key: number): ReactNode {
   const base: CSSProperties = { backgroundColor: placeholder, objectFit: "cover", display: "block" };
   switch (image.style) {
     case Image_Style.SMALL:
-      return <img key={key} src={url} alt={ref?.alternateText ?? ""} style={{ ...base, width: 64, height: 64 / aspect, borderRadius: 8 }} />;
+      return <img key={key} loading="lazy" src={url || undefined} alt={ref?.alternateText ?? ""} style={{ ...base, width: 64, height: 64 / aspect, borderRadius: 8 }} />;
     case Image_Style.MEDIUM:
-      return <img key={key} src={url} alt={ref?.alternateText ?? ""} style={{ ...base, width: 160, height: 160 / aspect, borderRadius: 10 }} />;
+      return <img key={key} loading="lazy" src={url || undefined} alt={ref?.alternateText ?? ""} style={{ ...base, width: 160, height: 160 / aspect, borderRadius: 10 }} />;
     case Image_Style.SQUARE:
-      return <img key={key} src={url} alt={ref?.alternateText ?? ""} style={{ ...base, width: "100%", aspectRatio: "1 / 1" }} />;
+      return <img key={key} loading="lazy" src={url || undefined} alt={ref?.alternateText ?? ""} style={{ ...base, width: "100%", aspectRatio: "1 / 1" }} />;
     case Image_Style.CIRCULAR:
-      return <img key={key} src={url} alt={ref?.alternateText ?? ""} style={{ ...base, width: 64, height: 64, borderRadius: "50%" }} />;
+      return <img key={key} loading="lazy" src={url || undefined} alt={ref?.alternateText ?? ""} style={{ ...base, width: 64, height: 64, borderRadius: "50%" }} />;
     default:
-      return <img key={key} src={url} alt={ref?.alternateText ?? ""} style={{ ...base, width: "100%", aspectRatio: `${aspect} / 1`, borderRadius: 12 }} />;
+      return <img key={key} loading="lazy" src={url || undefined} alt={ref?.alternateText ?? ""} style={{ ...base, width: "100%", aspectRatio: `${aspect} / 1`, borderRadius: 12 }} />;
   }
 }
 
@@ -382,7 +397,8 @@ function renderButton(component: Component, button: { text: string; style: Butto
   };
   const action = component.action;
   return (
-    <button key={key} style={style} onClick={action && ctx.onAction ? () => ctx.onAction!(action) : undefined}>
+    <button type="button" key={key} style={style} disabled={!action || !ctx.onAction}
+      onClick={action && ctx.onAction ? (event) => { event.stopPropagation(); ctx.onAction!(action); } : undefined}>
       {button.text}
     </button>
   );
