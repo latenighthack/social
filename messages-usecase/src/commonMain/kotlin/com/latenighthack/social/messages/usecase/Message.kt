@@ -16,4 +16,5 @@ data class Message(
     val component: Component,
     val readBy: Set<ProfileId>,
     val status: MessageDeliveryStatus,
+    val id: com.latenighthack.social.messages.v1.MessageId = com.latenighthack.social.messages.v1.MessageId { },
 )

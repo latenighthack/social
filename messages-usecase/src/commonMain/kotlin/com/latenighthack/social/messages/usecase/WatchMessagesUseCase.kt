@@ -16,17 +16,18 @@ class WatchMessagesUseCase(
     fun watch(roomId: RoomId): Flow<List<Message>> =
         combine(
             messages.watchMessages(roomId),
-            messages.watchMessageIds(roomId),
             readReceipts.watchReadReceipts(roomId),
-        ) { entries, orderedIds, receipts ->
+        ) { entries, receipts ->
+            val orderedIds = entries.map { it.payload.messageId }
             // Each receipt is a member's "read up to here" pointer; a message at index i is read by a
             // member whose pointer resolves to index >= i. A pointer to a not-yet-synced message
             // resolves to -1 and counts as unread until that message arrives (eventually consistent).
             val readerIndices = receipts.mapValues { (_, pointer) ->
-                orderedIds.indexOfFirst { it.rawValue.contentEquals(pointer.rawValue) }
+                orderedIds.indexOfFirst { it.contentEquals(pointer.rawValue) }
             }
             entries.mapIndexed { index, entry ->
                 Message(
+                    id = com.latenighthack.social.messages.v1.MessageId(rawValue = entry.payload.messageId),
                     senderProfileId = ProfileId { rawValue = entry.payload.senderProfileId },
                     sentAtMillis = entry.payload.sentAtMillis,
                     component = entry.payload.component ?: Component { },
