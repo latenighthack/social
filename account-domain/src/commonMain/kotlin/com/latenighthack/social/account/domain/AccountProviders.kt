@@ -12,11 +12,11 @@ import me.tatarka.inject.annotations.Provides
  * to obtain the account manager, its key source, and its lifecycle contribution. The app must
  * provide the [KeyValueStore] the manager persists its device-local identity in.
  */
-interface AccountProviders {
+interface AccountProviders : com.latenighthack.social.runtime.SocialRuntimeProviders {
     @Provides
     @SocialScope
-    fun accountManagerImpl(keyValueStore: KeyValueStore): AccountManagerImpl =
-        AccountManagerImpl(keyValueStore)
+    fun accountManagerImpl(keyValueStore: KeyValueStore, tasks: com.latenighthack.social.runtime.SocialTaskScope): AccountManagerImpl =
+        AccountManagerImpl(keyValueStore, scope = tasks.scope)
 
     @Provides
     fun accountManager(impl: AccountManagerImpl): AccountManager = impl

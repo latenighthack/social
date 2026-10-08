@@ -103,7 +103,7 @@ class MessagesManagerImpl(
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
-    private var job: Job? = null
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private var lockers: LockersClient? = null
 
     override suspend fun prepare() {
@@ -113,14 +113,16 @@ class MessagesManagerImpl(
     }
 
     override fun start(lockers: LockersClient) {
-        this.lockers = lockers
-        if (job?.isActive == true) return
-        job = scope.launch { recoverTask(taskHealth) { run(lockers) } }
+        runner.start(lockers, onStart = { this.lockers = lockers }) {
+             recoverTask(taskHealth) { run(lockers) } }
     }
 
     override fun stop() {
-        job?.cancel()
-        job = null
+        runner.stop()
+    }
+
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
     private suspend fun run(lockers: LockersClient) {
@@ -276,7 +278,7 @@ class MessagesManagerImpl(
         // Bump the room to the front the moment the user sends, reflecting their intent — not when the
         // message eventually lands. Launched (not awaited) and best-effort: markUpdated reorders the
         // room list locally first, so the send neither blocks on nor fails from the synced write.
-        scope.launch { bestEffortBump(roomId) }
+        bestEffortBump(roomId)
     }
 
     override suspend fun retry(roomId: RoomId, messageId: MessageId) {

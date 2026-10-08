@@ -15,15 +15,15 @@ import me.tatarka.inject.annotations.Provides
  * upload queue is created from; this binds the [RemoteContentClient] transport and the
  * [RemoteContentUploader] on top of it. The uploader rides the shared `Set<DomainLifecycle>` boot.
  */
-interface RemoteContentProviders {
+interface RemoteContentProviders : com.latenighthack.social.runtime.SocialRuntimeProviders {
     @Provides
     fun remoteContentClient(rpcClient: RpcClient, httpClient: HttpClient): RemoteContentClient =
         RemoteContentClientImpl(rpcClient, httpClient)
 
     @Provides
     @SocialScope
-    fun remoteContentUploaderImpl(client: RemoteContentClient, database: Database, session: AccountSession): RemoteContentUploaderImpl =
-        RemoteContentUploaderImpl(client, database, session = session)
+    fun remoteContentUploaderImpl(client: RemoteContentClient, database: Database, session: AccountSession, tasks: com.latenighthack.social.runtime.SocialTaskScope): RemoteContentUploaderImpl =
+        RemoteContentUploaderImpl(client, database, session = session, scope = tasks.scope)
 
     @Provides
     fun remoteContentUploader(impl: RemoteContentUploaderImpl): RemoteContentUploader = impl

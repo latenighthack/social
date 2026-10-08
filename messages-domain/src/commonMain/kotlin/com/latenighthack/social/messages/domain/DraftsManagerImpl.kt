@@ -44,7 +44,7 @@ class DraftsManagerImpl(
     private val _drafts = MutableStateFlow<Map<RoomId, Draft>>(emptyMap())
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
-    private var job: Job? = null
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     // Completes once the store has been loaded — gates all store access.
     private var ready = CompletableDeferred<Unit>()
 
@@ -53,8 +53,7 @@ class DraftsManagerImpl(
     }
 
     override fun start(lockers: LockersClient) {
-        if (job?.isActive == true) return
-        job = scope.launch { recoverTask(taskHealth) {
+        runner.start { recoverTask(taskHealth) {
             if (ready.isCancelled) ready = CompletableDeferred()
             try {
             session.ownerChanges().collectLatest { owner ->
@@ -84,8 +83,11 @@ class DraftsManagerImpl(
 
 
     override fun stop() {
-        job?.cancel()
-        job = null
+        runner.stop()
+    }
+
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
     override suspend fun setText(roomId: RoomId, text: String) = mutate(roomId) { current ->

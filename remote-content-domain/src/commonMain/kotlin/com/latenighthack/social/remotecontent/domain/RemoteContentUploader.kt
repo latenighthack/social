@@ -106,7 +106,7 @@ class RemoteContentUploaderImpl(
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
-    private var job: Job? = null
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
 
     override suspend fun prepare() {
         store.prepare()
@@ -114,16 +114,18 @@ class RemoteContentUploaderImpl(
 
     /** Launches the background drain loop. Idempotent; resumes a queue left by a prior [stop]. */
     fun start() {
-        if (job?.isActive == true) return
-        job = scope.launch { recoverTask(taskHealth) { run() } }
+        runner.start { recoverTask(taskHealth) { run() } }
     }
 
     /** [DomainLifecycle] entry point; the [lockers] client is unused (see the class doc). */
     override fun start(lockers: LockersClient) = start()
 
     override fun stop() {
-        job?.cancel()
-        job = null
+        runner.stop()
+    }
+
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
     override suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload {

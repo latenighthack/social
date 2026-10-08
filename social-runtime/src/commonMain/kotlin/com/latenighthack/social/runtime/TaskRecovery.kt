@@ -12,7 +12,7 @@ sealed interface TaskHealth {
 }
 
 /** Restart the entire child tree on transient failure; cancellation always belongs to the host. */
-suspend fun recoverTask(health: MutableStateFlow<TaskHealth>, block: suspend () -> Unit) {
+suspend fun recoverTask(health: MutableStateFlow<TaskHealth>, block: suspend kotlinx.coroutines.CoroutineScope.() -> Unit) {
     var attempt = 0
     try {
         while (true) {

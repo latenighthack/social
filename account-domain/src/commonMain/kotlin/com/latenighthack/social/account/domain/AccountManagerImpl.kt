@@ -148,7 +148,7 @@ class AccountManagerImpl(
     override val lifecycle: StateFlow<Lifecycle> get() = _lifecycle
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
-    private var job: Job? = null
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private var everReady = false
     private var roomInitialized = false
     private var roomInitializedOwner: String? = null
@@ -242,15 +242,17 @@ class AccountManagerImpl(
         AES.GCM.decrypt(secretKey(context), ciphertext)
 
     override fun start(lockers: LockersClient) {
-        this.lockers = lockers
-        if (job?.isActive == true) return
+        runner.start(lockers, onStart = { this.lockers = lockers }) {
         roomInitialized = false
-        job = scope.launch { recoverTask(taskHealth) { run(lockers) } }
+             recoverTask(taskHealth) { run(lockers) } }
     }
 
     override fun stop() {
-        job?.cancel()
-        job = null
+        runner.stop()
+    }
+
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
     private suspend fun run(lockers: LockersClient) {

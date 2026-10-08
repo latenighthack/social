@@ -10,10 +10,10 @@ import me.tatarka.inject.annotations.Provides
  * kotlin-inject bindings for the typing feature. Requires RoomsProviders in the component (the rooms
  * manager is a dependency).
  */
-interface TypingProviders {
+interface TypingProviders : com.latenighthack.social.runtime.SocialRuntimeProviders {
     @Provides
     @SocialScope
-    fun typingManagerImpl(rooms: RoomsManager): TypingManagerImpl = TypingManagerImpl(rooms)
+    fun typingManagerImpl(rooms: RoomsManager, tasks: com.latenighthack.social.runtime.SocialTaskScope): TypingManagerImpl = TypingManagerImpl(rooms, scope = tasks.scope)
 
     @Provides
     fun typingManager(impl: TypingManagerImpl): TypingManager = impl

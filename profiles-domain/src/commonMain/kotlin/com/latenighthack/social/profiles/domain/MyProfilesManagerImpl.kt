@@ -66,22 +66,24 @@ class MyProfilesManagerImpl(
     private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
-    private var job: Job? = null
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private var lockers: LockersClient? = null
 
     override val isLoaded: StateFlow<Boolean> get() = _isLoaded
 
     override fun start(lockers: LockersClient) {
-        this.lockers = lockers
-        if (job?.isActive == true) return
+        runner.start(lockers, onStart = { this.lockers = lockers }) {
         _isLoaded.value = false
-        job = scope.launch { recoverTask(taskHealth) { run() } }
+             recoverTask(taskHealth) { run() } }
     }
 
     override fun stop() {
-        job?.cancel()
-        job = null
+        runner.stop()
         _isLoaded.value = false
+    }
+
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
     override suspend fun deriveSharedSecret(profileId: ProfileId, peerPublicKey: ByteArray): ByteArray? {

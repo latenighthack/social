@@ -14,15 +14,14 @@ import me.tatarka.inject.annotations.Provides
  * the component (the rooms and profiles managers are dependencies). The app must provide the
  * [Database] the observed-messages cache is created from.
  */
-interface MessagesProviders {
+interface MessagesProviders : com.latenighthack.social.runtime.SocialRuntimeProviders {
     @Provides
     @SocialScope
     fun messagesManagerImpl(
         rooms: RoomsManager,
         myProfiles: MyProfilesManager,
         database: Database,
-        session: AccountSession,
-    ): MessagesManagerImpl = MessagesManagerImpl(rooms, myProfiles, database, session = session)
+        session: AccountSession, tasks: com.latenighthack.social.runtime.SocialTaskScope): MessagesManagerImpl = MessagesManagerImpl(rooms, myProfiles, database, session = session, scope = tasks.scope)
 
     @Provides
     fun messagesManager(impl: MessagesManagerImpl): MessagesManager = impl
@@ -33,7 +32,7 @@ interface MessagesProviders {
 
     @Provides
     @SocialScope
-    fun draftsManagerImpl(database: Database, session: AccountSession): DraftsManagerImpl = DraftsManagerImpl(database, session = session)
+    fun draftsManagerImpl(database: Database, session: AccountSession, tasks: com.latenighthack.social.runtime.SocialTaskScope): DraftsManagerImpl = DraftsManagerImpl(database, session = session, scope = tasks.scope)
 
     @Provides
     fun draftsManager(impl: DraftsManagerImpl): DraftsManager = impl

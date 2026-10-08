@@ -11,10 +11,10 @@ import me.tatarka.inject.annotations.Provides
  * account manager is the only dependency; contacts write to the account room and need no key source
  * of their own).
  */
-interface ContactsProviders {
+interface ContactsProviders : com.latenighthack.social.runtime.SocialRuntimeProviders {
     @Provides
     @SocialScope
-    fun contactsManagerImpl(account: AccountManager): ContactsManagerImpl = ContactsManagerImpl(account)
+    fun contactsManagerImpl(account: AccountManager, tasks: com.latenighthack.social.runtime.SocialTaskScope): ContactsManagerImpl = ContactsManagerImpl(account, scope = tasks.scope)
 
     @Provides
     fun contactsManager(impl: ContactsManagerImpl): ContactsManager = impl

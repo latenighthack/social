@@ -13,6 +13,7 @@ interface DomainLifecycle {
     suspend fun prepare() {}
     fun start(lockers: LockersClient)
     fun stop()
+    suspend fun stopAndJoin() { stop() }
 }
 
 private val IdleTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)

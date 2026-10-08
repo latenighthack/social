@@ -45,18 +45,20 @@ class ContactsManagerImpl(
 ) : ContactsManager, DomainLifecycle {
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
-    private var job: Job? = null
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private var lockers: LockersClient? = null
 
     override fun start(lockers: LockersClient) {
-        this.lockers = lockers
-        if (job?.isActive == true) return
-        job = scope.launch { recoverTask(taskHealth) { run(lockers) } }
+        runner.start(lockers, onStart = { this.lockers = lockers }) {
+             recoverTask(taskHealth) { run(lockers) } }
     }
 
     override fun stop() {
-        job?.cancel()
-        job = null
+        runner.stop()
+    }
+
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
     // Warm the account room once the account is ready so the watch and mutations see current

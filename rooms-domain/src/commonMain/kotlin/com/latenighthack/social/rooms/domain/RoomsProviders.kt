@@ -16,7 +16,7 @@ import me.tatarka.inject.annotations.Provides
  * service. [RoomsKeySource] is the top of the lock-key chain; an app that includes rooms binds it as
  * the client's `LockKeySource`.
  */
-interface RoomsProviders {
+interface RoomsProviders : com.latenighthack.social.runtime.SocialRuntimeProviders {
     @Provides
     @SocialScope
     fun joinClient(rpcClient: RpcClient): JoinClient = JoinClientImpl(rpcClient)
@@ -26,8 +26,7 @@ interface RoomsProviders {
     fun roomsManagerImpl(
         account: AccountManager,
         myProfiles: MyProfilesManager,
-        joinClient: JoinClient,
-    ): RoomsManagerImpl = RoomsManagerImpl(account, myProfiles, joinClient)
+        joinClient: JoinClient, tasks: com.latenighthack.social.runtime.SocialTaskScope): RoomsManagerImpl = RoomsManagerImpl(account, myProfiles, joinClient, scope = tasks.scope)
 
     @Provides
     fun roomsManager(impl: RoomsManagerImpl): RoomsManager = impl
