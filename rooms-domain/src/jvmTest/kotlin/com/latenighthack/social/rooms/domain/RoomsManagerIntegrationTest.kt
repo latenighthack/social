@@ -119,6 +119,24 @@ class RoomsManagerIntegrationTest {
     }
 
     @Test(timeout = 30000)
+    fun `cached own profiles must load while offline`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val store = KeyValueStore(InMemoryKeyValueStoreDelegate())
+                val db = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("review-offline"), com.latenighthack.ktstore.InMemoryStoreDelegate())
+                val clientStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
+                val online = newParty(server.rpcClient, store, database=db, clientStore=clientStore)
+                val id = online.myProfiles.createProfile("cached")
+                online.close()
+                val offline = newParty(OfflineRpcClient(), store, database=db, clientStore=clientStore)
+                try {
+                    val profiles = kotlinx.coroutines.withTimeoutOrNull(2000) { offline.myProfiles.getProfileList().first { id in it } }
+                    assertTrue(profiles != null, "cached own profile is blocked behind a subscription ACK while offline")
+                } finally { offline.close() }
+            }
+        }
+
+    @Test(timeout = 30000)
     fun `leaving an invited room must survive reconstructing managers`() =
         runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {

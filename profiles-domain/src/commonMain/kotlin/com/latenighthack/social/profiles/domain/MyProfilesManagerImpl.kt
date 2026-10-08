@@ -15,6 +15,7 @@ import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
+import com.latenighthack.lockers.connector.TypedLockerUpdate
 import com.latenighthack.social.account.domain.AccountManager
 import com.latenighthack.social.common.domain.sign as signContent
 import com.latenighthack.social.common.v1.SignedContent
@@ -36,6 +37,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.first
 
 /**
  * Owns the user's profile key pairs (kept in memory, sourced from the account room) and drives
@@ -137,20 +140,18 @@ class MyProfilesManagerImpl(
                 account.unprotectSecret("profile/${profileId.rawValue.toList()}", source.encryptedPrivateKey)
             } else source.privateKey
             val keyPair = Secp256r1KeyPair.fromPrivateKey(privateBytes) ?: continue
-            if (source.encryptedPrivateKey.isEmpty() && source.privateKey.isNotEmpty()) {
-                val encrypted = account.protectSecret("profile/${profileId.rawValue.toList()}", privateBytes)
-                sourceClient.updateLocker(accountRoom, profileId.toSourceLockerId()) {
-                    it.copy { privateKey = ByteArray(0); encryptedPrivateKey = encrypted }
-                }
-            }
             keyPairs = keyPairs + (profileId to keyPair)
-            // Key material first, then best-effort server work: the room re-lock is a no-op for an
-            // established profile and the profile read is cache-served, so an offline failure here
-            // must not drop the key or sink the remaining profiles.
-            runCatching { ensureProfileRoom(profileClient, profileId, keyPair) }
-            runCatching {
-                profileClient.getLocker(profileId.toRoomId(), profileId.toProfileLockerId())?.let {
-                    _profiles.value = _profiles.value + (profileId to it)
+            profileClient.subscribeToRoom(profileId.toRoomId(), waitForSubscription = false)
+            val cached = profileClient.watch(profileId.toRoomId(), profileId.toProfileLockerId()).first()
+            if (cached is TypedLockerUpdate.Present) {
+                _profiles.value = _profiles.value + (profileId to cached.value)
+            }
+            if (source.encryptedPrivateKey.isEmpty() && source.privateKey.isNotEmpty()) {
+                CoroutineScope(currentCoroutineContext()).launch {
+                    val encrypted = account.protectSecret("profile/${profileId.rawValue.toList()}", privateBytes)
+                    sourceClient.updateLocker(accountRoom, profileId.toSourceLockerId()) {
+                        it.copy { privateKey = ByteArray(0); encryptedPrivateKey = encrypted }
+                    }
                 }
             }
         }

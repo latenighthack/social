@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 
 /**
  * Observes profile lockers and mirrors them into memory + a persistent [ProfileStore]. Profiles
@@ -76,9 +77,10 @@ class ProfilesManagerImpl(
     override suspend fun observe(profileId: ProfileId) {
         val lockers = lockers ?: error("observe requires start(lockers) first")
         val client = profileClient(lockers)
-        client.subscribeToRoom(profileId.toRoomId())
-        // Capture the current value directly so callers don't race the update stream.
-        client.getLocker(profileId.toRoomId(), profileId.toProfileLockerId(), revalidate = false)?.let { ingest(profileId, it) }
+        client.subscribeToRoom(profileId.toRoomId(), waitForSubscription = false)
+        // The initial snapshot is local; server synchronization continues independently.
+        val cached = client.watch(profileId.toRoomId(), profileId.toProfileLockerId()).first()
+        if (cached is TypedLockerUpdate.Present) ingest(profileId, cached.value)
     }
 
     override fun getProfile(id: ProfileId): Profile? = _profiles.value[id]
