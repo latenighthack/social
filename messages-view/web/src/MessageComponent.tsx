@@ -332,7 +332,7 @@ function renderRun(runText: string, active: Inline[], ctx: Ctx, key: number): Re
           borderRadius: 3,
         }}
       >
-        {runText}
+        {"█".repeat(runText.length)}
       </span>
     );
   }

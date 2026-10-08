@@ -217,6 +217,7 @@ struct MessageRenderer {
 
     private func buildText(_ text: MessageText, inOverlay: Bool, textAlign: NSTextAlignment) -> UIView {
         let label = UILabel()
+        label.accessibilityLabel = MessagePreviewView.redactedText(text)
         label.numberOfLines = 0
         label.textAlignment = textAlign
         // A multiline UILabel has no intrinsic width on its own, so a bubble that hugs it is

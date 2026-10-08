@@ -45,3 +45,6 @@ node_modules/
 # Isolated Fullhouse paired-build state
 .fh/
 .artifacts/
+
+# Compiled renderer regression harness
+messages-view/web/.test-build/

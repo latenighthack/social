@@ -277,7 +277,13 @@ class MessageLayoutBuilder(
     }
 
     private fun createSpannableInlines(theme: MessageTheme, text: String, inlines: List<Inline>): Spannable {
-        val builder = SpannableStringBuilder(text)
+        val visible = text.toCharArray()
+        for (inline in inlines) if (inline.rule?.contents?.getRedaction() != null) {
+            val start = inline.offset.coerceIn(0, visible.size)
+            val end = (inline.offset.toLong() + inline.length.coerceAtLeast(0)).coerceIn(start.toLong(), visible.size.toLong()).toInt()
+            for (index in start until end) visible[index] = '█'
+        }
+        val builder = SpannableStringBuilder(visible.concatToString())
         val flags = Spannable.SPAN_INCLUSIVE_INCLUSIVE
         for (inline in inlines) {
             val start = inline.offset.coerceIn(0, text.length)

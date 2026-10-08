@@ -42,14 +42,26 @@ public final class MessagePreviewView: UIView {
             let order: [MessageText.Style] = [.default, .title, .subtitle, .description_]
             for style in order {
                 if let match = texts.first(where: { $0.style == style && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }) {
-                    return match.text.trimmingCharacters(in: .whitespaces)
+                    return redactedText(match).trimmingCharacters(in: .whitespaces)
                 }
             }
             if let any = texts.first(where: { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }) {
-                return any.text.trimmingCharacters(in: .whitespaces)
+                return redactedText(any).trimmingCharacters(in: .whitespaces)
             }
         }
         return images.first
+    }
+
+    /// UTF-16 offsets are shared with Android and the protobuf contract.
+    public static func redactedText(_ text: MessageText) -> String {
+        var units = Array(text.text.utf16)
+        for inline in text.inlines {
+            guard case .redaction? = inline.rule.contents else { continue }
+            let start = max(0, min(Int(inline.offset), units.count))
+            let end = max(start, min(Int(inline.offset) + max(0, Int(inline.length)), units.count))
+            for index in start..<end { units[index] = 0x2588 }
+        }
+        return String(decoding: units, as: UTF16.self)
     }
 
     private static func collect(_ component: MessageComponent, texts: inout [MessageText], images: inout [String]) {

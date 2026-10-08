@@ -13,6 +13,8 @@ android {
         minSdk = 24
     }
 
+    testOptions { unitTests.isIncludeAndroidResources = true }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -24,6 +26,9 @@ kotlin {
 }
 
 dependencies {
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.ktbuf.library)
     // The Component types are part of this library's public API (callers pass a Component).
     api(projects.messagesApi)
 
