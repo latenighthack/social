@@ -6,7 +6,7 @@ package com.latenighthack.social.messages.domain
 
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
 import com.latenighthack.ktcrypto.decode
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.IncomingNotification
 import com.latenighthack.lockers.connector.LockersClient
@@ -65,7 +65,7 @@ import kotlin.random.Random
 class MessagesManagerImpl(
     private val rooms: RoomsManager,
     private val myProfiles: MyProfilesManager,
-    private val delegate: StoreDelegate,
+    private val database: Database,
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
     private val backoffBaseMillis: Long = DEFAULT_BACKOFF_BASE_MILLIS,
     private val backoffCapMillis: Long = DEFAULT_BACKOFF_CAP_MILLIS,
@@ -73,9 +73,9 @@ class MessagesManagerImpl(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : MessagesManager, DomainLifecycle {
 
-    private val store = MessageStore(delegate)
-    private val pending = PendingMessageStore(delegate)
-    private val deadLetters = DeadLetterStore(delegate)
+    private val store = MessageStore(database)
+    private val pending = PendingMessageStore(database)
+    private val deadLetters = DeadLetterStore(database)
 
     // One lazily-loaded, cached list of messages per room the app has touched. Guarded by [roomsMutex].
     private val roomLists = mutableMapOf<RoomId, RoomMessageList>()

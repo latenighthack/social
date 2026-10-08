@@ -2,7 +2,7 @@ package com.latenighthack.social.login.core.service
 
 import com.latenighthack.ktbuf.net.ServerDescriptor
 import com.latenighthack.ktstore.InMemoryStoreDelegate
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.server.ServerExtension
 import com.latenighthack.lockers.server.ServerExtensionFactory
 import com.latenighthack.lockers.server.tools.GrpcRouteProvider
@@ -15,11 +15,11 @@ import java.util.ServiceLoader
 
 /**
  * Attaches the [LoginServiceImpl] to the locker server as a gRPC service, backed by two ktstore
- * stores on a shared [StoreDelegate]. The stores are prepared in [start] (mirroring the monolith's
- * own start), so a durable delegate is a drop-in replacement for the in-memory default.
+ * stores on a shared [Database]. The stores are prepared in [start] (mirroring the monolith's
+ * own start), so a durable database is a drop-in replacement for the in-memory default.
  */
 class LoginServerExtension(
-    private val storeDelegate: StoreDelegate,
+    private val database: Database,
     custody: CustodyCrypto,
     hasher: Pbkdf2Hasher,
     appleVerifier: SocialTokenVerifier?,
@@ -30,8 +30,8 @@ class LoginServerExtension(
     nonces: NonceService = NonceService(),
     requireNonce: Boolean = false,
 ) : ServerExtension {
-    private val credentials = CredentialStore(storeDelegate)
-    private val challenges = ChallengeStore(storeDelegate)
+    private val credentials = CredentialStore(database)
+    private val challenges = ChallengeStore(database)
     private val serviceImpl = LoginServiceImpl(
         credentials = credentials,
         challenges = challenges,
@@ -54,9 +54,10 @@ class LoginServerExtension(
     )
 
     override suspend fun start() {
+        database.open()
         credentials.prepare()
         challenges.prepare()
-        storeDelegate.createStores()
+        database.open()
     }
 }
 
@@ -68,11 +69,13 @@ class LoginServerExtension(
  * [LoginConfig]; each provider reads its own configuration from the environment.
  *
  * NOTE: the default [InMemoryStoreDelegate] does not survive a restart. A production deployment must
- * supply a durable delegate; the custodial private key is already encrypted at rest under the master
+ * supply a durable database; the custodial private key is already encrypted at rest under the master
  * key, so persistence is the only missing piece.
  */
 class LoginServerExtensionFactory : ServerExtensionFactory {
-    override fun create(meterRegistry: MeterRegistry): ServerExtension {
+    override val storeDefinitions get() = LoginStorage.definitions
+    override fun create(meterRegistry: MeterRegistry): ServerExtension = create(meterRegistry, LoginStorage.inMemory())
+    override fun create(meterRegistry: MeterRegistry, database: Database): ServerExtension {
         val config = LoginConfig.fromEnv()
         val httpClient = HttpClient(CIO)
         val context = LoginProviderContext(System::getenv, httpClient)
@@ -80,7 +83,7 @@ class LoginServerExtensionFactory : ServerExtensionFactory {
 
         val social = handlers.filterIsInstance<LoginHandler.SocialVerifier>()
         return LoginServerExtension(
-            storeDelegate = InMemoryStoreDelegate(),
+            database = database,
             custody = CustodyCrypto(config.masterKey),
             hasher = Pbkdf2Hasher(),
             appleVerifier = social.firstOrNull { it.provider == Provider.PROVIDER_APPLE }?.verifier,

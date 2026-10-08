@@ -1,8 +1,6 @@
 package com.latenighthack.social.messages.domain
 
-import com.latenighthack.ktstore.BoundStoreKey
-import com.latenighthack.ktstore.Store
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.*
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.social.messages.v1.MessageId
 import com.latenighthack.social.messages.v1.PendingMessage
@@ -15,15 +13,10 @@ import com.latenighthack.social.messages.v1.toByteArray
  * ids are only unique within a room, so both are needed to identify a row and to look one up without
  * scanning the whole outbox.
  */
-internal class PendingMessageStore(delegate: StoreDelegate) : Store<PendingMessage>(
-    delegate,
-    "pending_messages",
-    PendingMessage::toByteArray,
-    PendingMessage.Companion::fromByteArray,
-) {
-    private val roomIdKey = bytesIndex(PendingMessage::roomId)
-    private val messageIdKey = serializedIndex(PendingMessage::messageId, MessageId::toByteArray)
-    private val roomIdMessageIdKey = compositeIndex(roomIdKey, messageIdKey).also { primaryKey(it) }
+internal class PendingMessageStore(database: Database) : Store<PendingMessage>(database, PendingMessageStoreDefinitionV1) {
+    private val roomIdKey = PendingMessageStoreDefinitionV1.roomIdKey
+    private val messageIdKey = PendingMessageStoreDefinitionV1.messageIdKey
+    private val roomIdMessageIdKey = PendingMessageStoreDefinitionV1.roomIdMessageIdKey
 
     suspend fun getAllPending(): List<PendingMessage> = getAll()
 
@@ -32,8 +25,8 @@ internal class PendingMessageStore(delegate: StoreDelegate) : Store<PendingMessa
     suspend fun deletePending(roomId: RoomId, messageId: MessageId) = delete(
         roomIdMessageIdKey.eq(
             listOf(
-                BoundStoreKey.SerializedKey(roomIdKey.name, roomId.rawValue),
-                BoundStoreKey.SerializedKey(messageIdKey.name, messageId.toByteArray()),
+                BoundStoreKey.SerializedKey(roomIdKey.name.value, roomId.rawValue),
+                BoundStoreKey.SerializedKey(messageIdKey.name.value, messageId.toByteArray()),
             ),
         ),
     )

@@ -23,6 +23,7 @@ kotlin {
         }
         val jvmTest by getting {
             dependencies {
+                implementation("org.xerial:sqlite-jdbc:3.45.3.0")
                 implementation(kotlin("test"))
                 implementation(libs.coroutines.core)
                 implementation(libs.assertk)

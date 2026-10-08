@@ -41,3 +41,7 @@ messages-view/**/dist/
 messages-view/demo/ios/*.xcodeproj/
 messages-view/ios/.build/
 node_modules/
+
+# Isolated Fullhouse paired-build state
+.fh/
+.artifacts/

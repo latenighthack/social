@@ -1,7 +1,6 @@
 package com.latenighthack.social.remotecontent.domain
 
-import com.latenighthack.ktstore.Store
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.*
 import com.latenighthack.social.remotecontent.v1.ContentId
 import com.latenighthack.social.remotecontent.v1.PendingUpload
 import com.latenighthack.social.remotecontent.v1.fromByteArray
@@ -12,14 +11,8 @@ import com.latenighthack.social.remotecontent.v1.toByteArray
  * re-enqueuing the same content overwrites rather than duplicates. Survives restarts, letting the
  * uploader resume in-flight transfers.
  */
-internal class PendingUploadStore(delegate: StoreDelegate) : Store<PendingUpload>(
-    delegate,
-    "pending_uploads",
-    PendingUpload::toByteArray,
-    PendingUpload.Companion::fromByteArray,
-) {
-    private val contentIdKey = serializedIndex(PendingUpload::contentId, ContentId::toByteArray)
-        .also { primaryKey(it) }
+internal class PendingUploadStore(database: Database) : Store<PendingUpload>(database, PendingUploadStoreDefinitionV1) {
+    private val contentIdKey = PendingUploadStoreDefinitionV1.contentIdKey
 
     suspend fun getAllPending(): List<PendingUpload> = getAll()
 

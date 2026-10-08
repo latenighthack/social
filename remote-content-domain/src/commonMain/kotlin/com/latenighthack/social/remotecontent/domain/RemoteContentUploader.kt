@@ -4,7 +4,7 @@
 
 package com.latenighthack.social.remotecontent.domain
 
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.remotecontent.v1.ContentId
 import com.latenighthack.social.remotecontent.v1.PendingUpload
@@ -80,12 +80,12 @@ interface RemoteContentUploader {
  */
 class RemoteContentUploaderImpl(
     private val client: RemoteContentClient,
-    private val delegate: StoreDelegate,
+    private val database: Database,
     private val retryIntervalMillis: Long = DEFAULT_RETRY_INTERVAL_MILLIS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : RemoteContentUploader, DomainLifecycle {
 
-    private val store = PendingUploadStore(delegate)
+    private val store = PendingUploadStore(database)
 
     // Observable status per upload, keyed by content id bytes. Completed entries are retained (bytes
     // already dropped from the durable store, so this is metadata only) so observers see completion.

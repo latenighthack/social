@@ -4,7 +4,7 @@ import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.ktbuf.server.serveAll
 import com.latenighthack.ktbuf.test.server.runTestWithServer
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
-import com.latenighthack.ktstore.InMemoryStoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.ktstore.KeyValueStore
 import com.latenighthack.lockers.common.v1.Version
 import com.latenighthack.lockers.connector.LockersClient
@@ -47,12 +47,12 @@ private val fakeApple = object : AppleSignInClient {
 // the Apple verifier enabled — on one in-process server, so a single rpcClient drives both.
 private suspend fun Application.attachLoginAndLockers() {
     attachTestServices()
-    val delegate = InMemoryStoreDelegate()
+    val delegate = com.latenighthack.social.login.core.service.LoginStorage.inMemory()
     val credentials = CredentialStore(delegate)
     val challenges = ChallengeStore(delegate)
     credentials.prepare()
     challenges.prepare()
-    delegate.createStores()
+    delegate.open()
     val service = LoginServiceImpl(
         credentials = credentials,
         challenges = challenges,
@@ -73,7 +73,7 @@ private suspend fun bootAccount(rpcClient: RpcClient): Pair<AccountManagerImpl, 
     val keySource = AccountKeySource(manager)
     val lockers = LockersClient.create(
         rpcClient = rpcClient,
-        storeDelegate = InMemoryStoreDelegate(),
+        database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
         keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
         keySource = keySource,
         appVersion = Version(0, 0, 1),

@@ -2,7 +2,7 @@ package com.latenighthack.social.profiles.domain
 
 import com.latenighthack.ktbuf.test.server.runTestWithServer
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
-import com.latenighthack.ktstore.InMemoryStoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.ktstore.KeyValueStore
 import com.latenighthack.lockers.common.v1.Version
 import com.latenighthack.lockers.connector.LockersClient
@@ -27,7 +27,7 @@ class ProfilesManagerIntegrationTest {
             val myProfilesA = MyProfilesManagerImpl(accountA)
             val lockersA = LockersClient.create(
                 rpcClient = server.rpcClient,
-                storeDelegate = InMemoryStoreDelegate(),
+                database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.profiles.domain.ProfilesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate()),
                 keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
                 keySource = keySourceA,
                 appVersion = Version(0, 0, 1),
@@ -44,7 +44,7 @@ class ProfilesManagerIntegrationTest {
             val keySourceB = AccountKeySource(accountB)
             val lockersB = LockersClient.create(
                 rpcClient = server.rpcClient,
-                storeDelegate = InMemoryStoreDelegate(),
+                database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.profiles.domain.ProfilesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate()),
                 keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
                 keySource = keySourceB,
                 appVersion = Version(0, 0, 1),
@@ -54,10 +54,10 @@ class ProfilesManagerIntegrationTest {
             accountB.createAccount()
             accountB.lifecycle.first { it is AccountManager.Lifecycle.Ready }
 
-            val cacheDelegate = InMemoryStoreDelegate()
+            val cacheDelegate = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.profiles.domain.ProfilesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
             val profilesManager = ProfilesManagerImpl(cacheDelegate)
             profilesManager.prepare()
-            cacheDelegate.createStores()
+            cacheDelegate.open()
             profilesManager.start(lockersB)
             profilesManager.observe(profileId)
 
