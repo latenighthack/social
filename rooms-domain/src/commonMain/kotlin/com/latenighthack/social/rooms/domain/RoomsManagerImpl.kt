@@ -109,10 +109,10 @@ class RoomsManagerImpl(
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
-    private var lockers: LockersClient? = null
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
 
     override fun start(lockers: LockersClient) {
-        runner.start(lockers, onStart = { this.lockers = lockers }) {
+        runner.start(lockers) {
              recoverTask(taskHealth) { run(lockers) } }
     }
 
@@ -182,7 +182,7 @@ class RoomsManagerImpl(
     // --- room operations ---
 
     override suspend fun createGroup(name: String): RoomId = account.withAccount {
-        createGroupOwned(name)
+        runner.command { createGroupOwned(name) }
     }
 
     private suspend fun createGroupOwned(name: String): RoomId {
@@ -210,7 +210,7 @@ class RoomsManagerImpl(
     }
 
     override suspend fun openRendezvous(peerProfileId: ProfileId): RoomId = account.withAccount {
-        openRendezvousOwned(peerProfileId)
+        runner.command { openRendezvousOwned(peerProfileId) }
     }
 
     private suspend fun openRendezvousOwned(peerProfileId: ProfileId): RoomId {
@@ -248,7 +248,7 @@ class RoomsManagerImpl(
         account.withAccount { RoomKeying.publicKeyed(deriveChildKey(parentRoomId, purpose, salt).publicKey.encode()) }
 
     override suspend fun openDerivedRoom(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId = account.withAccount {
-        openDerivedRoomOwned(parentRoomId, purpose, salt)
+        runner.command { openDerivedRoomOwned(parentRoomId, purpose, salt) }
     }
 
     private suspend fun openDerivedRoomOwned(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId {
@@ -289,7 +289,7 @@ class RoomsManagerImpl(
     }
 
     override suspend fun createInviteCode(roomId: RoomId): InviteCode = account.withAccount {
-        createInviteCodeOwned(roomId)
+        runner.command { createInviteCodeOwned(roomId) }
     }
 
     private suspend fun createInviteCodeOwned(roomId: RoomId): InviteCode {
@@ -307,7 +307,7 @@ class RoomsManagerImpl(
     }
 
     override suspend fun revokeInviteCode(roomId: RoomId, code: InviteCode): Unit = account.withAccount {
-        revokeInviteCodeOwned(roomId, code)
+        runner.command { revokeInviteCodeOwned(roomId, code) }
     }
 
     private suspend fun revokeInviteCodeOwned(roomId: RoomId, code: InviteCode) {
@@ -320,7 +320,7 @@ class RoomsManagerImpl(
     }
 
     override suspend fun inviteToRoom(roomId: RoomId, peerProfileId: ProfileId): Unit = account.withAccount {
-        inviteToRoomOwned(roomId, peerProfileId)
+        runner.command { inviteToRoomOwned(roomId, peerProfileId) }
     }
 
     private suspend fun inviteToRoomOwned(roomId: RoomId, peerProfileId: ProfileId) {
@@ -337,7 +337,7 @@ class RoomsManagerImpl(
     }
 
     override suspend fun joinByCode(code: InviteCode): RoomId = account.withAccount {
-        joinByCodeOwned(code)
+        runner.command { joinByCodeOwned(code) }
     }
 
     private suspend fun joinByCodeOwned(code: InviteCode): RoomId {
@@ -374,7 +374,7 @@ class RoomsManagerImpl(
     }
 
     override suspend fun leave(roomId: RoomId): Unit = account.withAccount {
-        leaveOwned(roomId)
+        runner.command { leaveOwned(roomId) }
     }
 
     private suspend fun leaveOwned(roomId: RoomId) {
@@ -389,7 +389,7 @@ class RoomsManagerImpl(
     }
 
     override suspend fun updateInfo(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit): Unit = account.withAccount {
-        updateInfoOwned(roomId, builder)
+        runner.command { updateInfoOwned(roomId, builder) }
     }
 
     private suspend fun updateInfoOwned(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit) {
@@ -400,7 +400,7 @@ class RoomsManagerImpl(
     }
 
     override suspend fun markUpdated(roomId: RoomId): Unit = account.withAccount {
-        markUpdatedOwned(roomId)
+        runner.command { markUpdatedOwned(roomId) }
     }
 
     private suspend fun markUpdatedOwned(roomId: RoomId) {

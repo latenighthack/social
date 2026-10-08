@@ -47,7 +47,7 @@ class ProfilesManagerImpl(
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
-    private var lockers: LockersClient? = null
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
     // Completes once the cache has been loaded — gates all store access.
     private var ready = CompletableDeferred<Unit>()
 
@@ -56,7 +56,7 @@ class ProfilesManagerImpl(
     }
 
     override fun start(lockers: LockersClient) {
-        runner.start(lockers, onStart = { this.lockers = lockers }) {
+        runner.start(lockers) {
              recoverTask(taskHealth) {
             if (ready.isCancelled) ready = CompletableDeferred()
             try {

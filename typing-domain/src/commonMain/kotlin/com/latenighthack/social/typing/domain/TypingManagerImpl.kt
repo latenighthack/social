@@ -75,10 +75,10 @@ class TypingManagerImpl(
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
-    private var lockers: LockersClient? = null
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
 
     override fun start(lockers: LockersClient) {
-        runner.start(lockers, onStart = { this.lockers = lockers }) {
+        runner.start(lockers) {
              recoverTask(taskHealth) { run(lockers) } }
     }
 

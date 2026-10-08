@@ -70,12 +70,12 @@ class MyProfilesManagerImpl(
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
-    private var lockers: LockersClient? = null
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
 
     override val isLoaded: StateFlow<Boolean> get() = _isLoaded
 
     override fun start(lockers: LockersClient) {
-        runner.start(lockers, onStart = { this.lockers = lockers }) {
+        runner.start(lockers) {
         _isLoaded.value = false
              recoverTask(taskHealth) { run() } }
     }
@@ -209,7 +209,7 @@ class MyProfilesManagerImpl(
         }
     }
 
-    override suspend fun createProfile(displayName: String): ProfileId = account.withAccount { createProfileOwned(displayName) }
+    override suspend fun createProfile(displayName: String): ProfileId = account.withAccount { runner.command { createProfileOwned(displayName) } }
 
     private suspend fun createProfileOwned(displayName: String): ProfileId {
         val lockers = lockers ?: error("createProfile requires start(lockers) first")
@@ -252,7 +252,7 @@ class MyProfilesManagerImpl(
         return profileId
     }
 
-    override suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit): Unit = account.withAccount { updateProfileOwned(profileId, builder) }
+    override suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit): Unit = account.withAccount { runner.command { updateProfileOwned(profileId, builder) } }
 
     private suspend fun updateProfileOwned(profileId: ProfileId, builder: ProfileBuilder.() -> Unit) {
         val lockers = lockers ?: error("updateProfile requires start(lockers) first")

@@ -13,6 +13,35 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 
 class ManagerRunnerTest {
+    @Test fun commandsWaitForPriorCleanupAndStopJoinsTheirChildren() = runTest {
+        val runner = ManagerRunner(backgroundScope)
+        val release = CompletableDeferred<Unit>()
+        val old = Any()
+        val replacement = Any()
+        runner.start(old) {
+            try { awaitCancellation() } finally { withContext(NonCancellable) { release.await() } }
+        }
+        runCurrent()
+        runner.stop()
+        runner.start(replacement) { awaitCancellation() }
+        assertEquals(replacement, runner.token)
+        var admitted = false
+        var cleaned = false
+        val command = launch {
+            runner.command {
+                admitted = true
+                try { awaitCancellation() } finally { cleaned = true }
+            }
+        }
+        runCurrent(); assertFalse(admitted)
+        release.complete(Unit); runCurrent()
+        kotlin.test.assertTrue(admitted)
+        runner.stopAndJoin()
+        command.join()
+        kotlin.test.assertTrue(cleaned)
+        kotlin.test.assertNull(runner.token)
+    }
+
     @Test fun restartWaitsForCleanupAndRejectsClientReplacement() = runTest {
         val runner = ManagerRunner(backgroundScope)
         val release = CompletableDeferred<Unit>()

@@ -155,7 +155,7 @@ class AccountManagerImpl(
     private var everReady = false
     private var roomInitialized = false
     private var roomInitializedOwner: String? = null
-    private var lockers: LockersClient? = null
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
 
     override suspend fun createAccount(): ByteArray = identityMutex.withLock {
         if (!hasSessionKey()) {
@@ -245,7 +245,7 @@ class AccountManagerImpl(
         AES.GCM.decrypt(secretKey(context), ciphertext)
 
     override fun start(lockers: LockersClient) {
-        runner.start(lockers, onStart = { this.lockers = lockers }) {
+        runner.start(lockers) {
         roomInitialized = false
              recoverTask(taskHealth) { run(lockers) } }
     }
