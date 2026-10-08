@@ -7,6 +7,8 @@
 
 package com.latenighthack.social.messages.domain
 
+import com.latenighthack.social.messages.v1.BoundedMessagePayload
+
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
 import com.latenighthack.ktcrypto.decode
 import com.latenighthack.ktstore.Database
@@ -191,7 +193,7 @@ class MessagesManagerImpl(
                         launch {
                             messageClient(lockers).watchAll(roomId).collect { snapshot ->
                                 for ((id, signed) in snapshot) {
-                                    val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull() ?: continue
+                                    val payload = BoundedMessagePayload.decode(signed.content) ?: continue
                                     if (!payload.messageId.contentEquals(id.rawValue)) continue
                                     tryIngest(roomId, signed)
                                 }
@@ -216,6 +218,7 @@ class MessagesManagerImpl(
     }
 
     private suspend fun onNotification(notification: IncomingNotification) {
+        if (notification.payload.size > 70_000) return
         val signed = runCatching { SignedContent.fromByteArray(notification.payload) }.getOrNull() ?: return
         // A malformed or transiently-failing message must not tear down the shared notification collector.
         try {
@@ -227,7 +230,7 @@ class MessagesManagerImpl(
     }
 
     private suspend fun tryIngest(roomId: RoomId, signed: SignedContent) {
-        val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull() ?: return
+        val payload = BoundedMessagePayload.decode(signed.content) ?: return
         if (!payload.roomId.contentEquals(roomId.rawValue) || payload.orderingCounter < 0 || payload.orderingCounter == Long.MAX_VALUE) return
         val senderId = ProfileId { rawValue = payload.senderProfileId }
 
@@ -277,6 +280,7 @@ class MessagesManagerImpl(
             })
 
         val counters = list.reserveCounters(components.size)
+        components.forEach { BoundedMessagePayload.requireEncodable(it) }
         val prepared = components.mapIndexed { index, component ->
             val messageId = MessageId(rawValue = Random.nextBytes(32))
             val payload = MessagePayload(
@@ -287,7 +291,9 @@ class MessagesManagerImpl(
                 component = component,
                 messageId = messageId.rawValue,
             )
-            val signed = myProfiles.sign(senderId, MessageSigning.LABEL, payload.toByteArray())
+            val bytes = payload.toByteArray()
+            require(BoundedMessagePayload.decode(bytes) != null) { "message payload exceeds supported bounds" }
+            val signed = myProfiles.sign(senderId, MessageSigning.LABEL, bytes)
                 ?: error("no signing key for the room's profile")
             Triple(messageId, payload, signed)
         }
@@ -394,10 +400,10 @@ class MessagesManagerImpl(
     override suspend fun loadEarlier(roomId: RoomId, before: MessageId, limit: Int): List<MessageEntry> {
         require(limit in 1..1000)
         val boundary = store.getMessage(roomId, before)?.takeIf { session.owns(it.ownerAccountId) }
-            ?.message?.let { MessagePayload.fromByteArray(it.content) } ?: return emptyList()
+            ?.message?.let { BoundedMessagePayload.decode(it.content) } ?: return emptyList()
         return store.getRecentMessages(roomId, { session.owns(it.ownerAccountId) }, limit,
             MessageEntry(boundary, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT)).mapNotNull {
-                it.message?.let { signed -> MessageEntry(MessagePayload.fromByteArray(signed.content), it.status) }
+                it.message?.let { signed -> BoundedMessagePayload.decode(signed.content)?.let { payload -> MessageEntry(payload, it.status) } }
             }
     }
 
@@ -452,7 +458,7 @@ class MessagesManagerImpl(
             entries.value = store.getRecentMessages(roomId, { session.owns(it.ownerAccountId) }).mapNotNull { local ->
                 val messageId = local.messageId ?: return@mapNotNull null
                 val signed = local.message ?: return@mapNotNull null
-                val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull()
+                val payload = BoundedMessagePayload.decode(signed.content)
                     ?: return@mapNotNull null
                 seen.add(messageId.rawValue.toList())
                 MessageEntry(payload, local.status)
@@ -505,7 +511,7 @@ class MessagesManagerImpl(
                 store.saveMessage(local(messageId, signed, status))
             }
             if (loaded) {
-                runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull()?.let { putLocked(it, status) }
+                BoundedMessagePayload.decode(signed.content)?.let { putLocked(it, status) }
             }
         }
 
