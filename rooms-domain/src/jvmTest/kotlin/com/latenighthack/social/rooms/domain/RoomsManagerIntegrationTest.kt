@@ -31,6 +31,8 @@ import com.latenighthack.social.common.domain.Sealing
 import com.latenighthack.social.common.v1.SealedEnvelope
 import com.latenighthack.social.profiles.domain.MyProfilesManagerImpl
 import com.latenighthack.social.profiles.domain.ProfileKeySource
+import com.latenighthack.social.profiles.domain.displayName
+import com.latenighthack.social.profiles.domain.replaceDisclosure
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.v1.CreateInviteCodeRequest
 import com.latenighthack.social.rooms.v1.CreateInviteCodeResponse
@@ -117,6 +119,28 @@ class RoomsManagerIntegrationTest {
             readyCallback: () -> Unit,
         ): Unit = throw RpcResponseException(path = "test", verb = "POST", code = Codes.UNAVAILABLE, errorMessage = "offline")
     }
+
+    @Test(timeout = 30000)
+    fun `running devices observe profile additions and room leaves without reconnecting`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val accountStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
+                val first = newParty(server.rpcClient, accountStore)
+                val profile = first.myProfiles.createProfile("first")
+                val second = newParty(server.rpcClient, accountStore)
+                try {
+                    kotlinx.coroutines.withTimeout(5000) { second.myProfiles.getProfileList().first { profile in it } }
+                    val added = first.myProfiles.createProfile("second")
+                    kotlinx.coroutines.withTimeout(5000) { second.myProfiles.getProfileList().first { added in it } }
+                    first.myProfiles.updateProfile(profile) { replaceDisclosure { displayName { value = "changed" } } }
+                    kotlinx.coroutines.withTimeout(5000) { second.myProfiles.watchProfile(profile).first { it?.displayName() == "changed" } }
+                    val room = first.rooms.createGroup("live")
+                    kotlinx.coroutines.withTimeout(5000) { second.rooms.watchRooms().first { room in it } }
+                    first.rooms.leave(room)
+                    kotlinx.coroutines.withTimeout(5000) { second.rooms.watchRooms().first { room !in it } }
+                } finally { second.close(); first.close() }
+            }
+        }
 
     @Test(timeout = 30000)
     fun `cached own profiles must load while offline`() =

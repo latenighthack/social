@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlin.time.Clock
 
 /**
@@ -86,21 +88,16 @@ class ContactsManagerImpl(
         keep = { current -> ContactRecord(friend = current.friend, block = null) },
     )
 
-    override fun watchContacts(): Flow<List<Contact>> = flow {
-        val client = contactsClient(requireLockers())
-        val room = accountRoom()
-        emitAll(
-            client.watchAll(room, ContactsKeyspaces.CONTACTS).map { records ->
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    override fun watchContacts(): Flow<List<Contact>> =
+        account.lifecycle.flatMapLatest { state ->
+            if (state !is AccountManager.Lifecycle.Ready) flowOf(emptyList())
+            else contactsClient(requireLockers()).watchAll(state.privateRoom, ContactsKeyspaces.CONTACTS).map { records ->
                 records.map { (lockerId, record) ->
-                    Contact(
-                        profileId = ProfileId { rawValue = lockerId.rawValue },
-                        friendedAtMillis = record.friend?.addedAtMillis,
-                        blockedAtMillis = record.block?.blockedAtMillis,
-                    )
+                    Contact(ProfileId { rawValue = lockerId.rawValue }, record.friend?.addedAtMillis, record.block?.blockedAtMillis)
                 }
-            },
-        )
-    }.distinctUntilChanged()
+            }
+        }.distinctUntilChanged()
 
     // Clears one field: keeps the record (rewriting via [keep]) only if the other field is still set
     // (per [otherPresent]), otherwise deletes the locker so an empty record is never stored.

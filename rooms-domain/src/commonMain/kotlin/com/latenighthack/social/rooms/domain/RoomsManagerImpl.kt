@@ -54,6 +54,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -131,11 +132,25 @@ class RoomsManagerImpl(
                 // offline cold-cache load legitimately sees nothing, and the reconnect tick then
                 // picks up the server copy. loadRooms is idempotent; failures must not kill this
                 // collector.
-                account.lifecycle.collect { lifecycle ->
-                    if (lifecycle is AccountManager.Lifecycle.Ready) {
-                        runCatching { loadRooms(lockers, lifecycle.privateRoom) }
+                account.lifecycle.map { (it as? AccountManager.Lifecycle.Ready)?.privateRoom }
+                    .distinctUntilChanged().collectLatest { accountRoom ->
+                        stateMutex.withLock {
+                            keyPairs = emptyMap(); records = emptyMap(); leftRooms = emptySet()
+                            _rooms.value = emptyList()
+                        }
+                        if (accountRoom == null) return@collectLatest
+                        var previous = emptySet<RoomId>()
+                        accountRoomsClient(lockers).watchAll(accountRoom).collect { source ->
+                            val ids = source.values.map { RoomId(rawValue = it.roomId) }.toSet()
+                            stateMutex.withLock {
+                                val removed = previous - ids
+                                keyPairs = keyPairs - removed; records = records - removed; leftRooms = leftRooms - removed
+                                _rooms.value = sortedRoomIds()
+                            }
+                            loadRooms(lockers, accountRoom, source.values)
+                            previous = ids
+                        }
                     }
-                }
             }
 
             myProfiles.getProfileList().collect { profileIds ->
@@ -461,11 +476,11 @@ class RoomsManagerImpl(
     // --- shared helpers ---
 
     /** Load the synced room list from the account room and rebuild in-memory state for each. */
-    private suspend fun loadRooms(lockers: LockersClient, accountRoom: RoomId) {
+    private suspend fun loadRooms(lockers: LockersClient, accountRoom: RoomId, sources: Collection<RoomRecord>) {
         val client = accountRoomsClient(lockers)
         // no ACK wait: offline, the cached room list must still load (reconnect reconciles the sub)
         client.subscribeToRoom(accountRoom, waitForSubscription = false)
-        for ((_, record) in client.getAllLockers(accountRoom)) {
+        for (record in sources) {
             val id = RoomId(rawValue = record.roomId)
             if (record.left) {
                 stateMutex.withLock {
