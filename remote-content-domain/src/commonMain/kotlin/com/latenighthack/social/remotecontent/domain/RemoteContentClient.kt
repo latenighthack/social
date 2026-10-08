@@ -4,6 +4,7 @@ import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.social.remotecontent.v1.ContentId
 import com.latenighthack.social.remotecontent.v1.CreateContentRequest
 import com.latenighthack.social.remotecontent.v1.RemoteContentServiceRpc
+import io.ktor.client.plugins.expectSuccess
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.onDownload
@@ -89,6 +90,7 @@ class RemoteContentClientImpl(
 
     override suspend fun upload(uploadUrl: String, bytes: ByteArray) {
         httpClient.put(uploadUrl) {
+            expectSuccess = true
             setBody(bytes)
             onUpload { sent, total ->
                 uploads.update { it + (uploadUrl to TransferProgress(sent, total ?: bytes.size.toLong())) }
@@ -98,6 +100,7 @@ class RemoteContentClientImpl(
 
     override suspend fun download(downloadUrl: String): DownloadedContent {
         val response: HttpResponse = httpClient.get(downloadUrl) {
+            expectSuccess = true
             onDownload { received, total ->
                 downloads.update { it + (downloadUrl to TransferProgress(received, total ?: 0L)) }
             }
