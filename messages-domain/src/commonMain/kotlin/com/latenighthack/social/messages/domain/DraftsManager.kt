@@ -30,4 +30,7 @@ interface DraftsManager {
 
     /** Removes the draft for [roomId]. */
     suspend fun clear(roomId: RoomId)
+
+    /** Atomically clears only the draft snapshot that was sent. */
+    suspend fun clearIfUnchanged(roomId: RoomId, sent: Draft)
 }

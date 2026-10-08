@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Keeps each room's single draft in memory and mirrors it into a persistent [DraftStore]. Purely
@@ -30,6 +32,7 @@ class DraftsManagerImpl(
 ) : DraftsManager, DomainLifecycle {
 
     private val store = DraftStore(database)
+    private val mutex = Mutex()
 
     private val _drafts = MutableStateFlow<Map<RoomId, Draft>>(emptyMap())
 
@@ -75,15 +78,28 @@ class DraftsManagerImpl(
     // the others.
     private suspend fun mutate(roomId: RoomId, transform: (Draft) -> Draft) {
         ready.await()
-        val updated = transform(_drafts.value[roomId] ?: Draft { })
-        _drafts.value = _drafts.value + (roomId to updated)
-        store.saveDraft(LocalDraft(roomId = roomId.rawValue, draft = updated))
+        mutex.withLock {
+            val updated = transform(_drafts.value[roomId] ?: Draft { })
+            store.saveDraft(LocalDraft(roomId = roomId.rawValue, draft = updated))
+            _drafts.value = _drafts.value + (roomId to updated)
+        }
     }
 
     override suspend fun clear(roomId: RoomId) {
         ready.await()
-        _drafts.value = _drafts.value - roomId
-        store.removeDraft(roomId)
+        mutex.withLock {
+            store.removeDraft(roomId)
+            _drafts.value = _drafts.value - roomId
+        }
+    }
+
+    override suspend fun clearIfUnchanged(roomId: RoomId, sent: Draft) {
+        ready.await()
+        mutex.withLock {
+            if (_drafts.value[roomId] != sent) return
+            store.removeDraft(roomId)
+            _drafts.value = _drafts.value - roomId
+        }
     }
 
     override fun watchDraft(roomId: RoomId): Flow<Draft?> =

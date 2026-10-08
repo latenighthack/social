@@ -12,6 +12,6 @@ class SendMessageUseCase(
 ) {
     suspend fun send(roomId: RoomId, draft: Draft) {
         messages.send(roomId, draft)
-        drafts.clear(roomId)
+        drafts.clearIfUnchanged(roomId, draft)
     }
 }
