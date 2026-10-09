@@ -104,7 +104,9 @@ class RoomsManagerImpl(
     private val processedInvites = linkedSetOf<LockerId>()
     private var leftRooms: Set<RoomId> = emptySet()
     private val loadedOwner = MutableStateFlow<String?>(null)
-    private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value
+    private val loadedGeneration = MutableStateFlow(-1L)
+    private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value &&
+        account.generation.value == loadedGeneration.value
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
@@ -142,16 +144,18 @@ class RoomsManagerImpl(
                 // offline cold-cache load legitimately sees nothing, and the reconnect tick then
                 // picks up the server copy. loadRooms is idempotent; failures must not kill this
                 // collector.
-                account.lifecycle.map { it as? AccountManager.Lifecycle.Ready }
+                combine(account.lifecycle, account.generation) { state, epoch -> (state as? AccountManager.Lifecycle.Ready) to epoch }
                     .distinctUntilChanged { old, new ->
-                    old?.accountId?.toList() == new?.accountId?.toList()
-                }.collectLatest { ready ->
+                        old.first?.accountId?.toList() == new.first?.accountId?.toList() && old.second == new.second
+                    }.collectLatest { (ready, epoch) ->
                 val accountRoom = ready?.privateRoom
                         stateMutex.withLock {
                             keyPairs = emptyMap(); records = emptyMap(); leftRooms = emptySet()
                             _rooms.value = emptyList()
                         }
                         loadedOwner.value = ready?.accountId?.joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
+                        loadedGeneration.value = epoch
+                        if (loadedOwner.value != account.owner.value || epoch != account.generation.value) return@collectLatest
                         if (accountRoom == null) return@collectLatest
                         var previous = emptySet<RoomId>()
                         accountRoomsClient(lockers).watchAll(accountRoom).collect { source ->
@@ -413,8 +417,8 @@ class RoomsManagerImpl(
         }
     }
 
-    override fun watchRooms(): Flow<List<RoomId>> = combine(_rooms, account.owner) { rooms, owner ->
-        if (owner != null && owner == loadedOwner.value) rooms else emptyList()
+    override fun watchRooms(): Flow<List<RoomId>> = combine(_rooms, account.owner, account.generation, loadedGeneration) { rooms, owner, epoch, loadedEpoch ->
+        if (owner != null && owner == loadedOwner.value && epoch == loadedEpoch) rooms else emptyList()
     }
 
     override fun watchInfo(roomId: RoomId): Flow<RoomInfo?> =

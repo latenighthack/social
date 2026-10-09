@@ -3,9 +3,11 @@ package com.latenighthack.social.runtime
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
@@ -38,5 +40,17 @@ class AccountOperationsTest {
                 session.requireOperationOwner()
             }
         }
+    }
+    @Test fun ownerCollectorsRestartWhenTheSameIdentityIsRestored() = runTest {
+        val session = Session()
+        val seen = mutableListOf<String?>()
+        val collector = backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+            session.ownerChanges().collect { seen.add(it) }
+        }
+        runCurrent()
+        session.generation.value++
+        runCurrent()
+        kotlin.test.assertEquals(listOf<String?>("alice", "alice"), seen)
+        collector.cancel()
     }
 }

@@ -11,7 +11,8 @@ interface AccountSession {
     val mayAdoptLegacyStorage: Boolean get() = false
 }
 
-fun AccountSession?.ownerChanges(): Flow<String?> = this?.owner ?: flowOf("")
+fun AccountSession?.ownerChanges(): Flow<String?> = if (this == null) flowOf("") else
+    kotlinx.coroutines.flow.combine(owner, generation) { id, _ -> id }
 fun AccountSession?.currentOwner(): String = if (this == null) "" else checkNotNull(owner.value) { "account is signed out" }
 fun AccountSession?.owns(recordOwner: String): Boolean = this == null ||
     (owner.value != null && (recordOwner == owner.value || (recordOwner.isEmpty() && mayAdoptLegacyStorage)))

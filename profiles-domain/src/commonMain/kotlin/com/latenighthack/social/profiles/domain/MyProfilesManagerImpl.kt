@@ -66,7 +66,9 @@ class MyProfilesManagerImpl(
     private val _profiles = MutableStateFlow<Map<ProfileId, Profile>>(emptyMap())
     private val _isLoaded = MutableStateFlow(false)
     private val loadedOwner = MutableStateFlow<String?>(null)
-    private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value
+    private val loadedGeneration = MutableStateFlow(-1L)
+    private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value &&
+        account.generation.value == loadedGeneration.value
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
@@ -103,8 +105,8 @@ class MyProfilesManagerImpl(
         }
 
     override fun getProfileList(): Flow<List<ProfileId>> =
-        combine(_profiles, account.owner, loadedOwner) { profiles, current, loaded ->
-            if (current != null && current == loaded) profiles.keys.toList() else emptyList()
+        combine(_profiles, account.owner, loadedOwner, account.generation, loadedGeneration) { profiles, current, loaded, epoch, loadedEpoch ->
+            if (current != null && current == loaded && epoch == loadedEpoch) profiles.keys.toList() else emptyList()
         }.distinctUntilChanged()
 
     override suspend fun hasProfileCached(): Boolean {
@@ -119,16 +121,16 @@ class MyProfilesManagerImpl(
     override fun getProfile(id: ProfileId): Profile? = if (ownsKeys()) _profiles.value[id] else null
 
     override fun watchProfile(id: ProfileId): Flow<Profile?> =
-        combine(_profiles, account.owner, loadedOwner) { profiles, current, loaded ->
-            if (current != null && current == loaded) profiles[id] else null
+        combine(_profiles, account.owner, loadedOwner, account.generation, loadedGeneration) { profiles, current, loaded, epoch, loadedEpoch ->
+            if (current != null && current == loaded && epoch == loadedEpoch) profiles[id] else null
         }.distinctUntilChanged()
 
     override fun getProfiles(ids: List<ProfileId>): List<Profile?> =
         ids.map { getProfile(it) }
 
     override fun watchProfiles(ids: List<ProfileId>): Flow<List<Profile?>> =
-        combine(_profiles, account.owner, loadedOwner) { profiles, current, loaded ->
-            ids.map { if (current != null && current == loaded) profiles[it] else null }
+        combine(_profiles, account.owner, loadedOwner, account.generation, loadedGeneration) { profiles, current, loaded, epoch, loadedEpoch ->
+            ids.map { if (current != null && current == loaded && epoch == loadedEpoch) profiles[it] else null }
         }.distinctUntilChanged()
 
     /** The write key for a profile room whose authority matches one of our profiles. */
@@ -139,15 +141,17 @@ class MyProfilesManagerImpl(
     }
 
     private suspend fun run() {
-        account.lifecycle.map { it as? AccountManager.Lifecycle.Ready }
-            .distinctUntilChanged { old, new ->
-                    old?.accountId?.toList() == new?.accountId?.toList()
-                }.collectLatest { ready ->
+        combine(account.lifecycle, account.generation) { state, epoch -> (state as? AccountManager.Lifecycle.Ready) to epoch }
+                    .distinctUntilChanged { old, new ->
+                        old.first?.accountId?.toList() == new.first?.accountId?.toList() && old.second == new.second
+                    }.collectLatest { (ready, epoch) ->
                 val accountRoom = ready?.privateRoom
                 keyPairs.value = emptyMap()
                 _profiles.value = emptyMap()
                 _isLoaded.value = false
                 loadedOwner.value = ready?.accountId?.joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
+                        loadedGeneration.value = epoch
+                        if (loadedOwner.value != account.owner.value || epoch != account.generation.value) return@collectLatest
                 if (accountRoom == null) return@collectLatest
                 val client = lockers ?: return@collectLatest
                 coroutineScope {
@@ -218,7 +222,7 @@ class MyProfilesManagerImpl(
 
         val owner = account.owner.value
         val commandGeneration = account.generation.value
-        combine(loadedOwner, _isLoaded) { loaded, ready -> loaded == owner && ready }.first { it }
+        combine(loadedOwner, _isLoaded, account.generation, loadedGeneration) { loaded, ready, epoch, loadedEpoch -> loaded == owner && ready && epoch == loadedEpoch }.first { it }
         val keyPair = Secp256r1KeyPair.generate()
         val publicKey = keyPair.publicKey.encode()
         val privateKeyBytes = keyPair.privateKey.encode()
