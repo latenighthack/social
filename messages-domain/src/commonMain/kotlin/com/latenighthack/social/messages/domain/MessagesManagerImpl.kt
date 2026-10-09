@@ -144,14 +144,14 @@ class MessagesManagerImpl(
 
     private suspend fun migrateOwnership(owner: String) {
         if (session == null) return
-        com.latenighthack.social.runtime.storePages(database, MessageStoreDefinitionV1,
-            MessageStoreDefinitionV1.roomIdKey).collect { page ->
+        com.latenighthack.social.runtime.storePages(database, MessageStoreDefinitionV2,
+            MessageStoreDefinitionV2.roomIdKey).collect { page ->
             database.transaction("social.messages") {
                 check(session.currentOwner() == owner)
                 for (row in page) if (row.ownerAccountId.isEmpty()) {
                     val id = row.messageId ?: continue
                     if (session.owns("")) store.saveMessage(row.copy(ownerAccountId = owner))
-                    else store.deleteMessage(RoomId(rawValue = row.roomId), id)
+                    store.deleteMessage(RoomId(rawValue = row.roomId), id)
                 }
             }
         }
@@ -161,18 +161,18 @@ class MessagesManagerImpl(
                 for (row in page) if (row.ownerAccountId.isEmpty()) {
                     val id = row.messageId ?: continue
                     if (session.owns("")) pending.savePending(row.copy(ownerAccountId = owner))
-                    else pending.deletePending(RoomId(rawValue = row.roomId), id)
+                    pending.deletePending(RoomId(rawValue = row.roomId), id)
                 }
             }
         }
-        com.latenighthack.social.runtime.storePages(database, DeadLetterStoreDefinitionV1,
-            DeadLetterStoreDefinitionV1.roomIdKey).collect { page ->
+        com.latenighthack.social.runtime.storePages(database, DeadLetterStoreDefinitionV2,
+            DeadLetterStoreDefinitionV2.roomIdKey).collect { page ->
             database.transaction("social.messages") {
                 check(session.currentOwner() == owner)
                 for (row in page) if (row.ownerAccountId.isEmpty()) {
                     val id = row.messageId ?: continue
                     if (session.owns("")) deadLetters.saveDeadLettered(row.copy(ownerAccountId = owner))
-                    else deadLetters.deleteDeadLettered(RoomId(rawValue = row.roomId), id)
+                    deadLetters.deleteDeadLettered(RoomId(rawValue = row.roomId), id)
                 }
             }
         }
@@ -322,13 +322,13 @@ class MessagesManagerImpl(
 
     override suspend fun retry(roomId: RoomId, messageId: MessageId) {
         ready.await()
-        val dead = deadLetters.getDeadLettered(roomId, messageId) ?: return
+        val dead = deadLetters.getDeadLettered(roomId, messageId, session.currentOwner()) ?: return
         if (!session.owns(dead.ownerAccountId)) return
         val signed = dead.message ?: return
         val now = Clock.System.now().toEpochMilliseconds()
         roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING) {
             pending.savePending(dead.copy(attempts = 0L, nextAttemptMillis = now))
-            deadLetters.deleteDeadLettered(roomId, messageId)
+            deadLetters.deleteDeadLettered(roomId, messageId, dead.ownerAccountId)
         }
         wake.trySend(Unit)
     }
@@ -353,7 +353,7 @@ class MessagesManagerImpl(
     private suspend fun attemptSend(lockers: LockersClient, entry: PendingMessage) {
         val messageId = entry.messageId ?: return
         val roomId = RoomId(rawValue = entry.roomId)
-        val signed = entry.message ?: run { pending.deletePending(roomId, messageId); return }
+        val signed = entry.message ?: run { pending.deletePending(roomId, messageId, entry.ownerAccountId); return }
         try {
             kotlinx.coroutines.withTimeout(30_000) {
             // Empty body ({ it } keeps it unchanged); the message rides as the notification payload.
@@ -366,7 +366,7 @@ class MessagesManagerImpl(
                 signed
             }
             roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT) {
-                pending.deletePending(roomId, messageId)
+                pending.deletePending(roomId, messageId, entry.ownerAccountId)
             }
             }
         } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
@@ -384,7 +384,7 @@ class MessagesManagerImpl(
             if (attempts >= maxAttempts) {
                 roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_FAILED) {
                     deadLetters.saveDeadLettered(entry.copy(attempts = attempts))
-                    pending.deletePending(roomId, messageId)
+                    pending.deletePending(roomId, messageId, entry.ownerAccountId)
                 }
             } else {
                 pending.savePending(entry.copy(
@@ -414,7 +414,7 @@ class MessagesManagerImpl(
 
     override suspend fun loadEarlier(roomId: RoomId, before: MessageId, limit: Int): List<MessageEntry> {
         require(limit in 1..1000)
-        val boundary = store.getMessage(roomId, before)?.takeIf { session.owns(it.ownerAccountId) }
+        val boundary = store.getMessage(roomId, before, session.currentOwner())?.takeIf { session.owns(it.ownerAccountId) }
             ?.message?.let { BoundedMessagePayload.decode(it.content) } ?: return emptyList()
         return store.getRecentMessages(roomId, { session.owns(it.ownerAccountId) }, limit,
             MessageEntry(boundary, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT)).mapNotNull {
@@ -509,7 +509,7 @@ class MessagesManagerImpl(
          */
         suspend fun ingest(payload: MessagePayload, signed: SignedContent): Boolean = mutex.withLock {
             val messageId = MessageId(rawValue = payload.messageId)
-            val duplicate = payload.messageId.toList() in seen || store.getMessage(roomId, messageId) != null
+            val duplicate = payload.messageId.toList() in seen || store.getMessage(roomId, messageId, owner) != null
             if (duplicate) return@withLock false
             store.saveMessage(local(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT))
             if (loaded) putLocked(payload, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT)

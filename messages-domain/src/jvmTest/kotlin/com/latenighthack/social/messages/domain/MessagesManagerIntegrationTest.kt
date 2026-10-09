@@ -97,7 +97,7 @@ class MessagesManagerIntegrationTest {
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         // One delegate for the managers and the lockers client, as in production: every store is
         // prepared first, then LockersClient.create performs the single createStores() call.
-        val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), databaseDelegate)
+        val database = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), databaseDelegate)
         val messages = MessagesManagerImpl(
             rooms, myProfiles, database,
             maxAttempts = maxAttempts, backoffBaseMillis = backoffBaseMillis, session = account,

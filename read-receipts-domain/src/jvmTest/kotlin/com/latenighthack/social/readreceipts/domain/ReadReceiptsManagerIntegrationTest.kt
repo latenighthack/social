@@ -70,7 +70,7 @@ class ReadReceiptsManagerIntegrationTest {
         val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         // Declare messages and lockers together before opening their shared database.
-        val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
+        val database = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
         val messages = MessagesManagerImpl(rooms, myProfiles, database)
         messages.prepare()
         val readReceipts = ReadReceiptsManagerImpl(rooms, messages, myProfiles)

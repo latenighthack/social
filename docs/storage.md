@@ -1,8 +1,11 @@
 # Configured storage
 
-Social managers accept a shared ktstore `Database`. Compose `MessagesStorage.definitions`,
-`ProfilesStorage.definitions` and `RemoteContentStorage.definitions` with
-`ConnectorStorage.definitions` and application definitions before `createDatabase`.
+Social managers accept a shared ktstore `Database`. Use `MessagesStorage.configuration(identity,
+ProfilesStorage.definitions + RemoteContentStorage.definitions + ConnectorStorage.definitions + hostDefinitions)`
+before `createDatabase`. It adopts the historical V1 schema at V3, then partitions local drafts,
+history and delivery queues by account at V4. For an existing host migration chain, append
+`MessagesStorage.upgrade(previousConfiguration)` to the version that still contains the V1 message
+stores. Its migration preserves payload bytes and all unrelated host stores.
 Open the database before preparing/starting managers. Each group also has a
 configured in-memory test factory. Key/value stores keep their independent API.
 

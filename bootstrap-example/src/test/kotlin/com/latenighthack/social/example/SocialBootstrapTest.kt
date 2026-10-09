@@ -20,8 +20,8 @@ class SocialBootstrapTest {
     fun compiledComponentOwnsItsTasksButNeverClosesTheHostDatabase() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             withContext(Dispatchers.Default) {
-                val database = Database(ConnectorStorage.configuration("compiled-example",
-                    ProfilesStorage.definitions + MessagesStorage.definitions + RemoteContentStorage.definitions),
+                val database = Database(MessagesStorage.configuration("compiled-example",
+                    ConnectorStorage.definitions + ProfilesStorage.definitions + RemoteContentStorage.definitions),
                     InMemoryStoreDelegate())
                 val http = HttpClient()
                 database.open()

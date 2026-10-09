@@ -66,8 +66,10 @@ class DraftsManagerImpl(
                     if (owner != null) {
                         val rows = store.getAllDrafts()
                         for (row in rows) if (session != null && row.ownerAccountId.isEmpty()) {
-                            if (session.owns(row.ownerAccountId)) store.saveDraft(row.copy(ownerAccountId = owner))
-                            else store.removeDraft(RoomId(rawValue = row.roomId))
+                            database.transaction("social.drafts") {
+                                if (session.owns(row.ownerAccountId)) store.saveDraft(row.copy(ownerAccountId = owner))
+                                store.removeDraft(RoomId(rawValue = row.roomId))
+                            }
                         }
                         _drafts.value = rows.filter { session.owns(it.ownerAccountId) }.associate {
                             RoomId(rawValue = it.roomId) to (it.draft ?: Draft { })
@@ -112,7 +114,7 @@ class DraftsManagerImpl(
         val owner = session.currentOwner()
         ready.await()
         mutex.withLock {
-            val updated = transform(if (loadedOwner == owner) _drafts.value[roomId] ?: Draft { } else Draft { })
+            val updated = transform(if (loadedOwner == owner) _drafts.value[roomId] ?: Draft { } else store.getDraft(roomId, owner)?.draft ?: Draft { })
             store.saveDraft(LocalDraft(roomId = roomId.rawValue, draft = updated, ownerAccountId = owner))
             check(session.currentOwner() == owner) { "account changed" }
             _drafts.value = (if (loadedOwner == owner) _drafts.value else emptyMap()) + (roomId to updated)
@@ -125,8 +127,8 @@ class DraftsManagerImpl(
         ready.await()
         mutex.withLock {
             if (loadedOwner != owner) return
-            store.removeDraft(roomId)
-            _drafts.value = _drafts.value - roomId
+            store.removeDraft(roomId, owner)
+            if (session.currentOwner() == owner) _drafts.value = _drafts.value - roomId
         }
     }
 
@@ -135,8 +137,8 @@ class DraftsManagerImpl(
         ready.await()
         mutex.withLock {
             if (loadedOwner != owner || _drafts.value[roomId] != sent) return
-            store.removeDraft(roomId)
-            _drafts.value = _drafts.value - roomId
+            store.removeDraft(roomId, owner)
+            if (session.currentOwner() == owner) _drafts.value = _drafts.value - roomId
         }
     }
 

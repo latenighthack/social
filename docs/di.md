@@ -1,10 +1,10 @@
 # Wiring and lifetime ownership
 
 Use one configured ktstore `Database` for the connector, caches, drafts and durable queues.
-Compose `ConnectorStorage.definitions`, `ProfilesStorage.definitions`,
-`MessagesStorage.definitions`, `RemoteContentStorage.definitions` and host definitions
-before opening it. `ConnectorStorage.configuration(name, additionalDefinitions)` builds
-this configuration for a new installation. Keep account identity and connector session
+Use `MessagesStorage.configuration(name, ConnectorStorage.definitions + ProfilesStorage.definitions +
+RemoteContentStorage.definitions + hostDefinitions)` to compose the V1 adoption and V4 account
+partition migration. For an established host migration chain, call `MessagesStorage.upgrade` on
+its last configuration containing V1 message stores. Keep account identity and connector session
 `KeyValueStore` handles distinct. Neither manager nor connector shutdown closes the host database.
 
 The [compiled component](../bootstrap-example/src/main/kotlin/com/latenighthack/social/example/SocialComponent.kt)
