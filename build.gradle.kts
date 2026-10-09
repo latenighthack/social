@@ -12,16 +12,16 @@ plugins {
 
 allprojects {
     group = "com.latenighthack.social"
-    // Version is release-vs-SNAPSHOT driven by the CI ref:
-    //   v* tag  -> the tag value (release, e.g. 0.1.0)
-    //   otherwise (main push / local) -> "<baseVersion>-SNAPSHOT"
-    // Bump `baseVersion` in gradle.properties after cutting a release.
+    // Main, local verification and release tags share stable npm workspace versions.
+    // Snapshot coordinates remain available explicitly with -Psnapshot=true.
     val base = providers.gradleProperty("baseVersion").get()
     val ref = System.getenv("GITHUB_REF").orEmpty()
     version = if (ref.startsWith("refs/tags/v")) {
         System.getenv("GITHUB_REF_NAME").removePrefix("v")
-    } else {
+    } else if (providers.gradleProperty("snapshot").map { it.toBooleanStrict() }.getOrElse(false)) {
         "$base-SNAPSHOT"
+    } else {
+        base
     }
 }
 
