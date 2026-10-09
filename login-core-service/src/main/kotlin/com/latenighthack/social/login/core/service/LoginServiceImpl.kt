@@ -63,10 +63,13 @@ class LoginServiceImpl(
     override suspend fun requestNonce(
         context: GrpcRequestContext,
         request: RequestNonceRequest,
-    ): RequestNonceResponse = RequestNonceResponse {
-        result = LoginResult.LOGIN_RESULT_OK
-        nonce = nonces.issue()
-        expiresInSeconds = nonces.expiresInSeconds
+    ): RequestNonceResponse {
+        val issued = nonces.issue()
+        return RequestNonceResponse {
+            result = LoginResult.LOGIN_RESULT_OK
+            nonce = issued
+            expiresInSeconds = nonces.expiresInSeconds
+        }
     }
 
     override suspend fun authenticateSocial(

@@ -3,6 +3,7 @@ plugins {
 }
 
 dependencies {
+    implementation(libs.ktstore.library)
     // JoinServer / JoinServiceRpc + the Invite proto (SealedEnvelope comes transitively via
     // social-common-api).
     implementation(projects.roomsApi)

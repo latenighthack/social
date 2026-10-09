@@ -1,6 +1,6 @@
 package com.latenighthack.social.messages.domain
 
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.messages.v1.Draft
@@ -25,11 +25,11 @@ import kotlinx.coroutines.launch
  * leaves the manager reusable.
  */
 class DraftsManagerImpl(
-    private val delegate: StoreDelegate,
+    private val database: Database,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : DraftsManager, DomainLifecycle {
 
-    private val store = DraftStore(delegate)
+    private val store = DraftStore(database)
 
     private val _drafts = MutableStateFlow<Map<RoomId, Draft>>(emptyMap())
 

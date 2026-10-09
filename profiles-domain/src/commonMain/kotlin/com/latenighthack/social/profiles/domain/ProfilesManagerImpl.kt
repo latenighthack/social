@@ -2,7 +2,7 @@ package com.latenighthack.social.profiles.domain
 
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
 import com.latenighthack.ktcrypto.decode
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.common.RoomKeying
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
@@ -31,11 +31,11 @@ import kotlinx.coroutines.launch
  * stored verbatim (verification deferred).
  */
 class ProfilesManagerImpl(
-    private val delegate: StoreDelegate,
+    private val database: Database,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : ProfilesManager, DomainLifecycle {
 
-    private val store = ProfileStore(delegate)
+    private val store = ProfileStore(database)
 
     private val _profiles = MutableStateFlow<Map<ProfileId, Profile>>(emptyMap())
 

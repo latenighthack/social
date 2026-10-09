@@ -27,6 +27,8 @@ class RemoteContentExtension(
         },
     )
 
+    override fun stop() { (store as? AutoCloseable)?.close() }
+
     override fun install(routing: Routing) {
         routing.remoteContent(store)
     }
@@ -44,8 +46,11 @@ class RemoteContentExtensionFactory : ServerExtensionFactory {
     override fun create(meterRegistry: MeterRegistry): ServerExtension {
         val publicBaseUrl = System.getenv(ENV_PUBLIC_URL).orEmpty()
         val storagePath = System.getenv(ENV_PATH)?.takeIf { it.isNotBlank() } ?: DEFAULT_PATH
+        val backend = System.getenv("REMOTE_CONTENT_BACKEND") ?: "file"
+        require(backend in setOf("file", "s3")) { "REMOTE_CONTENT_BACKEND must be file or s3" }
+        val store = if (backend == "s3") S3ContentStore.fromEnv() else FileContentStore(File(storagePath))
         return RemoteContentExtension(
-            store = FileContentStore(File(storagePath)),
+            store = MeasuredContentStore(store, meterRegistry, backend),
             urls = ContentUrls(publicBaseUrl),
         )
     }

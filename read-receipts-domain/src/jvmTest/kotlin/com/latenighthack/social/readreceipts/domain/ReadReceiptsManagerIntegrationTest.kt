@@ -7,7 +7,7 @@ import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.fromPrivateKey
 import com.latenighthack.lockers.common.RoomKeying
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
-import com.latenighthack.ktstore.InMemoryStoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.ktstore.KeyValueStore
 import com.latenighthack.lockers.common.v1.Version
 import com.latenighthack.lockers.connector.LockersClient
@@ -69,15 +69,14 @@ class ReadReceiptsManagerIntegrationTest {
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
         val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
-        // One delegate for the manager and the lockers client, as in production: every store is
-        // prepared first, then LockersClient.create performs the single createStores() call.
-        val storeDelegate = InMemoryStoreDelegate()
-        val messages = MessagesManagerImpl(rooms, myProfiles, storeDelegate)
+        // Declare messages and lockers together before opening their shared database.
+        val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
+        val messages = MessagesManagerImpl(rooms, myProfiles, database)
         messages.prepare()
         val readReceipts = ReadReceiptsManagerImpl(rooms, messages)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
-            storeDelegate = storeDelegate,
+            database = database,
             keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
             keySource = accountKeySource,
             appVersion = Version(0, 0, 1),

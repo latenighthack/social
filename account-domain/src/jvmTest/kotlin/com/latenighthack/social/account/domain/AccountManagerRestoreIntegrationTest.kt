@@ -5,7 +5,7 @@ import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.generate
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
-import com.latenighthack.ktstore.InMemoryStoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.ktstore.KeyValueStore
 import com.latenighthack.lockers.common.RoomKeying
 import com.latenighthack.lockers.common.v1.Version
@@ -49,7 +49,7 @@ class AccountManagerRestoreIntegrationTest {
             val firstKeySource = AccountKeySource(first)
             val firstLockers = LockersClient.create(
                 rpcClient = server.rpcClient,
-                storeDelegate = InMemoryStoreDelegate(),
+                database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
                 keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
                 keySource = firstKeySource,
                 appVersion = Version(0, 0, 1),
@@ -71,7 +71,7 @@ class AccountManagerRestoreIntegrationTest {
             val secondKeySource = AccountKeySource(second)
             val secondLockers = LockersClient.create(
                 rpcClient = server.rpcClient,
-                storeDelegate = InMemoryStoreDelegate(),
+                database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
                 keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
                 keySource = secondKeySource,
                 appVersion = Version(0, 0, 1),
@@ -109,7 +109,7 @@ class AccountManagerRestoreIntegrationTest {
             val keySource = AccountKeySource(manager)
             val lockers = LockersClient.create(
                 rpcClient = server.rpcClient,
-                storeDelegate = InMemoryStoreDelegate(),
+                database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
                 keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
                 keySource = keySource,
                 appVersion = Version(0, 0, 1),

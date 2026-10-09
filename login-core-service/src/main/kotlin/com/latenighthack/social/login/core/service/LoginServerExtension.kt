@@ -2,7 +2,7 @@ package com.latenighthack.social.login.core.service
 
 import com.latenighthack.ktbuf.net.ServerDescriptor
 import com.latenighthack.ktstore.InMemoryStoreDelegate
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.server.ServerExtension
 import com.latenighthack.lockers.server.ServerExtensionFactory
 import com.latenighthack.lockers.server.tools.GrpcRouteProvider
@@ -10,16 +10,17 @@ import com.latenighthack.social.login.v1.LoginServer
 import com.latenighthack.social.login.v1.Provider
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
 import io.micrometer.core.instrument.MeterRegistry
 import java.util.ServiceLoader
 
 /**
  * Attaches the [LoginServiceImpl] to the locker server as a gRPC service, backed by two ktstore
- * stores on a shared [StoreDelegate]. The stores are prepared in [start] (mirroring the monolith's
- * own start), so a durable delegate is a drop-in replacement for the in-memory default.
+ * stores on a shared [Database]. The stores are prepared in [start] (mirroring the monolith's
+ * own start), so a durable database is a drop-in replacement for the in-memory default.
  */
 class LoginServerExtension(
-    private val storeDelegate: StoreDelegate,
+    private val database: Database,
     custody: CustodyCrypto,
     hasher: Pbkdf2Hasher,
     appleVerifier: SocialTokenVerifier?,
@@ -27,11 +28,12 @@ class LoginServerExtension(
     emailSender: EmailSender?,
     smsSender: SmsSender?,
     linkBaseUrl: String,
-    nonces: NonceService = NonceService(),
+    nonces: NonceService = NonceService(store = DurableNonceStore(database)),
     requireNonce: Boolean = false,
+    private val onClose: () -> Unit = {},
 ) : ServerExtension {
-    private val credentials = CredentialStore(storeDelegate)
-    private val challenges = ChallengeStore(storeDelegate)
+    private val credentials = CredentialStore(database)
+    private val challenges = ChallengeStore(database)
     private val serviceImpl = LoginServiceImpl(
         credentials = credentials,
         challenges = challenges,
@@ -54,10 +56,13 @@ class LoginServerExtension(
     )
 
     override suspend fun start() {
+        database.open()
         credentials.prepare()
         challenges.prepare()
-        storeDelegate.createStores()
+        database.open()
     }
+
+    override fun stop() = onClose()
 }
 
 /**
@@ -68,27 +73,33 @@ class LoginServerExtension(
  * [LoginConfig]; each provider reads its own configuration from the environment.
  *
  * NOTE: the default [InMemoryStoreDelegate] does not survive a restart. A production deployment must
- * supply a durable delegate; the custodial private key is already encrypted at rest under the master
+ * supply a durable database; the custodial private key is already encrypted at rest under the master
  * key, so persistence is the only missing piece.
  */
 class LoginServerExtensionFactory : ServerExtensionFactory {
-    override fun create(meterRegistry: MeterRegistry): ServerExtension {
+    override val storeDefinitions get() = LoginStorage.definitions
+    override fun create(meterRegistry: MeterRegistry): ServerExtension = create(meterRegistry, LoginStorage.inMemory())
+    override fun create(meterRegistry: MeterRegistry, database: Database): ServerExtension {
         val config = LoginConfig.fromEnv()
-        val httpClient = HttpClient(CIO)
-        val context = LoginProviderContext(System::getenv, httpClient)
+        val httpClient = HttpClient(CIO) {
+            install(HttpTimeout) { requestTimeoutMillis = 10_000; connectTimeoutMillis = 3_000; socketTimeoutMillis = 5_000 }
+        }
+        val measurements = DependencyMetrics(meterRegistry)
+        val context = LoginProviderContext(System::getenv, httpClient, measurements::record)
         val handlers = ServiceLoader.load(LoginProviderFactory::class.java).mapNotNull { it.create(context) }
 
         val social = handlers.filterIsInstance<LoginHandler.SocialVerifier>()
         return LoginServerExtension(
-            storeDelegate = InMemoryStoreDelegate(),
+            database = database,
             custody = CustodyCrypto(config.masterKey),
             hasher = Pbkdf2Hasher(),
-            appleVerifier = social.firstOrNull { it.provider == Provider.PROVIDER_APPLE }?.verifier,
-            googleVerifier = social.firstOrNull { it.provider == Provider.PROVIDER_GOOGLE }?.verifier,
-            emailSender = handlers.filterIsInstance<LoginHandler.Email>().firstOrNull()?.sender,
-            smsSender = handlers.filterIsInstance<LoginHandler.Sms>().firstOrNull()?.sender,
+            appleVerifier = measurements.verifier("apple", social.firstOrNull { it.provider == Provider.PROVIDER_APPLE }?.verifier),
+            googleVerifier = measurements.verifier("google", social.firstOrNull { it.provider == Provider.PROVIDER_GOOGLE }?.verifier),
+            emailSender = measurements.email(handlers.filterIsInstance<LoginHandler.Email>().firstOrNull()?.sender),
+            smsSender = measurements.sms(handlers.filterIsInstance<LoginHandler.Sms>().firstOrNull()?.sender),
             linkBaseUrl = config.linkBaseUrl,
             requireNonce = config.requireNonce,
+            onClose = httpClient::close,
         )
     }
 }

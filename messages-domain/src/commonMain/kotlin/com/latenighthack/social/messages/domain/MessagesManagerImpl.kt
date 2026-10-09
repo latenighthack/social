@@ -6,7 +6,7 @@ package com.latenighthack.social.messages.domain
 
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
 import com.latenighthack.ktcrypto.decode
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.IncomingNotification
 import com.latenighthack.lockers.connector.LockersClient
@@ -47,6 +47,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Clock
 import kotlin.random.Random
+import kotlin.time.TimeSource
+import com.latenighthack.social.runtime.OperationsObserver
+import com.latenighthack.social.runtime.record
 
 /**
  * Runs the messages feature over one gated MESSAGING locker per room. Sending enqueues the message
@@ -65,17 +68,18 @@ import kotlin.random.Random
 class MessagesManagerImpl(
     private val rooms: RoomsManager,
     private val myProfiles: MyProfilesManager,
-    private val delegate: StoreDelegate,
+    private val database: Database,
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
     private val backoffBaseMillis: Long = DEFAULT_BACKOFF_BASE_MILLIS,
     private val backoffCapMillis: Long = DEFAULT_BACKOFF_CAP_MILLIS,
     private val idleWaitMillis: Long = DEFAULT_IDLE_WAIT_MILLIS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val observer: OperationsObserver = OperationsObserver.NONE,
 ) : MessagesManager, DomainLifecycle {
 
-    private val store = MessageStore(delegate)
-    private val pending = PendingMessageStore(delegate)
-    private val deadLetters = DeadLetterStore(delegate)
+    private val store = MessageStore(database)
+    private val pending = PendingMessageStore(database)
+    private val deadLetters = DeadLetterStore(database)
 
     // One lazily-loaded, cached list of messages per room the app has touched. Guarded by [roomsMutex].
     private val roomLists = mutableMapOf<RoomId, RoomMessageList>()
@@ -253,7 +257,10 @@ class MessagesManagerImpl(
     private suspend fun drainLoop(lockers: LockersClient) {
         while (true) {
             val now = Clock.System.now().toEpochMilliseconds()
-            for (entry in pending.getAllPending().sortedBy { it.createdAtMillis }) {
+            val entries = pending.getAllPending().sortedBy { it.createdAtMillis }
+            observer.record("message_queue", seconds = entries.firstOrNull { it.createdAtMillis > 0 }?.let { (now - it.createdAtMillis).coerceAtLeast(0) / 1000.0 } ?: 0.0, depth = entries.size)
+            observer.record("message_unknown_age", depth = entries.count { it.createdAtMillis <= 0 })
+            for (entry in entries) {
                 if (entry.nextAttemptMillis <= now) attemptSend(lockers, entry)
             }
             val soonest = pending.getAllPending().minOfOrNull { it.nextAttemptMillis }
@@ -267,29 +274,39 @@ class MessagesManagerImpl(
         val messageId = entry.messageId ?: return
         val roomId = RoomId(rawValue = entry.roomId)
         val signed = entry.message ?: run { pending.deletePending(roomId, messageId); return }
+        val started = TimeSource.Monotonic.markNow()
+        var outcome = "success"
+        if (entry.createdAtMillis > 0) observer.record("message_wait", seconds = (Clock.System.now().toEpochMilliseconds() - entry.createdAtMillis).coerceAtLeast(0) / 1000.0)
         try {
             // Empty body ({ it } keeps it unchanged); the message rides as the notification payload.
-            messageClient(lockers).updateLocker(
+            val committed = messageClient(lockers).updateLocker(
                 roomId,
                 MessagesKeyspaces.MESSAGING_LOCKER,
                 notificationBuilder = { payload { rawValue = signed.toByteArray() } },
             ) { it }
+            check(committed != null) { "Message commit was not confirmed" }
             pending.deletePending(roomId, messageId)
             roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT)
         } catch (e: CancellationException) {
+            outcome = "cancelled"
             throw e
         } catch (_: Exception) {
+            outcome = "failure"
             val attempts = entry.attempts + 1
             if (attempts >= maxAttempts) {
                 deadLetters.saveDeadLettered(entry.copy(attempts = attempts))
                 pending.deletePending(roomId, messageId)
                 roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_FAILED)
+                observer.record("message_dead_letter", "failure")
             } else {
                 pending.savePending(entry.copy(
                     attempts = attempts,
                     nextAttemptMillis = Clock.System.now().toEpochMilliseconds() + backoffMillis(attempts),
                 ))
+                observer.record("message_retry", "failure")
             }
+        } finally {
+            observer.record("message_processing", outcome, started.elapsedNow().inWholeNanoseconds / 1e9)
         }
     }
 

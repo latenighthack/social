@@ -18,6 +18,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeout
+import kotlin.time.TimeSource
+import com.latenighthack.social.runtime.OperationsObserver
+import com.latenighthack.social.runtime.record
 
 /** A created content handle: its id and the URLs its bytes are uploaded to / served from. */
 class CreatedContent(
@@ -71,6 +76,7 @@ interface RemoteContentClient {
 class RemoteContentClientImpl(
     rpcClient: RpcClient,
     private val httpClient: HttpClient,
+    private val observer: OperationsObserver = OperationsObserver.NONE,
 ) : RemoteContentClient {
     private val rpc = RemoteContentServiceRpc(rpcClient)
 
@@ -88,24 +94,46 @@ class RemoteContentClientImpl(
     }
 
     override suspend fun upload(uploadUrl: String, bytes: ByteArray) {
-        httpClient.put(uploadUrl) {
+        val started = TimeSource.Monotonic.markNow()
+        var outcome = "success"
+        try { withTimeout(30_000) {
+        val response = httpClient.put(uploadUrl) {
             setBody(bytes)
             onUpload { sent, total ->
                 uploads.update { it + (uploadUrl to TransferProgress(sent, total ?: bytes.size.toLong())) }
             }
         }
+        check(response.status.value in 200..299) { "Content upload rejected" }
+        } } catch (cancelled: CancellationException) { outcome = "cancelled"; throw cancelled }
+        catch (failure: Exception) { outcome = "failure"; throw failure }
+        finally { observer.record("content_upload", outcome, started.elapsedNow().inWholeNanoseconds / 1e9, bytes = bytes.size.toLong()) }
     }
 
     override suspend fun download(downloadUrl: String): DownloadedContent {
+        val started = TimeSource.Monotonic.markNow()
+        var firstByte = false
+        var size = 0L
+        var outcome = "success"
+        try { return withTimeout(30_000) {
         val response: HttpResponse = httpClient.get(downloadUrl) {
             onDownload { received, total ->
+                if (received > 0 && !firstByte) {
+                    firstByte = true
+                    observer.record("content_first_byte", seconds = started.elapsedNow().inWholeNanoseconds / 1e9, bytes = total ?: 0)
+                }
                 downloads.update { it + (downloadUrl to TransferProgress(received, total ?: 0L)) }
             }
         }
-        return DownloadedContent(
-            bytes = response.body(),
+        check(response.status.value in 200..299) { "Content download rejected" }
+        val bytes = response.body<ByteArray>()
+        size = bytes.size.toLong()
+        DownloadedContent(
+            bytes = bytes,
             mimeType = response.contentType()?.toString(),
         )
+        } } catch (cancelled: CancellationException) { outcome = "cancelled"; throw cancelled }
+        catch (failure: Exception) { outcome = "failure"; throw failure }
+        finally { observer.record("content_download", outcome, started.elapsedNow().inWholeNanoseconds / 1e9, bytes = size) }
     }
 
     override suspend fun upload(bytes: ByteArray, mimeType: String?): CreatedContent {
