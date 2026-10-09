@@ -37,6 +37,7 @@ import com.latenighthack.social.rooms.v1.RoomKind
 import com.latenighthack.social.rooms.v1.toByteArray
 import io.ktor.server.application.Application
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.map
 import kotlin.random.Random
 import kotlin.test.Test
@@ -92,6 +93,34 @@ class ReadReceiptsManagerIntegrationTest {
         account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
         return Party(myProfiles, rooms, messages, readReceipts, lockers)
     }
+
+    @Test(timeout = 30000)
+    fun `stop joins a markRead command waiting for local messages`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            kotlinx.coroutines.coroutineScope {
+                val party = newParty(server.rpcClient)
+                val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+                var cleaned = false
+                val delayed = object : com.latenighthack.social.messages.domain.MessagesManager by party.messages {
+                    override fun watchMessageIds(roomId: com.latenighthack.lockers.common.v1.RoomId) =
+                        kotlinx.coroutines.flow.flow<List<com.latenighthack.social.messages.v1.MessageId>> {
+                            entered.complete(Unit)
+                            try { kotlinx.coroutines.awaitCancellation() } finally { cleaned = true }
+                        }
+                }
+                val receipts = ReadReceiptsManagerImpl(party.rooms, delayed, party.myProfiles)
+                try {
+                    party.myProfiles.createProfile("reader")
+                    val room = party.rooms.createGroup("waiting read")
+                    receipts.start(party.lockers)
+                    val command = async { receipts.markRead(room) }
+                    entered.await()
+                    receipts.stopAndJoin()
+                    kotlin.test.assertFailsWith<kotlinx.coroutines.CancellationException> { command.await() }
+                    kotlin.test.assertTrue(cleaned)
+                } finally { receipts.stopAndJoin(); party.close() }
+            }
+        }
 
     @Test(timeout = 60_000)
     fun `markRead publishes the reader's pointer at the latest message to other members`() =

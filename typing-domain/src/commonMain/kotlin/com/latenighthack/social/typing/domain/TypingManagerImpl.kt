@@ -12,6 +12,8 @@ import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.domain.RoomsManager
 import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.AccountSession
+import com.latenighthack.social.runtime.withAccount
 import com.latenighthack.social.typing.v1.TypingPayload
 import com.latenighthack.social.typing.v1.fromByteArray
 import com.latenighthack.social.typing.v1.toByteArray
@@ -54,10 +56,14 @@ class TypingManagerImpl(
     private val timeoutMillis: Long = 15_000,
     private val tickMillis: Long = 1_000,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val session: AccountSession? = null,
 ) : TypingManager, DomainLifecycle {
 
     // Rooms → (profile id → started-at millis) for every member with an outstanding typing signal.
     private val timeOrigin = kotlin.time.TimeSource.Monotonic.markNow()
+    private suspend fun <T> withSession(block: suspend () -> T): T =
+        if (session == null) block() else session.withAccount(block)
+
     private fun elapsedMillis() = timeOrigin.elapsedNow().inWholeMilliseconds
 
     private val _typing = MutableStateFlow<Map<RoomId, Map<ProfileId, Long>>>(emptyMap())
@@ -143,7 +149,11 @@ class TypingManagerImpl(
         }
     }
 
-    override suspend fun setTyping(roomId: RoomId, isTyping: Boolean) {
+    override suspend fun setTyping(roomId: RoomId, isTyping: Boolean): Unit = withSession {
+        runner.command { setTypingOwned(roomId, isTyping) }
+    }
+
+    private suspend fun setTypingOwned(roomId: RoomId, isTyping: Boolean) {
         val lockers = lockers ?: error("setTyping requires start(lockers) first")
         val me = rooms.localProfile(roomId) ?: return
         val now = elapsedMillis()

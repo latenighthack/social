@@ -14,6 +14,7 @@ import com.latenighthack.social.contacts.v1.fromByteArray
 import com.latenighthack.social.contacts.v1.toByteArray
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.withAccount
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -67,29 +68,37 @@ class ContactsManagerImpl(
         contactsClient(lockers).subscribeToRoom(accountRoom(), waitForSubscription = false)
     }
 
-    override suspend fun add(profileId: ProfileId) {
+    override suspend fun add(profileId: ProfileId): Unit = account.withAccount {
+        runner.command { addOwned(profileId) }
+    }
+
+    private suspend fun addOwned(profileId: ProfileId) {
         val now = Clock.System.now().toEpochMilliseconds()
         contactsClient(requireLockers()).updateLocker(accountRoom(), lockerId(profileId)) { current ->
             ContactRecord(friend = ContactRecord.Friend(addedAtMillis = now), block = current.block)
         }
     }
 
-    override suspend fun block(profileId: ProfileId) {
+    override suspend fun block(profileId: ProfileId): Unit = account.withAccount {
+        runner.command { blockOwned(profileId) }
+    }
+
+    private suspend fun blockOwned(profileId: ProfileId) {
         val now = Clock.System.now().toEpochMilliseconds()
         contactsClient(requireLockers()).updateLocker(accountRoom(), lockerId(profileId)) { current ->
             ContactRecord(friend = current.friend, block = ContactRecord.Block(blockedAtMillis = now))
         }
     }
 
-    override suspend fun unfriend(profileId: ProfileId) = clearField(
+    override suspend fun unfriend(profileId: ProfileId): Unit = account.withAccount { runner.command { clearField(
         profileId,
         keep = { current -> ContactRecord(friend = null, block = current.block) },
-    )
+    ) } }
 
-    override suspend fun unblock(profileId: ProfileId) = clearField(
+    override suspend fun unblock(profileId: ProfileId): Unit = account.withAccount { runner.command { clearField(
         profileId,
         keep = { current -> ContactRecord(friend = current.friend, block = null) },
-    )
+    ) } }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     override fun watchContacts(): Flow<List<Contact>> =

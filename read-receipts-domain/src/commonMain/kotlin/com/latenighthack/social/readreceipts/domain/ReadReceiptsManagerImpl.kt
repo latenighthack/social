@@ -12,6 +12,8 @@ import com.latenighthack.social.readreceipts.v1.fromByteArray
 import com.latenighthack.social.readreceipts.v1.toByteArray
 import com.latenighthack.social.rooms.domain.RoomsManager
 import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.AccountSession
+import com.latenighthack.social.runtime.withAccount
 import com.latenighthack.social.readreceipts.v1.copy
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -34,19 +36,28 @@ class ReadReceiptsManagerImpl(
     private val rooms: RoomsManager,
     private val messages: MessagesManager,
     private val myProfiles: com.latenighthack.social.profiles.domain.MyProfilesManager,
+    private val scope: kotlinx.coroutines.CoroutineScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default),
+    private val session: AccountSession? = null,
 ) : ReadReceiptsManager, DomainLifecycle {
 
-    private var lockers: LockersClient? = null
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
 
     override fun start(lockers: LockersClient) {
-        this.lockers = lockers
+        runner.start(lockers) { kotlinx.coroutines.awaitCancellation() }
     }
 
     override fun stop() {
-        lockers = null
+        runner.stop()
     }
 
-    override suspend fun markRead(roomId: RoomId) {
+    override suspend fun stopAndJoin() { runner.stopAndJoin() }
+
+    override suspend fun markRead(roomId: RoomId): Unit = withSession {
+        runner.command { markReadOwned(roomId) }
+    }
+
+    private suspend fun markReadOwned(roomId: RoomId) {
         val me = rooms.localProfile(roomId) ?: return
         val ordered = messages.watchMessageIds(roomId).first()
         val latest = ordered.lastOrNull() ?: return
@@ -83,6 +94,9 @@ class ReadReceiptsManagerImpl(
             },
         )
     }.distinctUntilChanged()
+
+    private suspend fun <T> withSession(block: suspend () -> T): T =
+        if (session == null) block() else session.withAccount(block)
 
     private fun requireLockers(): LockersClient = lockers ?: error("read receipts requires start(lockers) first")
 

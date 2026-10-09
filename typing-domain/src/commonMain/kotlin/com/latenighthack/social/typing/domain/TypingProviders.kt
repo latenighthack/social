@@ -13,7 +13,7 @@ import me.tatarka.inject.annotations.Provides
 interface TypingProviders : com.latenighthack.social.runtime.SocialRuntimeProviders {
     @Provides
     @SocialScope
-    fun typingManagerImpl(rooms: RoomsManager, myProfiles: com.latenighthack.social.profiles.domain.MyProfilesManager, tasks: com.latenighthack.social.runtime.SocialTaskScope): TypingManagerImpl = TypingManagerImpl(rooms, myProfiles, scope = tasks.scope)
+    fun typingManagerImpl(rooms: RoomsManager, myProfiles: com.latenighthack.social.profiles.domain.MyProfilesManager, tasks: com.latenighthack.social.runtime.SocialTaskScope, session: com.latenighthack.social.runtime.AccountSession): TypingManagerImpl = TypingManagerImpl(rooms, myProfiles, scope = tasks.scope, session = session)
 
     @Provides
     fun typingManager(impl: TypingManagerImpl): TypingManager = impl
