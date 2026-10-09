@@ -643,17 +643,29 @@ class RoomsManagerImpl(
     }
 
     private suspend fun completeMembership(lockers: LockersClient, record: RoomRecord) {
-        val completed = record.copy(membershipPending = false, initialInfo = ByteArray(0))
-        writeAccountRecord(lockers, completed)
+        account.requireOperationOwner()
+        val owner = account.owner.value
+        val epoch = account.generation.value
+        val room = accountRoom() ?: return
+        val client = accountRoomsClient(lockers)
+        val id = RoomId(rawValue = record.roomId)
+        val lockerId = LockerId(record.roomId, RoomsKeyspaces.ACCOUNT_ROOMS)
+        val completed = client.updateLocker(room, lockerId) { current ->
+            check(account.owner.value == owner && account.generation.value == epoch)
+            completeMembershipRecord(current)
+        } ?: client.getLocker(room, lockerId) ?: return
         stateMutex.withLock {
-            records = records + (RoomId(rawValue = record.roomId) to completed)
+            if (completed.left || records[id]?.left == true) {
+                records = records - id; keyPairs = keyPairs - id; leftRooms = leftRooms + id
+            } else records = records + (id to record.copy(membershipPending = false, initialInfo = ByteArray(0)))
             _rooms.value = sortedRoomIds()
         }
     }
 
-    private suspend fun repairMembership(lockers: LockersClient, record: RoomRecord) {
-        if (!record.membershipPending || record.left) return
+    private suspend fun repairMembership(lockers: LockersClient, record: RoomRecord) = repairMutex.withLock {
+        if (!record.membershipPending || record.left) return@withLock
         val id = RoomId(rawValue = record.roomId)
+        if (stateMutex.withLock { records[id]?.left == true || id in leftRooms }) return@withLock
         val key = Secp256r1KeyPair.fromPrivateKey(record.sharedPrivateKey) ?: error("invalid membership key")
         infoClient(lockers).lockLocker(id, LockScope(kind = LockScopeKind.LOCK_SCOPE_ROOM), key,
             parentKeyPair = if (record.kind == RoomKind.ROOM_KIND_RENDEZVOUS) null else key)
