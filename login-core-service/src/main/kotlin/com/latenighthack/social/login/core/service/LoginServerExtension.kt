@@ -27,7 +27,8 @@ class LoginServerExtension(
     emailSender: EmailSender?,
     smsSender: SmsSender?,
     linkBaseUrl: String,
-    nonces: NonceService = NonceService(store = ChallengeStore(database)),
+    clock: () -> Long = System::currentTimeMillis,
+    nonces: NonceService = NonceService(store = ChallengeStore(database), clock = clock),
     requireNonce: Boolean = true,
     private val ownsDatabase: Boolean = false,
     private val releaseResources: () -> Unit = {},
@@ -46,6 +47,7 @@ class LoginServerExtension(
         linkBaseUrl = linkBaseUrl,
         nonces = nonces,
         requireNonce = requireNonce,
+        clock = clock,
     )
 
     override val services: List<GrpcRouteProvider<*>> = listOf(
