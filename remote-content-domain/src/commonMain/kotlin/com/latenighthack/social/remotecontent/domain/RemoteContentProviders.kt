@@ -4,6 +4,7 @@ import com.latenighthack.social.observability.*
 
 import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.ktstore.Database
+import com.latenighthack.social.runtime.AccountSession
 import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.runtime.SocialScope
 import io.ktor.client.HttpClient
@@ -16,7 +17,7 @@ import me.tatarka.inject.annotations.Provides
  * upload queue is created from; this binds the [RemoteContentClient] transport and the
  * [RemoteContentUploader] on top of it. The uploader rides the shared `Set<DomainLifecycle>` boot.
  */
-interface RemoteContentProviders : SocialTelemetryProviders {
+interface RemoteContentProviders : com.latenighthack.social.runtime.SocialRuntimeProviders, SocialTelemetryProviders {
     @Provides
     @IntoSet
     fun remotecontentObservabilityFeature(): SocialFeatureDescriptor = SocialFeatureDescriptor("remote_content")
@@ -27,8 +28,8 @@ interface RemoteContentProviders : SocialTelemetryProviders {
 
     @Provides
     @SocialScope
-    fun remoteContentUploaderImpl(client: RemoteContentClient, database: Database): RemoteContentUploaderImpl =
-        RemoteContentUploaderImpl(client, database).observedBy(socialTelemetry())
+    fun remoteContentUploaderImpl(client: RemoteContentClient, database: Database, session: AccountSession, tasks: com.latenighthack.social.runtime.SocialTaskScope): RemoteContentUploaderImpl =
+        RemoteContentUploaderImpl(client, database, session = session, scope = tasks.scope).observedBy(socialTelemetry())
 
     @Provides
     fun remoteContentUploader(impl: RemoteContentUploaderImpl): RemoteContentUploader = impl

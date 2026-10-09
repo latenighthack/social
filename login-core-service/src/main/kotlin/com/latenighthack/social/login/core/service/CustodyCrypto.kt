@@ -25,11 +25,14 @@ class CustodyCrypto(
     masterKey: ByteArray,
     val keyVersion: Int = CURRENT_KEY_VERSION,
     private val random: SecureRandom = SecureRandom(),
+    previousKeys: Map<Int, ByteArray> = emptyMap(),
 ) {
     private val masterKey = masterKey.copyOf()
-    private val legacyKey = SecretKeySpec(masterKey.copyOf(), "AES")
+    private val keys = previousKeys.mapValues { it.value.copyOf() } + (keyVersion to this.masterKey)
 
     init {
+        require(keyVersion > 0 && keyVersion !in previousKeys)
+        require(previousKeys.all { it.key >= 0 && it.value.size == KEY_BYTES })
         require(masterKey.size == KEY_BYTES) { "master key must be $KEY_BYTES bytes (AES-256)" }
     }
 
@@ -55,11 +58,13 @@ class CustodyCrypto(
      */
     fun decrypt(ciphertext: ByteArray, nonce: ByteArray, salt: ByteArray, recordKeyVersion: Int, binding: Binding): ByteArray {
         val cipher = Cipher.getInstance(TRANSFORM)
+        val key = if (salt.isEmpty()) keys[recordKeyVersion] ?: keys[1] else keys[recordKeyVersion]
+        requireNotNull(key) { "custody key version is unavailable" }
         return if (salt.isEmpty()) {
-            cipher.init(Cipher.DECRYPT_MODE, legacyKey, GCMParameterSpec(TAG_BITS, nonce))
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, nonce))
             cipher.doFinal(ciphertext)
         } else {
-            cipher.init(Cipher.DECRYPT_MODE, deriveDek(salt), GCMParameterSpec(TAG_BITS, nonce))
+            cipher.init(Cipher.DECRYPT_MODE, deriveDek(salt, key), GCMParameterSpec(TAG_BITS, nonce))
             cipher.updateAAD(aad(binding, recordKeyVersion))
             cipher.doFinal(ciphertext)
         }
@@ -70,10 +75,10 @@ class CustodyCrypto(
         salt.isEmpty() || recordKeyVersion != keyVersion
 
     // RFC 5869 HKDF-SHA256, extract-then-expand; a single expand block suffices for a 32-byte DEK.
-    private fun deriveDek(salt: ByteArray): SecretKeySpec {
+    private fun deriveDek(salt: ByteArray, key: ByteArray = masterKey): SecretKeySpec {
         val mac = Mac.getInstance(HMAC)
         mac.init(SecretKeySpec(salt, HMAC))
-        val prk = mac.doFinal(masterKey)
+        val prk = mac.doFinal(key)
         mac.init(SecretKeySpec(prk, HMAC))
         mac.update(HKDF_INFO)
         mac.update(0x01)

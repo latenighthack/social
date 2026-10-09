@@ -52,7 +52,9 @@ import io.ktor.server.application.Application
 import kotlin.jvm.Volatile
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -62,6 +64,7 @@ import kotlin.test.assertTrue
 class MessagesManagerIntegrationTest {
 
     private class Party(
+        val account: AccountManagerImpl,
         val myProfiles: MyProfilesManagerImpl,
         val rooms: RoomsManagerImpl,
         val messages: MessagesManagerImpl,
@@ -73,6 +76,7 @@ class MessagesManagerIntegrationTest {
             messages.stop()
             rooms.stop()
             myProfiles.stop()
+            account.stop()
             lockers.close()
         }
     }
@@ -83,6 +87,9 @@ class MessagesManagerIntegrationTest {
         joinClient: JoinClient = sharedJoinClient,
         maxAttempts: Int = 8,
         backoffBaseMillis: Long = 1L,
+        databaseDelegate: com.latenighthack.ktstore.LifecycleStoreDelegate = com.latenighthack.ktstore.InMemoryStoreDelegate(),
+        messageRooms: (com.latenighthack.social.rooms.domain.RoomsManager) -> com.latenighthack.social.rooms.domain.RoomsManager = { it },
+        messageProfiles: (com.latenighthack.social.profiles.domain.MyProfilesManager) -> com.latenighthack.social.profiles.domain.MyProfilesManager = { it },
         lockKeySourceFactory: (LockKeySource) -> LockKeySource = { it },
     ): Party {
         val account = AccountManagerImpl(accountStore)
@@ -93,12 +100,12 @@ class MessagesManagerIntegrationTest {
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         // One delegate for the managers and the lockers client, as in production: every store is
         // prepared first, then LockersClient.create performs the single createStores() call.
-        val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
+        val database = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), databaseDelegate)
         val messages = MessagesManagerImpl(
-            rooms, myProfiles, database,
-            maxAttempts = maxAttempts, backoffBaseMillis = backoffBaseMillis,
+            messageRooms(rooms), messageProfiles(myProfiles), database,
+            maxAttempts = maxAttempts, backoffBaseMillis = backoffBaseMillis, session = account,
         )
-        val drafts = DraftsManagerImpl(database)
+        val drafts = DraftsManagerImpl(database, session = account)
         messages.prepare()
         drafts.prepare()
         val lockers = LockersClient.create(
@@ -116,8 +123,181 @@ class MessagesManagerIntegrationTest {
         drafts.start(lockers)
         account.createAccount()
         account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
-        return Party(myProfiles, rooms, messages, drafts, lockers)
+        return Party(account, myProfiles, rooms, messages, drafts, lockers)
     }
+
+    @Test(timeout = 30000)
+    fun `sign out cancels a local enqueue waiting for its signature`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            kotlinx.coroutines.coroutineScope {
+                val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+                var cleaned = false
+                val party = newParty(server.rpcClient, messageProfiles = { delegate ->
+                    object : com.latenighthack.social.profiles.domain.MyProfilesManager by delegate {
+                        override suspend fun sign(profileId: com.latenighthack.social.profiles.v1.ProfileId, label: Long, content: ByteArray): SignedContent? {
+                            entered.complete(Unit)
+                            try { kotlinx.coroutines.awaitCancellation() } finally { cleaned = true }
+                        }
+                    }
+                })
+                try {
+                    party.myProfiles.createProfile("writer")
+                    val room = party.rooms.createGroup("cancelled local enqueue")
+                    val command = async { party.messages.send(room, Draft(text = "withdrawn")) }
+                    entered.await()
+                    party.account.signOut()
+                    kotlinx.coroutines.withTimeout(5000) { command.join() }
+                    kotlin.test.assertTrue(command.isCancelled)
+                    kotlin.test.assertTrue(cleaned)
+                } finally { party.close() }
+            }
+        }
+
+    @Test(timeout = 30000)
+    fun `offline room metadata cannot block durable message enqueue and stops with its owner`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+            var cleaned = false
+            val party = newParty(server.rpcClient, messageRooms = { delegate ->
+                object : com.latenighthack.social.rooms.domain.RoomsManager by delegate {
+                    override suspend fun markUpdated(roomId: RoomId) {
+                        entered.complete(Unit)
+                        try { kotlinx.coroutines.awaitCancellation() } finally { cleaned = true }
+                    }
+                }
+            })
+            try {
+                party.myProfiles.createProfile("offline writer")
+                val room = party.rooms.createGroup("offline bump")
+                kotlinx.coroutines.withTimeout(5000) { party.messages.send(room, Draft(text = "queued locally")) }
+                entered.await()
+                kotlin.test.assertEquals(1, party.messages.watchMessages(room).first { it.isNotEmpty() }.size)
+                party.messages.stopAndJoin()
+                kotlin.test.assertTrue(cleaned)
+            } finally { party.close() }
+        }
+
+    @Test(timeout = 30000)
+    fun `sign out cancels an admitted join before its grant can install old membership`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+                val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+                val gated = object : JoinClient by sharedJoinClient {
+                    override suspend fun join(request: JoinRequest): JoinResponse {
+                        val response = sharedJoinClient.join(request)
+                        entered.complete(Unit)
+                        release.await()
+                        return response
+                    }
+                }
+                val alice = newParty(server.rpcClient)
+                val bob = newParty(server.rpcClient, joinClient = gated)
+                try {
+                    alice.myProfiles.createProfile("Alice")
+                    bob.myProfiles.createProfile("Bob")
+                    val room = alice.rooms.createGroup("admitted join")
+                    val code = alice.rooms.createInviteCode(room)
+                    val joining = async { bob.rooms.joinByCode(code) }
+                    entered.await()
+                    bob.account.signOut()
+                    bob.account.createAccount()
+                    assertFailsWith<kotlinx.coroutines.CancellationException> { joining.await() }
+                    release.complete(Unit)
+                    assertTrue(bob.rooms.watchRooms().first().isEmpty())
+                } finally { release.complete(Unit); bob.close(); alice.close() }
+            }
+        }
+
+    @Test(timeout = 30000)
+    fun `sign out and immediate account creation hide prior drafts messages and signing keys`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val party = newParty(server.rpcClient)
+                try {
+                    val profile = party.myProfiles.createProfile("Alice")
+                    val room = party.rooms.createGroup("private history")
+                    party.drafts.setText(room, "private draft")
+                    party.messages.stop()
+                    party.messages.send(room, Draft { text = "private queued message" })
+                    party.account.signOut()
+                    party.account.createAccount()
+                    assertFailsWith<IllegalStateException> { party.rooms.createInviteCode(room) }
+                    assertFailsWith<IllegalStateException> { party.rooms.deriveChildRoomId(room, "private", byteArrayOf(1)) }
+                    party.messages.start(party.lockers)
+                    assertTrue(party.messages.watchMessages(room).first().isEmpty())
+                    kotlin.test.assertNull(party.drafts.watchDraft(room).first())
+                    kotlin.test.assertNull(party.myProfiles.sign(profile, 3, byteArrayOf(1)))
+                    val fresh = party.myProfiles.createProfile("Bob")
+                    assertTrue(fresh != profile)
+                    val freshRoom = party.rooms.createGroup("fresh account")
+                    assertTrue(freshRoom != room)
+                } finally { party.close() }
+            }
+        }
+
+    @Test(timeout = 30000)
+    fun `messages received while consumer is stopped must recover on restart`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val alice = newParty(server.rpcClient)
+                val bob = newParty(server.rpcClient)
+                try {
+                    alice.myProfiles.createProfile("Alice")
+                    bob.myProfiles.createProfile("Bob")
+                    val roomId = alice.rooms.createGroup("review-durable")
+                    bob.rooms.joinByCode(alice.rooms.createInviteCode(roomId))
+                    alice.rooms.watchMembers(roomId).first { it.size == 2 }
+                    bob.rooms.watchMembers(roomId).first { it.size == 2 }
+                    // First confirm that this party and room can actually receive messages.
+                    alice.messages.send(roomId, Draft { text = "before-stop" })
+                    kotlinx.coroutines.withTimeout(5000) {
+                        bob.messages.watchMessages(roomId).first { it.any { m -> m.payload.component?.text == "before-stop" } }
+                    }
+                    bob.messages.stop()
+                    kotlinx.coroutines.delay(100)
+                    alice.messages.send(roomId, Draft { text = "during-stop" })
+                    kotlinx.coroutines.withTimeout(5000) {
+                        alice.messages.watchMessages(roomId).first { it.any { m ->
+                            m.payload.component?.text == "during-stop" && m.status == MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT
+                        } }
+                    }
+                    kotlinx.coroutines.delay(500)
+                    bob.messages.start(bob.lockers)
+                    val recovered = kotlinx.coroutines.withTimeoutOrNull(2000) {
+                        bob.messages.watchMessages(roomId).first { it.any { m -> m.payload.component?.text == "during-stop" } }
+                    }
+                    assertTrue(recovered != null, "connector consumed and acknowledged the notification without a durable message consumer")
+                } finally { bob.close(); alice.close() }
+            }
+        }
+
+    @Test(timeout = 30000)
+    fun `failed outbox persistence rolls back every optimistic echo`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            val base = com.latenighthack.ktstore.InMemoryStoreDelegate()
+            val delegate = object : com.latenighthack.ktstore.LifecycleStoreDelegate by base, com.latenighthack.ktstore.ScopedStoreDelegate, com.latenighthack.ktstore.IndexedQueryDelegate {
+                override suspend fun query(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.query(tableName, query, identity, version)
+                override suspend fun count(tableName: String, query: com.latenighthack.ktstore.IndexedQuery) = base.count(tableName, query)
+                override suspend fun deleteBatch(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.deleteBatch(tableName, query, identity, version)
+                override suspend fun <T> transaction(stores: Set<String>, mode: com.latenighthack.ktstore.TransactionMode, block: suspend () -> T): T = base.transaction(stores, mode, block)
+                override suspend fun <T> transaction(block: suspend () -> T): T = base.transaction(block)
+                override suspend fun <T> transaction(lockKey: String, block: suspend () -> T): T = base.transaction(lockKey, block)
+                override suspend fun save(tableName: String, data: Any, keys: List<com.latenighthack.ktstore.BoundStoreKey>) {
+                    if (tableName == "pending_messages") throw java.io.IOException("injected outbox failure")
+                    base.save(tableName, data, keys)
+                }
+            }
+            val alice = newParty(server.rpcClient, databaseDelegate = delegate)
+            try {
+                alice.myProfiles.createProfile("Alice")
+                val room = alice.rooms.createGroup("atomic")
+                assertFailsWith<java.io.IOException> { alice.messages.send(room, Draft { text = "must not be stranded" }) }
+                assertTrue(alice.messages.watchMessages(room).first().isEmpty())
+                assertTrue(base.getAll("messages", null).isEmpty())
+                assertTrue(base.getAll("pending_messages", null).isEmpty())
+            } finally { alice.close() }
+        }
 
     @Test(timeout = 60_000)
     fun `a group message is delivered with signed sender attribution`() =

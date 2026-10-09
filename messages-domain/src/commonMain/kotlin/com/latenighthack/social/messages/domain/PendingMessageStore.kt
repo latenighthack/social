@@ -13,18 +13,21 @@ import com.latenighthack.social.messages.v1.toByteArray
  * ids are only unique within a room, so both are needed to identify a row and to look one up without
  * scanning the whole outbox.
  */
-internal class PendingMessageStore(database: Database) : Store<PendingMessage>(database, PendingMessageStoreDefinitionV1) {
-    private val roomIdKey = PendingMessageStoreDefinitionV1.roomIdKey
-    private val messageIdKey = PendingMessageStoreDefinitionV1.messageIdKey
-    private val roomIdMessageIdKey = PendingMessageStoreDefinitionV1.roomIdMessageIdKey
+internal class PendingMessageStore(private val handle: Database) : Store<PendingMessage>(handle, PendingMessageStoreDefinitionV2) {
+    private val roomIdKey = PendingMessageStoreDefinitionV2.roomIdKey
+    private val messageIdKey = PendingMessageStoreDefinitionV2.messageIdKey
+    private val roomIdMessageIdKey = PendingMessageStoreDefinitionV2.ownerRoomMessageKey
+
+    fun pages() = com.latenighthack.social.runtime.storePages(handle, PendingMessageStoreDefinitionV2, roomIdKey, pageSize = 16)
 
     suspend fun getAllPending(): List<PendingMessage> = getAll()
 
     suspend fun savePending(pending: PendingMessage) = save(pending)
 
-    suspend fun deletePending(roomId: RoomId, messageId: MessageId) = delete(
+    suspend fun deletePending(roomId: RoomId, messageId: MessageId, owner: String = "") = delete(
         roomIdMessageIdKey.eq(
             listOf(
+                BoundStoreKey.SerializedKey("ownerAccountIdUtf8", owner.encodeToByteArray()),
                 BoundStoreKey.SerializedKey(roomIdKey.name.value, roomId.rawValue),
                 BoundStoreKey.SerializedKey(messageIdKey.name.value, messageId.toByteArray()),
             ),

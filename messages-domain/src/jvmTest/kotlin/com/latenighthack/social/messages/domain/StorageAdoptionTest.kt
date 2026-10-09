@@ -19,7 +19,7 @@ class StorageAdoptionTest {
         val configuration = MessagesStorage.configuration(file.name)
         val legacy = SqlStoreDelegate(JdbcDriver(file.absolutePath, "sqlite"), "BLOB", legacyBinaryText = true)
         try {
-            configuration.stores.forEach { legacy.registerStore(it.name.value, it.keys, it.primaryKey) }
+            MessagesStorage.legacyDefinitions.map { it.declaration }.forEach { legacy.registerStore(it.name.value, it.keys, it.primaryKey) }
             legacy.createStores()
             fixtures.forEach { (table, row) -> legacy.save(table, row.data, row.keys) }
         } finally { legacy.close() }
@@ -41,5 +41,25 @@ class StorageAdoptionTest {
                 if (attempt == 1) { current = handle(); current.open() }
             }
         } finally { current.close(); file.delete() }
+    }
+    @Test fun upgradesConfiguredV3WithoutLosingUnknownFields() = runBlocking {
+        val file = File.createTempFile("messagesstorage-v3", ".db")
+        val previous = definitionDatabaseConfiguration(file.name, MessagesStorage.legacyDefinitions)
+        val old = createDatabase(previous, file.absolutePath)
+        try {
+            old.open()
+            old.transaction(previous.stores.map { it.name }.toSet()) {
+                fixtures.forEach { (table, row) -> save(StoreName(table), row) }
+            }
+        } finally { old.close() }
+        val upgraded = createDatabase(MessagesStorage.upgrade(previous), file.absolutePath)
+        try {
+            upgraded.open()
+            upgraded.transaction(previous.stores.map { it.name }.toSet(), TransactionMode.READ_ONLY) {
+                fixtures.forEach { (table, expected) ->
+                    assertContentEquals(expected.data as ByteArray, getAll(StoreName(table)).single() as ByteArray)
+                }
+            }
+        } finally { upgraded.close(); file.delete() }
     }
 }

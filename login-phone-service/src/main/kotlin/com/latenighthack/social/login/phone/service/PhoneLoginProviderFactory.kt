@@ -11,15 +11,21 @@ import com.latenighthack.social.login.core.service.SmsSender
  * read from the environment.
  */
 class PhoneLoginProviderFactory : LoginProviderFactory {
-    override fun create(context: LoginProviderContext): LoginHandler {
-        val sender: SmsSender = when (context.env("LOGIN_SMS_PROVIDER")?.lowercase()) {
+    override fun create(context: LoginProviderContext): LoginHandler? {
+        val selected = context.env("LOGIN_SMS_PROVIDER")?.lowercase() ?: return null
+        val development = context.env("LOGIN_DEVELOPMENT_MODE")?.toBooleanStrict() ?: false
+        val sender: SmsSender = when (selected) {
             "twilio" -> TwilioSmsSender(
                 accountSid = context.env("LOGIN_TWILIO_ACCOUNT_SID").orEmpty(),
                 authToken = context.env("LOGIN_TWILIO_AUTH_TOKEN").orEmpty(),
                 fromNumber = context.env("LOGIN_TWILIO_FROM").orEmpty(),
                 httpClient = context.httpClient,
             )
-            else -> ConsoleSmsSender()
+            "console" -> {
+                require(development) { "console delivery requires explicit development mode" }
+                ConsoleSmsSender()
+            }
+            else -> error("unknown login delivery provider")
         }
         return LoginHandler.Sms(sender)
     }

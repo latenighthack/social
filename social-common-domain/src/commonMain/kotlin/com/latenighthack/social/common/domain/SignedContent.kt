@@ -45,7 +45,9 @@ suspend fun verify(signed: SignedContent, label: Long, key: Secp256r1PublicKey):
     if (!signature.signerKeyHash.contentEquals(expectedHash)) return false
     return try {
         key.verify(transcript(label, signed.content, ByteArray(0)), signature.signature)
-    } catch (e: Exception) {
+    } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
         false
     }
 }

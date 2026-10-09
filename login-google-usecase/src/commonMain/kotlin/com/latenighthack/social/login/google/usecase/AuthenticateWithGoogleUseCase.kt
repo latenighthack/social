@@ -1,6 +1,7 @@
 package com.latenighthack.social.login.google.usecase
 
 import com.latenighthack.social.observability.*
+
 import com.latenighthack.social.account.domain.AccountManager
 import com.latenighthack.social.login.core.domain.LoginClient
 import com.latenighthack.social.login.core.usecase.SignInResult
@@ -20,29 +21,37 @@ class AuthenticateWithGoogleUseCase(
     private val account: AccountManager,
 ) : SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
-    suspend fun authenticate(): SignInResult {
-        // Replay defense: bind a server-issued single-use nonce into the native request. Best-effort —
-        // enforcement (and thus failure) is server-side.
+
+    suspend fun authenticate(): SignInResult = socialTelemetry.measure("login", "nativeSignIn", "google") { (run observedOperation@ {
+        // Native authorization is admitted only after a successful single-use nonce request.
         val nonce = try {
-            loginClient.requestNonce().nonce.ifEmpty { null }
+            val response = loginClient.requestNonce()
+            if (response.result != com.latenighthack.social.login.v1.LoginResult.LOGIN_RESULT_OK || response.nonce.isBlank()) {
+                return@observedOperation SignInResult.Failed("Could not obtain a sign-in nonce")
+            }
+            response.nonce
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            null
+            return@observedOperation SignInResult.Failed(e.message ?: "Could not obtain a sign-in nonce")
         }
         val idToken = try {
-            socialTelemetry.measure("login", "nativeSignIn", "google") {
-                try { googleSignIn.signIn(nonce) }
-                catch (unavailable: UnsupportedOperationException) { result("provider_unavailable"); throw unavailable }
-            }
+            googleSignIn.signIn(nonce)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            return SignInResult.Failed(e.message ?: "Google sign-in failed")
+            return@observedOperation SignInResult.Failed(e.message ?: "Google sign-in failed")
         }
         val response = loginClient.authenticateSocial(
             AuthenticateSocialRequest {
                 provider = Provider.PROVIDER_GOOGLE
                 this.idToken = idToken
-                nonce?.let { this.nonce = it }
+                this.nonce = nonce
             },
         )
-        return response.toSignInResult(account)
-    }
+        return@observedOperation response.toSignInResult(account)
+
+        }) }
+
+
 }

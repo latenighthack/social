@@ -61,7 +61,7 @@ without ever holding a profile's private key).
 The room list is the source of truth for which rooms the user is in and the shared key for each. It
 is stored as `RoomRecord` lockers (room id, kind, shared key, the profile the user is in as, and a
 personal `updated_at`) in the **user's own account room** under the `account-rooms` keyspace (8) —
-written on join/create, deleted on leave.
+journaled on join/create and retained as a tombstone on leave.
 
 `watchRooms()` returns the room ids ordered by `updated_at`, **newest first**. `updated_at` is a
 personal ordering signal (it lives in the per-user account-room record, not in shared room state):
@@ -71,8 +71,10 @@ re-emits the reordered list. The timestamps survive restore, so ordering is stab
 **freshly restored account recover its rooms**: at start, once the account is `Ready`,
 `RoomsManagerImpl` loads every `RoomRecord` from there, rebuilds its in-memory key map, and
 resubscribes to each room. (This mirrors how `MyProfilesManager` keeps profile sources in the account
-room; there is no separate device-local store.) The shared keys live here in the clear, exactly like
-profile private keys already do — safe by the account room id being unguessable, not by read gating.
+room; there is no separate device-local store.) Profile and shared room private keys are encrypted
+with account-bound, context-authenticated keys before synchronization. Account-room write authority
+does not provide read confidentiality. Source observation continues after hydration, so membership
+and key-source changes reconcile across devices. Pending membership and leave intents repair on restart.
 
 ## Keyspaces (global allocation)
 

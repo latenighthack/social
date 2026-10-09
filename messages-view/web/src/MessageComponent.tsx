@@ -1,4 +1,5 @@
 import React from "react";
+import { inlineRange } from "./inlineRange.js";
 import type { CSSProperties, ReactNode } from "react";
 import {
   type Action,
@@ -50,6 +51,17 @@ export function MessageComponent(props: MessageComponentProps): React.JSX.Elemen
 }
 
 function renderComponent(component: Component, ctx: Ctx, key: number): ReactNode {
+  const rendered = renderContents(component, ctx, key);
+  const action = component.action;
+  if (!action || !ctx.onAction || component.contents.case === "button") return rendered;
+  return <div key={key} role="button" tabIndex={0}
+    onClick={(event) => { event.stopPropagation(); ctx.onAction!(action); }}
+    onKeyDown={(event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); ctx.onAction!(action); }
+    }}>{rendered}</div>;
+}
+
+function renderContents(component: Component, ctx: Ctx, key: number): ReactNode {
   const c = component.contents;
   switch (c.case) {
     case "container":
@@ -247,22 +259,17 @@ function renderText(text: Text, ctx: Ctx, key: number): ReactNode {
 // Splits the string at every inline boundary and renders each run with the union of
 // rules covering it, so overlapping inlines (e.g. bold + italic) compose correctly.
 function renderInlines(source: string, inlines: Inline[], ctx: Ctx): ReactNode[] {
-  const chars = Array.from(source);
-  const boundaries = new Set<number>([0, chars.length]);
-  for (const inline of inlines) {
-    boundaries.add(clampIndex(inline.offset, chars.length));
-    boundaries.add(clampIndex(inline.offset + inline.length, chars.length));
-  }
+  const ranges = inlines.map((inline) => ({ inline, range: inlineRange(source, inline.offset, inline.length) }));
+  const boundaries = new Set<number>([0, source.length]);
+  for (const { range: [start, end] } of ranges) { boundaries.add(start); boundaries.add(end); }
   const cuts = Array.from(boundaries).sort((a, b) => a - b);
   const runs: ReactNode[] = [];
   for (let i = 0; i < cuts.length - 1; i++) {
     const start = cuts[i];
     const end = cuts[i + 1];
     if (end <= start) continue;
-    const active = inlines.filter(
-      (inline) => inline.offset <= start && inline.offset + inline.length >= end,
-    );
-    runs.push(renderRun(chars.slice(start, end).join(""), active, ctx, i));
+    const active = ranges.filter(({ range }) => range[0] <= start && range[1] >= end).map(({ inline }) => inline);
+    runs.push(renderRun(source.slice(start, end), active, ctx, i));
   }
   return runs;
 }
@@ -332,13 +339,17 @@ function renderRun(runText: string, active: Inline[], ctx: Ctx, key: number): Re
           borderRadius: 3,
         }}
       >
-        {runText}
+        {"█".repeat(runText.length)}
       </span>
     );
   }
 
   return (
-    <span key={key} style={style} onClick={onClick} role={onClick ? "button" : undefined}>
+    <span key={key} style={style} onClick={onClick ? (event) => { event.stopPropagation(); onClick(); } : undefined}
+      role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); onClick(); }
+      } : undefined}>
       {runText}
     </span>
   );
@@ -353,15 +364,15 @@ function renderImage(image: Image, ctx: Ctx, key: number): ReactNode {
   const base: CSSProperties = { backgroundColor: placeholder, objectFit: "cover", display: "block" };
   switch (image.style) {
     case Image_Style.SMALL:
-      return <img key={key} src={url} alt={ref?.alternateText ?? ""} style={{ ...base, width: 64, height: 64 / aspect, borderRadius: 8 }} />;
+      return <img key={key} loading="lazy" src={url || undefined} alt={ref?.alternateText ?? ""} style={{ ...base, width: 64, height: 64 / aspect, borderRadius: 8 }} />;
     case Image_Style.MEDIUM:
-      return <img key={key} src={url} alt={ref?.alternateText ?? ""} style={{ ...base, width: 160, height: 160 / aspect, borderRadius: 10 }} />;
+      return <img key={key} loading="lazy" src={url || undefined} alt={ref?.alternateText ?? ""} style={{ ...base, width: 160, height: 160 / aspect, borderRadius: 10 }} />;
     case Image_Style.SQUARE:
-      return <img key={key} src={url} alt={ref?.alternateText ?? ""} style={{ ...base, width: "100%", aspectRatio: "1 / 1" }} />;
+      return <img key={key} loading="lazy" src={url || undefined} alt={ref?.alternateText ?? ""} style={{ ...base, width: "100%", aspectRatio: "1 / 1" }} />;
     case Image_Style.CIRCULAR:
-      return <img key={key} src={url} alt={ref?.alternateText ?? ""} style={{ ...base, width: 64, height: 64, borderRadius: "50%" }} />;
+      return <img key={key} loading="lazy" src={url || undefined} alt={ref?.alternateText ?? ""} style={{ ...base, width: 64, height: 64, borderRadius: "50%" }} />;
     default:
-      return <img key={key} src={url} alt={ref?.alternateText ?? ""} style={{ ...base, width: "100%", aspectRatio: `${aspect} / 1`, borderRadius: 12 }} />;
+      return <img key={key} loading="lazy" src={url || undefined} alt={ref?.alternateText ?? ""} style={{ ...base, width: "100%", aspectRatio: `${aspect} / 1`, borderRadius: 12 }} />;
   }
 }
 
@@ -386,7 +397,8 @@ function renderButton(component: Component, button: { text: string; style: Butto
   };
   const action = component.action;
   return (
-    <button key={key} style={style} onClick={action && ctx.onAction ? () => ctx.onAction!(action) : undefined}>
+    <button type="button" key={key} style={style} disabled={!action || !ctx.onAction}
+      onClick={action && ctx.onAction ? (event) => { event.stopPropagation(); ctx.onAction!(action); } : undefined}>
       {button.text}
     </button>
   );

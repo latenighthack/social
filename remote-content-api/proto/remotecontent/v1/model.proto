@@ -36,6 +36,10 @@ message PendingUpload {
   // URL the content is served from; kept so an upload resumed after a restart can still be observed
   // with its download URL.
   string download_url = 5;
+  string owner_account_id = 6;
+  // Retained failures are observable and require explicit retry or discard.
+  int64 attempts = 7;
+  string failure_reason = 8;
 }
 
 // Uploads and hosts opaque content. The client calls CreateContent to reserve an

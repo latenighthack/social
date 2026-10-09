@@ -35,6 +35,36 @@ suspend fun Application.attachRemoteContent() {
 
 class RemoteContentIntegrationTest {
 
+    @Test fun `active content is downloaded without execution privileges`() =
+        runTestWithServer(Application::attachRemoteContent) { server, _ ->
+            val rpc = RemoteContentServiceRpc(server.rpcClient)
+            val base = server.serverUrl.trimEnd('/').let { if (it.startsWith("http")) it else "http://$it" }
+            HttpClient(CIO).use { http ->
+                val created = rpc.createContent(CreateContentRequest(mimeType = "text/html"))
+                http.put(base + created.uploadUrl) { setBody("<script>alert(1)</script>".encodeToByteArray()) }
+                val response = http.get(base + created.downloadUrl)
+                assertEquals("application/octet-stream", response.contentType()?.toString())
+                assertEquals("nosniff", response.headers["X-Content-Type-Options"])
+                assertTrue(response.headers["Content-Disposition"]!!.startsWith("attachment"))
+                assertTrue(response.headers["Content-Security-Policy"]!!.contains("sandbox"))
+            }
+        }
+
+    @Test fun `oversized uploads are rejected before persistence`() =
+        runTestWithServer({
+            val store = InMemoryContentStore()
+            val service = RemoteContentServiceImpl(store, ContentUrls(""))
+            routing { serveAll(service, RemoteContentServer.Descriptor); remoteContent(store, maxUploadBytes = 32) }
+        }) { server, _ ->
+            val rpc = RemoteContentServiceRpc(server.rpcClient)
+            val base = server.serverUrl.trimEnd('/').let { if (it.startsWith("http")) it else "http://$it" }
+            val created = rpc.createContent(CreateContentRequest { })
+            HttpClient(CIO).use { http ->
+                assertEquals(HttpStatusCode.PayloadTooLarge, http.put(base + created.uploadUrl) { setBody(ByteArray(33)) }.status)
+                assertEquals(HttpStatusCode.NotFound, http.get(base + created.downloadUrl).status)
+            }
+        }
+
     @Test
     fun `create, upload, then download round-trips the bytes and mime type`() =
         runTestWithServer(Application::attachRemoteContent) { server, _ ->
@@ -52,8 +82,14 @@ class RemoteContentIntegrationTest {
                 assertEquals(HttpStatusCode.NotFound, http.get(base + created.downloadUrl).status)
 
                 val bytes = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8, 9)
+                assertTrue(created.uploadUrl != created.downloadUrl)
+                assertEquals(HttpStatusCode.Forbidden, http.put(base + created.downloadUrl) { setBody(bytes) }.status)
+                assertEquals(HttpStatusCode.Forbidden, http.put(base + created.uploadUrl.replaceAfter("upload_token=", ContentUrls.encodeId(ByteArray(32)))) { setBody(bytes) }.status)
                 val put = http.put(base + created.uploadUrl) { setBody(bytes) }
                 assertEquals(HttpStatusCode.OK, put.status)
+                // Retrying the same authorized bytes is idempotent; replacing published bytes is forbidden.
+                assertEquals(HttpStatusCode.OK, http.put(base + created.uploadUrl) { setBody(bytes) }.status)
+                assertEquals(HttpStatusCode.Conflict, http.put(base + created.uploadUrl) { setBody(byteArrayOf(99)) }.status)
 
                 val download = http.get(base + created.downloadUrl)
                 assertEquals(HttpStatusCode.OK, download.status)

@@ -14,6 +14,9 @@ import kotlin.test.assertTrue
 
 /** The use cases are thin wrappers, so they're tested against a fake of the concept. */
 private class FakeAccountManager : AccountManager {
+    override val owner = MutableStateFlow<String?>(null)
+    override suspend fun protectSecret(context: String, plaintext: ByteArray): ByteArray = error("unused in this fake")
+    override suspend fun unprotectSecret(context: String, ciphertext: ByteArray): ByteArray = error("unused in this fake")
     var hasAccount = false
         private set
 

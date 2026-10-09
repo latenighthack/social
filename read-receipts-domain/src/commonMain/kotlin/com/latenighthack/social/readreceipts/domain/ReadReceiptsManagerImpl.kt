@@ -14,6 +14,9 @@ import com.latenighthack.social.readreceipts.v1.fromByteArray
 import com.latenighthack.social.readreceipts.v1.toByteArray
 import com.latenighthack.social.rooms.domain.RoomsManager
 import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.AccountSession
+import com.latenighthack.social.runtime.withAccount
+import com.latenighthack.social.readreceipts.v1.copy
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
@@ -34,44 +37,72 @@ import kotlinx.coroutines.flow.map
 class ReadReceiptsManagerImpl(
     private val rooms: RoomsManager,
     private val messages: MessagesManager,
+    private val myProfiles: com.latenighthack.social.profiles.domain.MyProfilesManager,
+    private val scope: kotlinx.coroutines.CoroutineScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default),
+    private val session: AccountSession? = null,
 ) : ReadReceiptsManager, DomainLifecycle, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
+    override fun start(lockers: LockersClient) = run { socialTelemetry.event("read_receipts", "start"); (run observedOperation@ {
+        runner.start(lockers) { kotlinx.coroutines.awaitCancellation() }
 
-    private var lockers: LockersClient? = null
+        }) }
+    override fun stop() = run { socialTelemetry.event("read_receipts", "stop"); (run observedOperation@ {
+        runner.stop()
 
-    override fun start(lockers: LockersClient) {
-        socialTelemetry.event("read_receipts", "start")
-        this.lockers = lockers
-    }
-
-    override fun stop() {
-        socialTelemetry.event("read_receipts", "stop")
-        lockers = null
-    }
-
-    override suspend fun markRead(roomId: RoomId): Unit = socialTelemetry.measure("read_receipts", "markRead") {
-        val me = rooms.localProfile(roomId) ?: run { result("no_profile"); return@measure }
-        val latest = messages.watchMessageIds(roomId).first().lastOrNull() ?: run { result("no_message"); return@measure }
-        val client = readReceiptClient(requireLockers())
-        val lockerId = LockerId(me.rawValue, ReadReceiptsKeyspaces.READ_RECEIPTS)
-        // Skip a redundant write when the pointer already sits at the latest message — markRead is
-        // called often (e.g. whenever the room is viewed) and each write is a network round-trip.
-        if (client.getLocker(roomId, lockerId)?.messageId?.contentEquals(latest.rawValue) == true) { result("redundant"); return@measure }
-        client.updateLocker(roomId, lockerId) { ReadReceipt { messageId = latest.rawValue } }
-    }
-
-    override fun watchReadReceipts(roomId: RoomId): Flow<Map<ProfileId, MessageId>> = (flow {
+        }) }
+    override suspend fun markRead(roomId: RoomId): Unit = socialTelemetry.measure("read_receipts", "markRead") { (withSession {
+        runner.command { markReadOwned(roomId) }
+    }) }
+    override fun watchReadReceipts(roomId: RoomId): Flow<Map<ProfileId, MessageId>>  = (flow {
         val client = readReceiptClient(requireLockers())
         emitAll(
-            client.watchAll(roomId, ReadReceiptsKeyspaces.READ_RECEIPTS).map { receipts ->
-                receipts.entries.associate { (lockerId, receipt) ->
+            kotlinx.coroutines.flow.combine(client.watchAll(roomId, ReadReceiptsKeyspaces.READ_RECEIPTS), rooms.watchMembers(roomId)) { receipts, members ->
+                receipts.entries.filter { (lockerId, receipt) ->
+                    ProfileId(rawValue = lockerId.rawValue) in members && com.latenighthack.social.common.domain.verifyProfileClaim(lockerId.rawValue, roomId.rawValue,
+                        receipt.profileId, receipt.roomId, receipt.proof, 4, receipt.copy(proof = null).toByteArray())
+                }.associate { (lockerId, receipt) ->
                     ProfileId { rawValue = lockerId.rawValue } to MessageId(rawValue = receipt.messageId)
                 }
             },
         )
-    }.distinctUntilChanged()
-    ).socialObserved(socialTelemetry, "read_receipts")
+    }.distinctUntilChanged()).socialObserved(socialTelemetry, "read_receipts")
+
+
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
+
+
+    override suspend fun stopAndJoin() { runner.stopAndJoin() }
+
+
+    private suspend fun markReadOwned(roomId: RoomId) {
+        val me = rooms.localProfile(roomId) ?: return
+        val ordered = messages.watchMessageIds(roomId).first()
+        val latest = ordered.lastOrNull() ?: return
+        val client = readReceiptClient(requireLockers())
+        val lockerId = LockerId(me.rawValue, ReadReceiptsKeyspaces.READ_RECEIPTS)
+        // Skip a redundant write when the pointer already sits at the latest message — markRead is
+        // called often (e.g. whenever the room is viewed) and each write is a network round-trip.
+        if (client.getLocker(roomId, lockerId)?.messageId?.contentEquals(latest.rawValue) == true) return
+        val claim = ReadReceipt(messageId = latest.rawValue, roomId = roomId.rawValue, profileId = me.rawValue)
+        val proof = myProfiles.sign(me, 4, claim.toByteArray()) ?: return
+        com.latenighthack.social.runtime.rebasedUpdate(
+            client.getLocker(roomId, lockerId) ?: ReadReceipt { },
+            prepare = { current ->
+                val verified = com.latenighthack.social.common.domain.verifyProfileClaim(me.rawValue, roomId.rawValue,
+                    current.profileId, current.roomId, current.proof, 4, current.copy(proof = null).toByteArray())
+                val comparison = if (verified) messages.compareMessageOrder(roomId, MessageId(rawValue = current.messageId), latest) else null
+                // A verified pointer unknown to this device may be ahead; preserve it until sync.
+                if (verified && (comparison == null || comparison >= 0)) current else claim.copy(proof = proof)
+            },
+            commit = { transform -> client.updateLocker(roomId, lockerId, builder = transform) },
+        )
+    }
+
+
+    private suspend fun <T> withSession(block: suspend () -> T): T =
+        if (session == null) block() else session.withAccount(block)
 
     private fun requireLockers(): LockersClient = lockers ?: error("read receipts requires start(lockers) first")
 

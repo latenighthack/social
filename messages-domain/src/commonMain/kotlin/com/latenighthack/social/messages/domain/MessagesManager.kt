@@ -8,6 +8,7 @@ import com.latenighthack.social.messages.v1.MessageDeliveryStatus
 import com.latenighthack.social.messages.v1.MessageId
 import com.latenighthack.social.messages.v1.MessagePayload
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 
 /**
  * The user's messages: a chat layer riding on rooms. All sends in a room go through one gated
@@ -35,6 +36,16 @@ interface MessagesManager {
     fun watchMessages(roomId: RoomId): Flow<List<MessageEntry>>
 
     /** The ids of the messages in [roomId], oldest first — index-aligned with [watchMessages]. */
+    /** Older durable history; the live flow retains the most recent 1000 messages. */
+    suspend fun loadEarlier(roomId: RoomId, before: MessageId, limit: Int = 100): List<MessageEntry> = emptyList()
+
+    /** Compare causal positions, including archived messages; null means either id is not known. */
+    suspend fun compareMessageOrder(roomId: RoomId, first: MessageId, second: MessageId): Int? {
+        val ids = watchMessageIds(roomId).first()
+        val a = ids.indexOf(first); val b = ids.indexOf(second)
+        return if (a < 0 || b < 0) null else a.compareTo(b)
+    }
+
     fun watchMessageIds(roomId: RoomId): Flow<List<MessageId>>
 }
 

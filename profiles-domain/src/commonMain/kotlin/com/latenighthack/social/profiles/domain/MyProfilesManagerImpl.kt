@@ -2,6 +2,11 @@ package com.latenighthack.social.profiles.domain
 
 import com.latenighthack.social.observability.*
 
+import kotlinx.coroutines.flow.asStateFlow
+
+import com.latenighthack.social.runtime.withAccount
+import com.latenighthack.social.runtime.requireOperationOwner
+
 import com.latenighthack.ktcrypto.ECDH
 import com.latenighthack.ktcrypto.Secp256r1
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
@@ -17,6 +22,7 @@ import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
+import com.latenighthack.lockers.connector.TypedLockerUpdate
 import com.latenighthack.social.account.domain.AccountManager
 import com.latenighthack.social.common.domain.sign as signContent
 import com.latenighthack.social.common.v1.SignedContent
@@ -31,6 +37,8 @@ import com.latenighthack.social.profiles.v1.toByteArray
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +46,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.coroutineScope
 
 /**
  * Owns the user's profile key pairs (kept in memory, sourced from the account room) and drives
@@ -51,45 +65,66 @@ class MyProfilesManagerImpl(
 ) : MyProfilesManager, DomainLifecycle, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
+    override fun start(lockers: LockersClient) = run { socialTelemetry.event("profiles", "start"); (run observedOperation@ {
+        runner.start(lockers) {
+        _isLoaded.value = false
+             recoverTask(mutableTaskHealth) { run() } }
+
+        }) }
+    override fun stop() = run { socialTelemetry.event("profiles", "stop"); (run observedOperation@ {
+        runner.stop()
+        _isLoaded.value = false
+
+        }) }
+    override fun watchProfile(id: ProfileId): Flow<Profile?>  = (combine(_profiles, account.owner, loadedOwner, account.generation, loadedGeneration) { profiles, current, loaded, epoch, loadedEpoch ->
+            if (current != null && current == loaded && epoch == loadedEpoch) profiles[id] else null
+        }.distinctUntilChanged()).socialObserved(socialTelemetry, "profiles")
+    override fun watchProfiles(ids: List<ProfileId>): Flow<List<Profile?>>  = (combine(_profiles, account.owner, loadedOwner, account.generation, loadedGeneration) { profiles, current, loaded, epoch, loadedEpoch ->
+            ids.map { if (current != null && current == loaded && epoch == loadedEpoch) profiles[it] else null }
+        }.distinctUntilChanged()).socialObserved(socialTelemetry, "profiles")
+    override suspend fun createProfile(displayName: String): ProfileId = socialTelemetry.measure("profiles", "createProfile") { (account.withAccount { runner.command { createProfileOwned(displayName) } }) }
+    override suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit): Unit = socialTelemetry.measure("profiles", "updateProfile") { (account.withAccount { runner.command { updateProfileOwned(profileId, builder) } }) }
+
 
     // In-memory profile keys (immutable-swap for consistent reads from writeKey).
-    private var keyPairs: Map<ProfileId, Secp256r1KeyPair> = emptyMap()
+    private val keyPairs = MutableStateFlow<Map<ProfileId, Secp256r1KeyPair>>(emptyMap())
 
     private val _profiles = MutableStateFlow<Map<ProfileId, Profile>>(emptyMap())
     private val _isLoaded = MutableStateFlow(false)
+    private val loadedOwner = MutableStateFlow<String?>(null)
+    private val loadedGeneration = MutableStateFlow(-1L)
+    private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value &&
+        account.generation.value == loadedGeneration.value
 
-    private var job: Job? = null
-    private var lockers: LockersClient? = null
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
 
-    override val isLoaded: StateFlow<Boolean> get() = _isLoaded
+    override val isLoaded: StateFlow<Boolean> = _isLoaded.asStateFlow()
 
-    override fun start(lockers: LockersClient) {
-        socialTelemetry.event("profiles", "start")
-        this.lockers = lockers
-        if (job?.isActive == true) return
-        _isLoaded.value = false
-        job = scope.launch { socialTelemetry.measure("profiles", "start") { run() } }
-    }
 
-    override fun stop() {
-        socialTelemetry.event("profiles", "stop")
-        job?.cancel()
-        job = null
-        _isLoaded.value = false
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
     override suspend fun deriveSharedSecret(profileId: ProfileId, peerPublicKey: ByteArray): ByteArray? {
-        val keyPair = keyPairs[profileId] ?: return null
+        if (!ownsKeys()) return null
+        val keyPair = keyPairs.value[profileId] ?: return null
         val peer = Secp256r1PublicKey.decode(peerPublicKey)
-        return Secp256r1.ECDH.sharedSecret(keyPair.privateKey, peer)
+        val secret = Secp256r1.ECDH.sharedSecret(keyPair.privateKey, peer)
+        return secret.takeIf { ownsKeys() }
     }
 
     override suspend fun sign(profileId: ProfileId, label: Long, content: ByteArray): SignedContent? =
-        keyPairs[profileId]?.let { signContent(it, label, content) }
+        if (!ownsKeys()) null else keyPairs.value[profileId]?.let {
+            signContent(it, label, content).takeIf { ownsKeys() }
+        }
 
     override fun getProfileList(): Flow<List<ProfileId>> =
-        (_profiles.map { it.keys.toList() }.distinctUntilChanged()
-    ).socialObserved(socialTelemetry, "profiles")
+        combine(_profiles, account.owner, loadedOwner, account.generation, loadedGeneration) { profiles, current, loaded, epoch, loadedEpoch ->
+            if (current != null && current == loaded && epoch == loadedEpoch) profiles.keys.toList() else emptyList()
+        }.distinctUntilChanged()
 
     override suspend fun hasProfileCached(): Boolean {
         val lockers = lockers ?: return false
@@ -100,81 +135,119 @@ class MyProfilesManagerImpl(
         }
     }
 
-    override fun getProfile(id: ProfileId): Profile? = _profiles.value[id]
+    override fun getProfile(id: ProfileId): Profile? = if (ownsKeys()) _profiles.value[id] else null
 
-    override fun watchProfile(id: ProfileId): Flow<Profile?> =
-        (_profiles.map { it[id] }.distinctUntilChanged()
-    ).socialObserved(socialTelemetry, "profiles")
 
     override fun getProfiles(ids: List<ProfileId>): List<Profile?> =
-        _profiles.value.let { current -> ids.map { current[it] } }
-
-    override fun watchProfiles(ids: List<ProfileId>): Flow<List<Profile?>> =
-        (_profiles.map { current -> ids.map { current[it] } }.distinctUntilChanged()
-    ).socialObserved(socialTelemetry, "profiles")
+        ids.map { getProfile(it) }
 
 
     /** The write key for a profile room whose authority matches one of our profiles. */
     internal fun writeKey(roomId: RoomId, lockerId: LockerId): Secp256r1KeyPair? {
+        if (!ownsKeys()) return null
         val authority = RoomKeying.authorityKey(roomId) ?: return null
-        return keyPairs[ProfileId { rawValue = authority }]
+        return keyPairs.value[ProfileId { rawValue = authority }]
     }
 
     private suspend fun run() {
-        account.lifecycle.collect { lifecycle ->
-            if (lifecycle is AccountManager.Lifecycle.Ready) {
-                // Ready arrives offline too (cache-backed) and each reconnect re-emits it, so
-                // reload on every emission: an offline cold-cache load legitimately sees nothing,
-                // and the reconnect tick then picks up the server copy. loadProfiles is
-                // idempotent; failures must not kill this collector.
-                if (runCatching { loadProfiles(lifecycle.privateRoom) }.isSuccess) {
-                    _isLoaded.value = true
+        combine(account.lifecycle, account.generation) { state, epoch -> (state as? AccountManager.Lifecycle.Ready) to epoch }
+                    .distinctUntilChanged { old, new ->
+                        old.first?.accountId?.toList() == new.first?.accountId?.toList() && old.second == new.second
+                    }.collectLatest { (ready, epoch) ->
+                val accountRoom = ready?.privateRoom
+                keyPairs.value = emptyMap()
+                _profiles.value = emptyMap()
+                _isLoaded.value = false
+                loadedOwner.value = ready?.accountId?.joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
+                        loadedGeneration.value = epoch
+                        if (loadedOwner.value != account.owner.value || epoch != account.generation.value) return@collectLatest
+                if (accountRoom == null) return@collectLatest
+                val client = lockers ?: return@collectLatest
+                coroutineScope {
+                    val observers = mutableMapOf<ProfileId, Job>()
+                    var previous = emptySet<ProfileId>()
+                    sourceClient(client).watchAll(accountRoom).collect { sources ->
+                        val ids = sources.values.mapNotNull { it.profileId }.toSet()
+                        val removed = previous - ids
+                        removed.forEach { observers.remove(it)?.cancel() }
+                        keyPairs.update { it - removed }
+                        _profiles.update { it - removed }
+                        loadProfiles(accountRoom, sources.values)
+                        for (id in ids) if (id !in observers) {
+                            observers[id] = launch {
+                                profileClient(client).watch(id.toRoomId(), id.toProfileLockerId()).collect { value ->
+                                    val profile = when (value) {
+                                        is TypedLockerUpdate.Present -> value.value
+                                        is TypedLockerUpdate.Deleted -> Profile { }
+                                    }
+                                    _profiles.update { it + (id to profile) }
+                                }
+                            }
+                        }
+                        previous = ids
+                        _isLoaded.value = true
+                    }
                 }
             }
-        }
     }
 
-    private suspend fun loadProfiles(accountRoom: RoomId) {
+    private suspend fun loadProfiles(accountRoom: RoomId, sources: Collection<ProfileSource>) {
         val lockers = lockers ?: return
         val sourceClient = sourceClient(lockers)
         val profileClient = profileClient(lockers)
         // no ACK wait: offline, cached profile sources must still load (reconnect reconciles the sub)
         sourceClient.subscribeToRoom(accountRoom, waitForSubscription = false)
 
-        for ((_, source) in sourceClient.getAllLockers(accountRoom)) {
+        for (source in sources) {
             val profileId = source.profileId ?: continue
-            val keyPair = Secp256r1KeyPair.fromPrivateKey(source.privateKey) ?: continue
-            keyPairs = keyPairs + (profileId to keyPair)
-            // Key material first, then best-effort server work: the room re-lock is a no-op for an
-            // established profile and the profile read is cache-served, so an offline failure here
-            // must not drop the key or sink the remaining profiles.
-            runCatching { ensureProfileRoom(profileClient, profileId, keyPair) }
-            runCatching {
-                profileClient.getLocker(profileId.toRoomId(), profileId.toProfileLockerId())?.let {
-                    _profiles.value = _profiles.value + (profileId to it)
+            val privateBytes = if (source.encryptedPrivateKey.isNotEmpty()) {
+                account.unprotectSecret("profile/${profileId.rawValue.toList()}", source.encryptedPrivateKey)
+            } else source.privateKey
+            val keyPair = Secp256r1KeyPair.fromPrivateKey(privateBytes) ?: continue
+            account.requireOperationOwner()
+        keyPairs.update { it + (profileId to keyPair) }
+            profileClient.subscribeToRoom(profileId.toRoomId(), waitForSubscription = false)
+            val cached = profileClient.watch(profileId.toRoomId(), profileId.toProfileLockerId()).first()
+            if (cached is TypedLockerUpdate.Present) {
+                _profiles.update { it + (profileId to cached.value) }
+            }
+            if (source.encryptedPrivateKey.isEmpty() && source.privateKey.isNotEmpty()) {
+                CoroutineScope(currentCoroutineContext()).launch {
+                    val encrypted = account.protectSecret("profile/${profileId.rawValue.toList()}", privateBytes)
+                    sourceClient.updateLocker(accountRoom, profileId.toSourceLockerId()) {
+                        it.copy { privateKey = ByteArray(0); encryptedPrivateKey = encrypted }
+                    }
                 }
             }
         }
     }
 
-    override suspend fun createProfile(displayName: String): ProfileId = socialTelemetry.measure("profiles", "createProfile") {
+
+    private suspend fun createProfileOwned(displayName: String): ProfileId {
         val lockers = lockers ?: error("createProfile requires start(lockers) first")
         val accountRoom = (account.lifecycle.value as? AccountManager.Lifecycle.Ready)?.privateRoom
             ?: error("account must be Ready to create a profile")
 
+        val owner = account.owner.value
+        val commandGeneration = account.generation.value
+        combine(loadedOwner, _isLoaded, account.generation, loadedGeneration) { loaded, ready, epoch, loadedEpoch -> loaded == owner && ready && epoch == loadedEpoch }.first { it }
         val keyPair = Secp256r1KeyPair.generate()
         val publicKey = keyPair.publicKey.encode()
         val privateKeyBytes = keyPair.privateKey.encode()
         val profileId = ProfileId { rawValue = publicKey }
-        keyPairs = keyPairs + (profileId to keyPair)
+        account.requireOperationOwner()
+        keyPairs.update { it + (profileId to keyPair) }
 
-        // Store the secret half in the account room (protected by the account room lock).
+        val encrypted = account.protectSecret("profile/${profileId.rawValue.toList()}", privateKeyBytes)
+        // The account room lock authenticates writes; encryption provides confidentiality.
         val sourceClient = sourceClient(lockers)
         sourceClient.subscribeToRoom(accountRoom)
         sourceClient.updateLocker(accountRoom, profileId.toSourceLockerId()) {
+            check(account.owner.value == owner && account.generation.value == commandGeneration)
             it.copy {
                 this.profileId = profileId
-                privateKey = privateKeyBytes
+                privateKey = ByteArray(0)
+                encryptedPrivateKey = encrypted
             }
         }
 
@@ -185,29 +258,32 @@ class MyProfilesManagerImpl(
         val profile = profileClient.updateLocker(profileId.toRoomId(), profileId.toProfileLockerId()) {
             it.copy { disclosures = listOf(disclosure) }
         } ?: Profile { disclosures = listOf(disclosure) }
-        _profiles.value = _profiles.value + (profileId to profile)
+        check(account.owner.value == owner) { "account changed during profile creation" }
+        _profiles.update { it + (profileId to profile) }
 
-        return@measure profileId
+        return profileId
     }
 
-    override suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit): Unit = socialTelemetry.measure("profiles", "updateProfile") {
+
+    private suspend fun updateProfileOwned(profileId: ProfileId, builder: ProfileBuilder.() -> Unit) {
         val lockers = lockers ?: error("updateProfile requires start(lockers) first")
-        val keyPair = keyPairs[profileId] ?: error("unknown profile")
+        check(ownsKeys()) { "account is signed out" }
+        val keyPair = keyPairs.value[profileId] ?: error("unknown profile")
 
-        // Apply the caller's builder to the current profile, then re-sign every disclosure over
-        // its payload so signatures always match the written content.
-        val built = (getProfile(profileId) ?: Profile { }).copy(builder)
-        val signed = mutableListOf<SignedContent>()
-        for (disclosure in built.disclosures) {
-            val payload = Profile.DisclosurePayload.fromByteArray(disclosure.content)
-            signed.add(Disclosures.sign(keyPair, profileId, payload))
-        }
-        val updatedProfile = built.copy { disclosures = signed }
-
-        val stored = profileClient(lockers)
-            .updateLocker(profileId.toRoomId(), profileId.toProfileLockerId()) { updatedProfile }
-            ?: updatedProfile
-        _profiles.value = _profiles.value + (profileId to stored)
+        val client = profileClient(lockers)
+        val stored = com.latenighthack.social.runtime.rebasedUpdate(
+            client.getLocker(profileId.toRoomId(), profileId.toProfileLockerId()) ?: Profile { },
+            prepare = { current ->
+                val built = current.copy(builder)
+                val signed = built.disclosures.map {
+                    Disclosures.sign(keyPair, profileId, Profile.DisclosurePayload.fromByteArray(it.content))
+                }
+                built.copy { disclosures = signed }
+            },
+            commit = { transform -> client.updateLocker(profileId.toRoomId(), profileId.toProfileLockerId(), builder = transform) },
+        )
+        account.requireOperationOwner()
+        _profiles.update { it + (profileId to stored) }
     }
 
     private suspend fun ensureProfileRoom(

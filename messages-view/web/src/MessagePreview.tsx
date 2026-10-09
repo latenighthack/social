@@ -1,4 +1,5 @@
 import React from "react";
+import { redactedText } from "./redaction.js";
 import type { CSSProperties } from "react";
 import { type Component, type Text, Text_Style } from "./gen/messages/v1/components_pb.js";
 import { previewTheme, type MessageTheme } from "./theme.js";
@@ -45,10 +46,10 @@ export function findPreviewText(component: Component): string | null {
     const priority = [Text_Style.DEFAULT, Text_Style.TITLE, Text_Style.SUBTITLE, Text_Style.DESCRIPTION];
     for (const style of priority) {
       const match = found.find((t) => t.style === style);
-      if (match && match.text.trim().length > 0) return match.text.trim();
+      if (match && match.text.trim().length > 0) return redactedText(match).trim();
     }
     const any = found.find((t) => t.text.trim().length > 0);
-    if (any) return any.text.trim();
+    if (any) return redactedText(any).trim();
   }
   if (images.length > 0) return images[0];
   return null;

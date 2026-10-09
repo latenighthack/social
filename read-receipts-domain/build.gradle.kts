@@ -15,6 +15,8 @@ kotlin {
                 // ProfileId keys every receipt and appears in the manager's public API.
                 api(projects.profilesApi)
                 // DomainLifecycle (a manager supertype) + @SocialScope appear in the public API.
+                implementation(projects.socialCommonDomain)
+                api(projects.profilesDomain)
                 api(projects.socialRuntime)
                 // ReadReceipt is the stored payload; used internally only.
                 implementation(projects.readReceiptsApi)

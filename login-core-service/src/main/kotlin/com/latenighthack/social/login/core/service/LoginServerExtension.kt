@@ -1,5 +1,8 @@
 package com.latenighthack.social.login.core.service
 
+import com.latenighthack.social.observability.*
+import com.latenighthack.social.observability.server.SocialServerTelemetry
+
 import com.latenighthack.ktbuf.net.ServerDescriptor
 import com.latenighthack.ktstore.InMemoryStoreDelegate
 import com.latenighthack.ktstore.Database
@@ -10,10 +13,7 @@ import com.latenighthack.social.login.v1.LoginServer
 import com.latenighthack.social.login.v1.Provider
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.HttpTimeout
 import io.micrometer.core.instrument.MeterRegistry
-import com.latenighthack.social.observability.*
-import com.latenighthack.social.observability.server.SocialServerTelemetry
 import java.util.ServiceLoader
 
 /**
@@ -30,9 +30,11 @@ class LoginServerExtension(
     private val emailSender: EmailSender?,
     private val smsSender: SmsSender?,
     linkBaseUrl: String,
-    nonces: NonceService = NonceService(store = DurableNonceStore(database)),
-    requireNonce: Boolean = false,
-    private val onClose: () -> Unit = {},
+    clock: () -> Long = System::currentTimeMillis,
+    nonces: NonceService = NonceService(store = ChallengeStore(database), clock = clock),
+    requireNonce: Boolean = true,
+    private val ownsDatabase: Boolean = false,
+    private val releaseResources: () -> Unit = {},
 ) : ServerExtension, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
         set(value) {
@@ -44,6 +46,7 @@ class LoginServerExtension(
                 value.provider("email", emailSender != null); value.provider("phone", smsSender != null)
             }
         }
+
     private val credentials = CredentialStore(database)
     private val challenges = ChallengeStore(database)
     private val serviceImpl = LoginServiceImpl(
@@ -58,6 +61,7 @@ class LoginServerExtension(
         linkBaseUrl = linkBaseUrl,
         nonces = nonces,
         requireNonce = requireNonce,
+        clock = clock,
     )
 
     override val services: List<GrpcRouteProvider<*>> = listOf(
@@ -67,14 +71,13 @@ class LoginServerExtension(
         },
     )
 
-    override suspend fun start(): Unit = socialTelemetry.measure("login", "start") {
-        database.open()
+    override fun stop() = releaseResources()
+
+    override suspend fun start() {
+        if (ownsDatabase) database.open()
         credentials.prepare()
         challenges.prepare()
-        database.open()
     }
-
-    override fun stop() = onClose()
 }
 
 /**
@@ -90,12 +93,17 @@ class LoginServerExtension(
  */
 class LoginServerExtensionFactory : ServerExtensionFactory {
     override val storeDefinitions get() = LoginStorage.definitions
-    override fun create(meterRegistry: MeterRegistry): ServerExtension = create(meterRegistry, LoginStorage.inMemory())
-    override fun create(meterRegistry: MeterRegistry, database: Database): ServerExtension {
-        val config = LoginConfig.fromEnv()
-        val httpClient = HttpClient(CIO) {
-            install(HttpTimeout) { requestTimeoutMillis = 10_000; connectTimeoutMillis = 3_000; socketTimeoutMillis = 5_000 }
+    override fun create(meterRegistry: MeterRegistry): ServerExtension {
+        check(System.getenv("LOGIN_DEVELOPMENT_MODE").equals("true", ignoreCase = true)) {
+            "production login service requires the host-owned database overload"
         }
+        return createConfigured(meterRegistry, LoginStorage.inMemory(), ownsDatabase = true)
+    }
+    override fun create(meterRegistry: MeterRegistry, database: Database): ServerExtension = createConfigured(meterRegistry, database)
+
+    private fun createConfigured(meterRegistry: MeterRegistry, database: Database, ownsDatabase: Boolean = false): ServerExtension {
+        val config = LoginConfig.fromEnv()
+        val httpClient = HttpClient(CIO) { install(io.ktor.client.plugins.HttpTimeout) { requestTimeoutMillis = 10_000; connectTimeoutMillis = 3_000; socketTimeoutMillis = 5_000 } }
         val measurements = DependencyMetrics(meterRegistry)
         val context = LoginProviderContext(System::getenv, httpClient, measurements::record)
         val handlers = ServiceLoader.load(LoginProviderFactory::class.java).mapNotNull { it.create(context) }
@@ -103,7 +111,7 @@ class LoginServerExtensionFactory : ServerExtensionFactory {
         val social = handlers.filterIsInstance<LoginHandler.SocialVerifier>()
         return LoginServerExtension(
             database = database,
-            custody = CustodyCrypto(config.masterKey),
+            custody = CustodyCrypto(config.masterKey, keyVersion = config.keyVersion, previousKeys = config.previousKeys),
             hasher = Pbkdf2Hasher(),
             appleVerifier = measurements.verifier("apple", social.firstOrNull { it.provider == Provider.PROVIDER_APPLE }?.verifier),
             googleVerifier = measurements.verifier("google", social.firstOrNull { it.provider == Provider.PROVIDER_GOOGLE }?.verifier),
@@ -111,7 +119,8 @@ class LoginServerExtensionFactory : ServerExtensionFactory {
             smsSender = measurements.sms(handlers.filterIsInstance<LoginHandler.Sms>().firstOrNull()?.sender),
             linkBaseUrl = config.linkBaseUrl,
             requireNonce = config.requireNonce,
-            onClose = httpClient::close,
+            ownsDatabase = ownsDatabase,
+            releaseResources = { httpClient.close() },
         ).observedBy(SocialServerTelemetry(meterRegistry))
     }
 }

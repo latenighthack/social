@@ -1,0 +1,8 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>SwallowedException:AuthenticateWithAppleUseCase.kt$AuthenticateWithAppleUseCase$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:AuthenticateWithAppleUseCase.kt$AuthenticateWithAppleUseCase$e: Exception</ID>
+  </CurrentIssues>
+</SmellBaseline>

@@ -20,11 +20,15 @@ class SetMyAvatarUseCase(
     private val myProfiles: MyProfilesManager,
 ) : SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
-    suspend fun set(bytes: ByteArray, mimeType: String?): Upload = socialTelemetry.measure("avatars", "setMyAvatar") {
+
+    suspend fun set(bytes: ByteArray, mimeType: String?): Upload = socialTelemetry.measure("avatars", "setMyAvatar") { (run observedOperation@ {
         val profileId = myProfiles.getProfileList().first().firstOrNull()
             ?: error("a profile must exist before setting an avatar")
         val upload = uploader.enqueue(bytes, mimeType)
         myProfiles.updateProfile(profileId) { replaceDisclosure { avatar { downloadUrl = upload.downloadUrl } } }
-        return@measure upload
-    }
+        return@observedOperation upload
+
+        }) }
+
+
 }

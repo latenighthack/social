@@ -1,8 +1,8 @@
 package com.latenighthack.social.login.core.domain
 
-import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.social.observability.*
-import me.tatarka.inject.annotations.IntoSet
+
+import com.latenighthack.ktbuf.net.RpcClient
 import me.tatarka.inject.annotations.Provides
 
 /**
@@ -11,8 +11,6 @@ import me.tatarka.inject.annotations.Provides
  * this one [LoginClient].
  */
 interface LoginCoreProviders : SocialTelemetryProviders {
-    @Provides @IntoSet
-    fun loginObservabilityFeature(): SocialFeatureDescriptor = SocialFeatureDescriptor("login")
     @Provides
     fun loginClient(rpcClient: RpcClient): LoginClient = LoginClientImpl(rpcClient).observedBy(socialTelemetry())
 }

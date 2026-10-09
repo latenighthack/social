@@ -18,17 +18,35 @@ class S3ContentStore(private val client: S3Client, private val bucket: String, p
         val hex = id.joinToString("") { "%02x".format(it.toInt() and 255) }
         return prefix + hex.take(2) + "/" + hex.drop(2).ifEmpty { hex }
     }
-    override suspend fun create(id: ByteArray, mimeType: String?) { withContext(Dispatchers.IO) {
-        client.putObject(PutObjectRequest.builder().bucket(bucket).key(key(id) + ".mime").contentType("text/plain").build(), RequestBody.fromString(mimeType.orEmpty()))
+    override suspend fun create(id: ByteArray, mimeType: String?, uploadToken: ByteArray) { withContext(Dispatchers.IO) {
+        require(uploadToken.size == 32)
+        client.putObject(PutObjectRequest.builder().bucket(bucket).key(key(id) + ".mime").contentType("text/plain")
+            .ifNoneMatch("*").metadata(mapOf("upload-token-sha256" to sha256(uploadToken),
+                "expires" to (System.currentTimeMillis() + 15 * 60_000).toString())).build(), RequestBody.fromString(mimeType.orEmpty()))
     } }
     private fun read(key: String): software.amazon.awssdk.core.ResponseBytes<GetObjectResponse>? = try {
         client.getObjectAsBytes(GetObjectRequest.builder().bucket(bucket).key(key).build())
     } catch (missing: S3Exception) { if (missing.statusCode() == 404) null else throw missing }
-    override suspend fun put(id: ByteArray, bytes: ByteArray) { withContext(Dispatchers.IO) {
+    override suspend fun put(id: ByteArray, bytes: ByteArray, uploadToken: ByteArray) { withContext(Dispatchers.IO) {
+        require(bytes.size <= 16 * 1024 * 1024)
         val key = key(id)
-        val mime = read(key + ".mime")?.asUtf8String()?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
-        client.putObject(PutObjectRequest.builder().bucket(bucket).key(key).contentType(mime)
-            .metadata(mapOf("sha256" to sha256(bytes))).build(), RequestBody.fromBytes(bytes))
+        val reservation = read(key + ".mime") ?: throw UploadRejected()
+        val metadata = reservation.response().metadata()
+        if (!MessageDigest.isEqual(metadata["upload-token-sha256"].orEmpty().toByteArray(), sha256(uploadToken).toByteArray())) throw UploadRejected()
+        val existing = read(key)
+        if (existing != null) {
+            if (!existing.asByteArray().contentEquals(bytes)) throw UploadRejected(conflict = true)
+            return@withContext
+        }
+        if ((metadata["expires"]?.toLongOrNull() ?: 0L) <= System.currentTimeMillis()) throw UploadRejected()
+        try {
+            client.putObject(PutObjectRequest.builder().bucket(bucket).key(key).ifNoneMatch("*")
+                .contentType(reservation.asUtf8String().takeIf { it.isNotBlank() } ?: "application/octet-stream")
+                .metadata(mapOf("sha256" to sha256(bytes))).build(), RequestBody.fromBytes(bytes))
+        } catch (conflict: S3Exception) {
+            if (conflict.statusCode() !in setOf(409, 412)) throw conflict
+            if (read(key)?.asByteArray()?.contentEquals(bytes) != true) throw UploadRejected(conflict = true)
+        }
     } }
     override suspend fun get(id: ByteArray): StoredContent? = withContext(Dispatchers.IO) {
         val response = read(key(id)) ?: return@withContext null

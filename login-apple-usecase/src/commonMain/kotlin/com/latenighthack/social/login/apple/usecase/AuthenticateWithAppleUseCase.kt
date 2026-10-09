@@ -1,6 +1,7 @@
 package com.latenighthack.social.login.apple.usecase
 
 import com.latenighthack.social.observability.*
+
 import com.latenighthack.social.account.domain.AccountManager
 import com.latenighthack.social.login.apple.domain.AppleSignInClient
 import com.latenighthack.social.login.core.domain.LoginClient
@@ -21,34 +22,41 @@ class AuthenticateWithAppleUseCase(
     private val account: AccountManager,
 ) : SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
-    suspend fun authenticate(): SignInResult {
-        // Replay defense: bind a server-issued single-use nonce into the native request. Best-effort —
-        // an unreachable RequestNonce only matters when the server enforces nonces, and then the
-        // authenticate call fails with a clear result anyway.
+
+    suspend fun authenticate(): SignInResult = socialTelemetry.measure("login", "nativeSignIn", "apple") { (run observedOperation@ {
+        // Native authorization is admitted only after a successful single-use nonce request.
         val nonce = try {
-            loginClient.requestNonce().nonce.ifEmpty { null }
+            val response = loginClient.requestNonce()
+            if (response.result != com.latenighthack.social.login.v1.LoginResult.LOGIN_RESULT_OK || response.nonce.isBlank()) {
+                return@observedOperation SignInResult.Failed("Could not obtain a sign-in nonce")
+            }
+            response.nonce
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            null
+            return@observedOperation SignInResult.Failed(e.message ?: "Could not obtain a sign-in nonce")
         }
         val native = try {
-            socialTelemetry.measure("login", "nativeSignIn", "apple") {
-                try { appleSignIn.signIn(nonce) }
-                catch (unavailable: UnsupportedOperationException) { result("provider_unavailable"); throw unavailable }
-            }
+            appleSignIn.signIn(nonce)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            return SignInResult.Failed(e.message ?: "Apple sign-in failed")
+            return@observedOperation SignInResult.Failed(e.message ?: "Apple sign-in failed")
         }
         val response = loginClient.authenticateSocial(
             AuthenticateSocialRequest {
                 provider = Provider.PROVIDER_APPLE
                 idToken = native.idToken
-                nonce?.let { this.nonce = it }
+                this.nonce = nonce
             },
         )
         // Apple's name/email arrive only from the native credential (first authorization) — they win
         // over whatever the server read from the token (which never carries the name).
         val nativePrefill = LoginPrefill(displayName = native.displayName, email = native.email)
             .takeUnless { it.isEmpty() }
-        return response.toSignInResult(account, nativePrefill)
-    }
+        return@observedOperation response.toSignInResult(account, nativePrefill)
+
+        }) }
+
+
 }

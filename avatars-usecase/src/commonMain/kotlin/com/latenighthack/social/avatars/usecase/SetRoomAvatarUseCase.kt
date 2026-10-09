@@ -20,9 +20,13 @@ class SetRoomAvatarUseCase(
     private val rooms: RoomsManager,
 ) : SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
-    suspend fun set(roomId: RoomId, bytes: ByteArray, mimeType: String?): Upload = socialTelemetry.measure("avatars", "setRoomAvatar") {
+
+    suspend fun set(roomId: RoomId, bytes: ByteArray, mimeType: String?): Upload = socialTelemetry.measure("avatars", "setRoomAvatar") { (run observedOperation@ {
         val upload = uploader.enqueue(bytes, mimeType)
         rooms.updateInfo(roomId) { replaceDisclosure { avatar { downloadUrl = upload.downloadUrl } } }
-        return@measure upload
-    }
+        return@observedOperation upload
+
+        }) }
+
+
 }

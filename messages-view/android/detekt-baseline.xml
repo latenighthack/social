@@ -1,0 +1,13 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>CyclomaticComplexMethod:MessageLayoutBuilder.kt$MessageLayoutBuilder$private fun buildLayout(theme: MessageTheme, root: Component, parent: Container?, inOverlay: Boolean): View</ID>
+    <ID>CyclomaticComplexMethod:MessageLayoutBuilder.kt$MessageLayoutBuilder$private fun createSpannableInlines(theme: MessageTheme, text: String, inlines: List&lt;Inline&gt;): Spannable</ID>
+    <ID>CyclomaticComplexMethod:Widgets.kt$MessageTextView$@SuppressLint("ClickableViewAccessibility") override fun onTouchEvent(event: MotionEvent?): Boolean</ID>
+    <ID>LoopWithTooManyJumpStatements:MessageLayoutBuilder.kt$MessageLayoutBuilder$for</ID>
+    <ID>NestedBlockDepth:MessageLayoutBuilder.kt$MessageLayoutBuilder$private fun createSpannableInlines(theme: MessageTheme, text: String, inlines: List&lt;Inline&gt;): Spannable</ID>
+    <ID>TooManyFunctions:MessageLayoutBuilder.kt$MessageLayoutBuilder</ID>
+    <ID>UnusedParameter:MessageLayoutBuilder.kt$MessageLayoutBuilder$theme: MessageTheme</ID>
+  </CurrentIssues>
+</SmellBaseline>

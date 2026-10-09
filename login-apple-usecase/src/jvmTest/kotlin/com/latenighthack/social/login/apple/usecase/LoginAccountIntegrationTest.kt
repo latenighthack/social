@@ -64,6 +64,7 @@ private suspend fun Application.attachLoginAndLockers() {
         emailSender = null,
         smsSender = null,
         linkBaseUrl = "https://app.test/login",
+        requireNonce = false,
     )
     routing { serveAll(service, LoginServer.Descriptor) }
 }

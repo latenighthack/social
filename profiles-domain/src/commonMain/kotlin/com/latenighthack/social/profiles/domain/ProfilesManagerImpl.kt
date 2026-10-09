@@ -1,6 +1,11 @@
+// Manager recovery / untrusted input boundaries catch transport-specific failures; cancellation escapes.
+@file:Suppress("TooGenericExceptionCaught")
+
 package com.latenighthack.social.profiles.domain
 
 import com.latenighthack.social.observability.*
+
+import kotlinx.coroutines.flow.asStateFlow
 
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
 import com.latenighthack.ktcrypto.decode
@@ -20,12 +25,15 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 
 /**
  * Observes profile lockers and mirrors them into memory + a persistent [ProfileStore]. Profiles
@@ -38,25 +46,15 @@ class ProfilesManagerImpl(
 ) : ProfilesManager, DomainLifecycle, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
-
-    private val store = ProfileStore(database)
-
-    private val _profiles = MutableStateFlow<Map<ProfileId, Profile>>(emptyMap())
-
-    private var job: Job? = null
-    private var lockers: LockersClient? = null
-    // Completes once the cache has been loaded — gates all store access.
-    private val ready = CompletableDeferred<Unit>()
-
-    override suspend fun prepare(): Unit = socialTelemetry.measure("profiles", "prepare") {
+    override suspend fun prepare() = socialTelemetry.measure("profiles", "prepare") { (run observedOperation@ {
         store.prepare()
-    }
 
-    override fun start(lockers: LockersClient) {
-        socialTelemetry.event("profiles", "start")
-        this.lockers = lockers
-        if (job?.isActive == true) return
-        job = scope.launch {
+        }) }
+    override fun start(lockers: LockersClient) = run { socialTelemetry.event("profiles", "start"); (run observedOperation@ {
+        runner.start(lockers) {
+             recoverTask(mutableTaskHealth) {
+            if (ready.isCancelled) ready = CompletableDeferred()
+            try {
             val client = profileClient(lockers)
             val cached = store.getAllProfiles()
             _profiles.value = buildMap {
@@ -70,37 +68,53 @@ class ProfilesManagerImpl(
             cached.forEach { local ->
                 local.profileId?.let { client.subscribeToRoom(it.toRoomId(), waitForSubscription = false) }
             }
-        }
+            } catch (failure: Exception) {
+                if (!ready.isCompleted) ready.completeExceptionally(failure)
+                throw failure
+            }
+        } }
+
+        }) }
+    override fun stop() = run { socialTelemetry.event("profiles", "stop"); (run observedOperation@ {
+        runner.stop()
+
+        }) }
+    override suspend fun observe(profileId: ProfileId): Unit = socialTelemetry.measure("profiles", "observe") { (runner.command { observeOwned(profileId) }) }
+    override fun getProfile(id: ProfileId): Profile?  = run { socialTelemetry.event("profiles", "cache"); (_profiles.value[id]) }
+    override fun watchProfile(id: ProfileId): Flow<Profile?>  = (_profiles.map { it[id] }.distinctUntilChanged()).socialObserved(socialTelemetry, "profiles")
+    override fun watchProfiles(ids: List<ProfileId>): Flow<List<Profile?>>  = (_profiles.map { current -> ids.map { current[it] } }.distinctUntilChanged()).socialObserved(socialTelemetry, "profiles")
+
+
+    private val store = ProfileStore(database)
+
+    private val _profiles = MutableStateFlow<Map<ProfileId, Profile>>(emptyMap())
+
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
+    // Completes once the cache has been loaded — gates all store access.
+    private var ready = CompletableDeferred<Unit>()
+
+
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
-    override fun stop() {
-        socialTelemetry.event("profiles", "stop")
-        job?.cancel()
-        job = null
-    }
 
-    override suspend fun observe(profileId: ProfileId): Unit = socialTelemetry.measure("profiles", "observe") {
+    private suspend fun observeOwned(profileId: ProfileId) {
         val lockers = lockers ?: error("observe requires start(lockers) first")
         val client = profileClient(lockers)
-        client.subscribeToRoom(profileId.toRoomId())
-        // Capture the current value directly so callers don't race the update stream.
-        client.getLocker(profileId.toRoomId(), profileId.toProfileLockerId(), revalidate = false)?.let { ingest(profileId, it) }
+        client.subscribeToRoom(profileId.toRoomId(), waitForSubscription = false)
+        // The initial snapshot is local; server synchronization continues independently.
+        val cached = client.watch(profileId.toRoomId(), profileId.toProfileLockerId()).first()
+        if (cached is TypedLockerUpdate.Present) ingest(profileId, cached.value)
     }
 
-    override fun getProfile(id: ProfileId): Profile? = _profiles.value[id].also {
-        socialTelemetry.event("profiles", "cache", if (it == null) "noop" else "ok")
-    }
-
-    override fun watchProfile(id: ProfileId): Flow<Profile?> =
-        (_profiles.map { it[id] }.distinctUntilChanged()
-    ).socialObserved(socialTelemetry, "profiles")
 
     override fun getProfiles(ids: List<ProfileId>): List<Profile?> =
         _profiles.value.let { current -> ids.map { current[it] } }
 
-    override fun watchProfiles(ids: List<ProfileId>): Flow<List<Profile?>> =
-        (_profiles.map { current -> ids.map { current[it] } }.distinctUntilChanged()
-    ).socialObserved(socialTelemetry, "profiles")
 
     private suspend fun onUpdate(update: TypedLockerUpdate<Profile>) {
         val authority = RoomKeying.authorityKey(update.roomId) ?: return
@@ -126,11 +140,10 @@ class ProfilesManagerImpl(
     }
 
     /** Keep only disclosures carrying a valid signature by the profile's own key (its id). */
-    private suspend fun verifyDisclosures(profileId: ProfileId, profile: Profile): Profile = socialTelemetry.measure("profiles", "verifyDisclosures") {
+    private suspend fun verifyDisclosures(profileId: ProfileId, profile: Profile): Profile {
         val key = Secp256r1PublicKey.decode(profileId.rawValue)
         val kept = profile.disclosures.filter { Disclosures.verify(it, key) }
-        if (kept.size != profile.disclosures.size) result("invalid_signature")
-        return@measure profile.copy { disclosures = kept }
+        return profile.copy { disclosures = kept }
     }
 
     private fun profileClient(lockers: LockersClient): TypedLockerClient<Profile> =

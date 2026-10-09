@@ -1,3 +1,5 @@
+@file:Suppress("TooGenericExceptionCaught")
+
 package com.latenighthack.social.remotecontent.service
 
 import io.micrometer.core.instrument.MeterRegistry
@@ -12,9 +14,9 @@ class MeasuredContentStore(private val store: ContentStore, private val meters: 
         catch (error: Exception) { outcome = "error"; throw error }
         finally { meters.timer("fullhouse.content.duration", "operation", operation, "backend", backend, "outcome", outcome).record(System.nanoTime() - start, TimeUnit.NANOSECONDS) }
     }
-    override suspend fun create(id: ByteArray, mimeType: String?) = measure("reserve") { store.create(id, mimeType) }
-    override suspend fun put(id: ByteArray, bytes: ByteArray) = measure("upload") {
-        store.put(id, bytes)
+    override suspend fun create(id: ByteArray, mimeType: String?, uploadToken: ByteArray) = measure("reserve") { store.create(id, mimeType, uploadToken) }
+    override suspend fun put(id: ByteArray, bytes: ByteArray, uploadToken: ByteArray) = measure("upload") {
+        store.put(id, bytes, uploadToken)
         meters.counter("fullhouse.content.bytes", "operation", "upload").increment(bytes.size.toDouble())
     }
     override suspend fun get(id: ByteArray): StoredContent? = measure("download") {

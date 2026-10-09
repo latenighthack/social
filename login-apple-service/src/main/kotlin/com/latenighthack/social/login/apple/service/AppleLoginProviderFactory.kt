@@ -14,7 +14,7 @@ class AppleLoginProviderFactory : LoginProviderFactory {
     override fun create(context: LoginProviderContext): LoginHandler? {
         val audiences = context.env("LOGIN_APPLE_AUDIENCES")
             .orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-        if (audiences.isEmpty()) return null
+        require(audiences.isNotEmpty()) { "OIDC audiences must be configured" }
         return LoginHandler.SocialVerifier(
             Provider.PROVIDER_APPLE,
             OidcTokenVerifier(

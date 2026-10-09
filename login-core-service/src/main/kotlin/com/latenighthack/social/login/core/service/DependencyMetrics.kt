@@ -1,3 +1,5 @@
+@file:Suppress("TooGenericExceptionCaught")
+
 package com.latenighthack.social.login.core.service
 
 import com.latenighthack.social.observability.*

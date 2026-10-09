@@ -1,3 +1,5 @@
+@file:Suppress("SpreadOperator")
+
 package com.latenighthack.social.observability.server
 
 import com.latenighthack.social.observability.*

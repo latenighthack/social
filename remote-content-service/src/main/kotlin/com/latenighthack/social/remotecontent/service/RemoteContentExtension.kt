@@ -1,5 +1,8 @@
 package com.latenighthack.social.remotecontent.service
 
+import com.latenighthack.social.observability.*
+import com.latenighthack.social.observability.server.SocialServerTelemetry
+
 import com.latenighthack.ktbuf.net.ServerDescriptor
 import com.latenighthack.lockers.server.ServerExtension
 import com.latenighthack.lockers.server.ServerExtensionFactory
@@ -7,8 +10,6 @@ import com.latenighthack.lockers.server.tools.GrpcRouteProvider
 import com.latenighthack.social.remotecontent.v1.RemoteContentServer
 import io.ktor.server.routing.Routing
 import io.micrometer.core.instrument.MeterRegistry
-import com.latenighthack.social.observability.*
-import com.latenighthack.social.observability.server.SocialServerTelemetry
 import java.io.File
 
 /**
@@ -26,6 +27,7 @@ class RemoteContentExtension(
             serviceImpl.socialTelemetry = value
             value.feature("remote_content")
         }
+
     private val serviceImpl = RemoteContentServiceImpl(store, urls)
 
     override val services: List<GrpcRouteProvider<*>> = listOf(
@@ -51,15 +53,16 @@ class RemoteContentExtension(
  *   REMOTE_CONTENT_PATH        directory the bytes are stored under (default ./content)
  */
 class RemoteContentExtensionFactory : ServerExtensionFactory {
-    override fun create(meterRegistry: MeterRegistry): ServerExtension =
-        create(meterRegistry, SocialServerTelemetry(meterRegistry))
+    override fun create(meterRegistry: MeterRegistry): ServerExtension = create(meterRegistry, SocialServerTelemetry(meterRegistry))
 
     fun create(meterRegistry: MeterRegistry, telemetry: SocialTelemetry): RemoteContentExtension {
         val publicBaseUrl = System.getenv(ENV_PUBLIC_URL).orEmpty()
         val storagePath = System.getenv(ENV_PATH)?.takeIf { it.isNotBlank() } ?: DEFAULT_PATH
         val backend = System.getenv("REMOTE_CONTENT_BACKEND") ?: "file"
         require(backend in setOf("file", "s3")) { "REMOTE_CONTENT_BACKEND must be file or s3" }
-        val store = if (backend == "s3") S3ContentStore.fromEnv() else FileContentStore(File(storagePath))
+        val store = if (backend == "s3") S3ContentStore.fromEnv() else FileContentStore(File(storagePath),
+                maxStoredBytes = System.getenv("REMOTE_CONTENT_MAX_STORED_BYTES")?.toLong() ?: 2L * 1024 * 1024 * 1024,
+                maxContentCount = System.getenv("REMOTE_CONTENT_MAX_CONTENT_COUNT")?.toInt() ?: 10_000)
         return RemoteContentExtension(
             store = MeasuredContentStore(store, meterRegistry, backend),
             urls = ContentUrls(publicBaseUrl),

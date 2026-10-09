@@ -1,0 +1,10 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>SwallowedException:Sealing.kt$Sealing$e: Exception</ID>
+    <ID>SwallowedException:SignedContent.kt$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:Sealing.kt$Sealing$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:SignedContent.kt$e: Exception</ID>
+  </CurrentIssues>
+</SmellBaseline>

@@ -1,5 +1,7 @@
 package com.latenighthack.social.runtime
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.lockers.connector.LockersClient
 
 /**
@@ -9,7 +11,11 @@ import com.latenighthack.lockers.connector.LockersClient
  * Managers never change the database schema or close a shared handle.
  */
 interface DomainLifecycle {
+    val taskHealth: kotlinx.coroutines.flow.StateFlow<TaskHealth> get() = IdleTaskHealth
     suspend fun prepare() {}
     fun start(lockers: LockersClient)
     fun stop()
+    suspend fun stopAndJoin() { stop() }
 }
+
+private val IdleTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle).asStateFlow()

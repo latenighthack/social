@@ -15,23 +15,23 @@ import me.tatarka.inject.annotations.Provides
  * account manager is a dependency and the account key source is the profile chain's fallback). The
  * app must provide the [Database] the observed-profiles cache is created from.
  */
-interface ProfilesProviders : SocialTelemetryProviders {
+interface ProfilesProviders : com.latenighthack.social.runtime.SocialRuntimeProviders, SocialTelemetryProviders {
     @Provides
     @IntoSet
     fun profilesObservabilityFeature(): SocialFeatureDescriptor = SocialFeatureDescriptor("profiles")
 
     @Provides
     @SocialScope
-    fun myProfilesManagerImpl(account: AccountManager): MyProfilesManagerImpl =
-        MyProfilesManagerImpl(account).observedBy(socialTelemetry())
+    fun myProfilesManagerImpl(account: AccountManager, tasks: com.latenighthack.social.runtime.SocialTaskScope): MyProfilesManagerImpl =
+        MyProfilesManagerImpl(account, scope = tasks.scope).observedBy(socialTelemetry())
 
     @Provides
     fun myProfilesManager(impl: MyProfilesManagerImpl): MyProfilesManager = impl
 
     @Provides
     @SocialScope
-    fun profilesManagerImpl(database: Database): ProfilesManagerImpl =
-        ProfilesManagerImpl(database).observedBy(socialTelemetry())
+    fun profilesManagerImpl(database: Database, tasks: com.latenighthack.social.runtime.SocialTaskScope): ProfilesManagerImpl =
+        ProfilesManagerImpl(database, scope = tasks.scope).observedBy(socialTelemetry())
 
     @Provides
     fun profilesManager(impl: ProfilesManagerImpl): ProfilesManager = impl

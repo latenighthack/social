@@ -22,7 +22,7 @@ object SocialCatalogue {
     val platforms = setOf("jvm", "android", "ios", "js")
     val kinds = setOf("operation", "event", "queue_depth", "queue_age", "bytes", "feature")
     val results = setOf("ok", "error", "cancelled", "rejected", "noop", "unauthorized", "invalid",
-        "provider_unavailable", "expired", "already_bound", "needs_binding", "invalid_code", "not_allowed",
+        "provider_unavailable", "rate_limited", "expired", "already_bound", "needs_binding", "invalid_code", "not_allowed",
         "exhausted", "retry", "dead_letter", "debounced", "redundant", "no_profile", "no_message",
         "not_found", "invalid_signature", "malformed", "unknown")
     fun outcome(result: String): String = when (result) {

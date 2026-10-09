@@ -29,9 +29,10 @@ subprojects {
     apply(plugin = "io.gitlab.arturbosch.detekt")
     configure<io.gitlab.arturbosch.detekt.extensions.DetektExtension> {
         buildUponDefaultConfig = true
-        // Advisory for now: detekt reports issues but does not fail the build.
-        // Curate a baseline (./gradlew detektBaseline) then flip this to false to enforce.
-        ignoreFailures = true
+        ignoreFailures = false
+        source.setFrom(fileTree("src") { include("**/kotlin/**/*.kt"); exclude("**/*Test/**", "**/test/**") })
+        baseline = file("detekt-baseline.xml")
+        config.setFrom(rootProject.file("config/detekt.yml"))
         basePath = rootProject.projectDir.path
     }
 }
@@ -44,4 +45,20 @@ tasks.register<Zip>("observabilityBundle") {
     archiveVersion.set(project.version.toString())
     destinationDirectory.set(layout.buildDirectory.dir("distributions"))
     from("observability") { into("observability") }
+}
+
+// CI and local validation use a separately installed, pinned Node runtime. Distribution
+// downloads cannot resolve from Maven repositories under PREFER_SETTINGS.
+gradle.projectsEvaluated {
+    allprojects {
+        plugins.withType<org.jetbrains.kotlin.gradle.targets.js.nodejs.NodeJsPlugin> {
+            extensions.getByType<org.jetbrains.kotlin.gradle.targets.js.nodejs.NodeJsEnvSpec>().download = false
+        }
+    }
+}
+
+// Use the exact Kotlin Karma fork archive, avoiding npm's git-package preparation and workspace-link bug.
+plugins.withType<org.jetbrains.kotlin.gradle.targets.js.nodejs.NodeJsRootPlugin> {
+    extensions.getByType<org.jetbrains.kotlin.gradle.targets.js.nodejs.NodeJsRootExtension>().versions.karma.version =
+        "https://codeload.github.com/Kotlin/karma/tar.gz/239a8fc984584f0d96b1dd750e7a5e2c79da93a6"
 }

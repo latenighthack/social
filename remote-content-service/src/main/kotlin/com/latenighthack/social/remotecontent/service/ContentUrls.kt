@@ -14,6 +14,9 @@ class ContentUrls(private val publicBaseUrl: String) {
         return if (publicBaseUrl.isBlank()) path else publicBaseUrl.trimEnd('/') + path
     }
 
+    fun forUpload(id: ByteArray, token: ByteArray): String =
+        forContent(id) + "?upload_token=" + encodeId(token)
+
     companion object {
         const val CONTENT_PATH = "/content"
 

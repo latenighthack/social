@@ -14,18 +14,21 @@ import me.tatarka.inject.annotations.Provides
  * to obtain the account manager, its key source, and its lifecycle contribution. The app must
  * provide the [KeyValueStore] the manager persists its device-local identity in.
  */
-interface AccountProviders : SocialTelemetryProviders {
+interface AccountProviders : com.latenighthack.social.runtime.SocialRuntimeProviders, SocialTelemetryProviders {
     @Provides
     @IntoSet
     fun accountObservabilityFeature(): SocialFeatureDescriptor = SocialFeatureDescriptor("account")
 
     @Provides
     @SocialScope
-    fun accountManagerImpl(keyValueStore: KeyValueStore): AccountManagerImpl =
-        AccountManagerImpl(keyValueStore).observedBy(socialTelemetry())
+    fun accountManagerImpl(keyValueStore: KeyValueStore, tasks: com.latenighthack.social.runtime.SocialTaskScope): AccountManagerImpl =
+        AccountManagerImpl(keyValueStore, scope = tasks.scope).observedBy(socialTelemetry())
 
     @Provides
     fun accountManager(impl: AccountManagerImpl): AccountManager = impl
+
+    @Provides
+    fun accountSession(impl: AccountManagerImpl): com.latenighthack.social.runtime.AccountSession = impl
 
     @Provides
     @SocialScope

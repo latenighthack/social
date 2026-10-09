@@ -12,6 +12,7 @@ import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.ktcrypto.digest
 import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.fromPrivateKey
+import com.latenighthack.ktcrypto.generate
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
 import com.latenighthack.ktstore.Database
 import com.latenighthack.ktstore.KeyValueStore
@@ -31,6 +32,8 @@ import com.latenighthack.social.common.domain.Sealing
 import com.latenighthack.social.common.v1.SealedEnvelope
 import com.latenighthack.social.profiles.domain.MyProfilesManagerImpl
 import com.latenighthack.social.profiles.domain.ProfileKeySource
+import com.latenighthack.social.profiles.domain.displayName
+import com.latenighthack.social.profiles.domain.replaceDisclosure
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.v1.CreateInviteCodeRequest
 import com.latenighthack.social.rooms.v1.CreateInviteCodeResponse
@@ -60,6 +63,32 @@ import kotlin.test.assertTrue
 
 class RoomsManagerIntegrationTest {
 
+    @Test(timeout = 30000)
+    fun `restart repairs a persisted join without redeeming another invitation`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            val party = newParty(server.rpcClient)
+            try {
+                val me = party.myProfiles.createProfile("Alice")
+                party.rooms.stopAndJoin()
+                val key = Secp256r1KeyPair.generate()
+                val room = RoomKeying.publicKeyed(key.publicKey.encode())
+                val accountRoom = party.account.localAccountRoom()!!
+                val encrypted = party.account.protectSecret("room/${room.rawValue.toList()}", key.privateKey.encode())
+                val client = party.lockers.typed(RoomsKeyspaces.ACCOUNT_ROOMS,
+                    com.latenighthack.social.rooms.v1.RoomRecord::toByteArray,
+                    com.latenighthack.social.rooms.v1.RoomRecord.Companion::fromByteArray)
+                client.updateLocker(accountRoom, LockerId(room.rawValue, RoomsKeyspaces.ACCOUNT_ROOMS)) {
+                    com.latenighthack.social.rooms.v1.RoomRecord(roomId = room.rawValue,
+                        kind = RoomKind.ROOM_KIND_GROUP, localProfileId = me.rawValue,
+                        encryptedSharedPrivateKey = encrypted, membershipPending = true)
+                }
+                party.rooms.start(party.lockers)
+                party.rooms.watchRooms().first { room in it }
+                assertTrue(me in party.rooms.watchMembers(room).first { me in it })
+                assertFalse(client.getLocker(accountRoom, LockerId(room.rawValue, RoomsKeyspaces.ACCOUNT_ROOMS))!!.membershipPending)
+            } finally { party.close() }
+        }
+
     private class Party(
         val account: AccountManagerImpl,
         val myProfiles: MyProfilesManagerImpl,
@@ -80,12 +109,13 @@ class RoomsManagerIntegrationTest {
         joinClient: JoinClient = FakeJoinClient(),
         database: Database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
         clientStore: KeyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
+        invitePolicy: RoomInvitePolicy = AcceptRoomInvites,
     ): Party {
         val account = AccountManagerImpl(accountStore)
         val accountKeySource = AccountKeySource(account)
         val myProfiles = MyProfilesManagerImpl(account)
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
-        val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
+        val rooms = RoomsManagerImpl(account, myProfiles, joinClient, invitePolicy = invitePolicy)
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
@@ -117,6 +147,91 @@ class RoomsManagerIntegrationTest {
             readyCallback: () -> Unit,
         ): Unit = throw RpcResponseException(path = "test", verb = "POST", code = Codes.UNAVAILABLE, errorMessage = "offline")
     }
+
+    @Test(timeout = 30000)
+    fun `host policy can decline an authenticated direct invite without installing membership`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            val declined = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val alice = newParty(server.rpcClient)
+            val bob = newParty(server.rpcClient, invitePolicy = RoomInvitePolicy { _, _, _ -> declined.complete(Unit); false })
+            try {
+                alice.myProfiles.createProfile("Alice")
+                val recipient = bob.myProfiles.createProfile("Bob")
+                val room = alice.rooms.createGroup("declined")
+                alice.rooms.inviteToRoom(room, recipient)
+                declined.await()
+                val inbox = bob.lockers.typed(RoomsKeyspaces.INBOX, SealedEnvelope::toByteArray, SealedEnvelope.Companion::fromByteArray)
+                inbox.watchAll(RoomKeying.publicKeyed(recipient.rawValue)).first { it.isEmpty() }
+                assertFalse(room in bob.rooms.watchRooms().first())
+            } finally { alice.close(); bob.close() }
+        }
+
+    @Test(timeout = 30000)
+    fun `running devices observe profile additions and room leaves without reconnecting`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val accountStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
+                val first = newParty(server.rpcClient, accountStore)
+                val profile = first.myProfiles.createProfile("first")
+                val second = newParty(server.rpcClient, accountStore)
+                try {
+                    kotlinx.coroutines.withTimeout(5000) { second.myProfiles.getProfileList().first { profile in it } }
+                    val added = first.myProfiles.createProfile("second")
+                    kotlinx.coroutines.withTimeout(5000) { second.myProfiles.getProfileList().first { added in it } }
+                    first.myProfiles.updateProfile(profile) { replaceDisclosure { displayName { value = "changed" } } }
+                    kotlinx.coroutines.withTimeout(5000) { second.myProfiles.watchProfile(profile).first { it?.displayName() == "changed" } }
+                    val room = first.rooms.createGroup("live")
+                    kotlinx.coroutines.withTimeout(5000) { second.rooms.watchRooms().first { room in it } }
+                    first.rooms.leave(room)
+                    kotlinx.coroutines.withTimeout(5000) { second.rooms.watchRooms().first { room !in it } }
+                } finally { second.close(); first.close() }
+            }
+        }
+
+    @Test(timeout = 30000)
+    fun `cached own profiles must load while offline`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val store = KeyValueStore(InMemoryKeyValueStoreDelegate())
+                val db = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("review-offline"), com.latenighthack.ktstore.InMemoryStoreDelegate())
+                val clientStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
+                val online = newParty(server.rpcClient, store, database=db, clientStore=clientStore)
+                val id = online.myProfiles.createProfile("cached")
+                online.close()
+                val offline = newParty(OfflineRpcClient(), store, database=db, clientStore=clientStore)
+                try {
+                    val profiles = kotlinx.coroutines.withTimeoutOrNull(2000) { offline.myProfiles.getProfileList().first { id in it } }
+                    assertTrue(profiles != null, "cached own profile is blocked behind a subscription ACK while offline")
+                } finally { offline.close() }
+            }
+        }
+
+    @Test(timeout = 30000)
+    fun `leaving an invited room must survive reconstructing managers`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val inviter = newParty(server.rpcClient)
+            val inviteeStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
+            val invitee = newParty(server.rpcClient, inviteeStore)
+            var restarted: Party? = null
+            try {
+                inviter.myProfiles.createProfile("inviter")
+                val recipient = invitee.myProfiles.createProfile("invitee")
+                val room = inviter.rooms.createGroup("review")
+                inviter.rooms.inviteToRoom(room, recipient)
+                kotlinx.coroutines.withTimeout(5000) { invitee.rooms.watchRooms().first { room in it } }
+                // Ensure the original processing run has finished its membership writes.
+                kotlinx.coroutines.withTimeout(5000) { inviter.rooms.watchMembers(room).first { recipient in it } }
+                delay(100)
+                invitee.rooms.leave(room)
+                invitee.close()
+                restarted = newParty(server.rpcClient, inviteeStore)
+                restarted.myProfiles.isLoaded.first { it }
+                val rejoined = kotlinx.coroutines.withTimeoutOrNull(2000) { restarted.rooms.watchRooms().first { room in it } }
+                assertNull(rejoined, "the still-present inbox invite silently rejoined a room after leave")
+            } finally { restarted?.close(); invitee.close(); inviter.close() }
+            }
+        }
 
     @Test(timeout = 60_000)
     fun `an invite code grants group access and a revoked code cannot`() =
@@ -242,6 +357,13 @@ class RoomsManagerIntegrationTest {
 
             // Bob's manager unseals the invite from his profile inbox and joins without any action.
             assertTrue(bob.rooms.watchRooms().first { it.contains(roomId) }.isNotEmpty())
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                kotlinx.coroutines.withTimeout(5000) {
+                    bob.lockers.typed(RoomsKeyspaces.INBOX, SealedEnvelope::toByteArray,
+                        SealedEnvelope.Companion::fromByteArray)
+                        .watchAll(RoomKeying.publicKeyed(bobProfile.rawValue)).first { it.isEmpty() }
+                }
+            }
             assertEquals(RoomKind.ROOM_KIND_GROUP, bob.rooms.roomKind(roomId))
 
             // Both sides converge on a two-member roster; Bob holds the key and can write.
@@ -276,6 +398,34 @@ class RoomsManagerIntegrationTest {
             carol.close()
             bob.close()
             alice.close()
+        }
+
+    @Test(timeout = 60_000)
+    fun `rendezvous peer identity survives remote leave and local rehydration`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            val alice = newParty(server.rpcClient)
+            val bob = newParty(server.rpcClient)
+            try {
+                val aliceProfile = alice.myProfiles.createProfile("Alice")
+                val bobProfile = bob.myProfiles.createProfile("Bob")
+                val room = alice.rooms.openRendezvous(bobProfile)
+                bob.rooms.watchRooms().first { room in it }
+                assertEquals(bobProfile, alice.rooms.peerProfile(room))
+                assertEquals(aliceProfile, bob.rooms.peerProfile(room))
+                alice.rooms.watchMembers(room).first { it.size == 2 }
+                bob.rooms.leave(room)
+                alice.rooms.watchMembers(room).first { it == listOf(aliceProfile) }
+                assertEquals(bobProfile, alice.rooms.peerProfile(room))
+                alice.rooms.stopAndJoin()
+                val restored = RoomsManagerImpl(alice.account, alice.myProfiles, FakeJoinClient())
+                try {
+                    restored.start(alice.lockers)
+                    restored.watchRooms().first { room in it }
+                    assertEquals(bobProfile, restored.peerProfile(room))
+                    alice.account.signOut()
+                    assertNull(restored.peerProfile(room))
+                } finally { restored.stopAndJoin() }
+            } finally { bob.close(); alice.close() }
         }
 
     @Test(timeout = 60_000)
@@ -318,6 +468,7 @@ class RoomsManagerIntegrationTest {
             val outsider = newParty(server.rpcClient)
             val bobProfileRoom = RoomKeying.publicKeyed(bobProfile.rawValue)
 
+            bob.rooms.stopAndJoin() // Verify server authority without the consumer immediately draining the inbox.
             // An outsider can drop a sealed envelope into Bob's open inbox keyspace (4).
             val envelope = Sealing.seal(bobProfile.rawValue, byteArrayOf(1, 2, 3))
             val inbox = outsider.lockers.typed(

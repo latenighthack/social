@@ -6,6 +6,8 @@ package com.latenighthack.social.typing.domain
 
 import com.latenighthack.social.observability.*
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.IncomingNotification
@@ -14,14 +16,20 @@ import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.domain.RoomsManager
 import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.AccountSession
+import com.latenighthack.social.runtime.withAccount
 import com.latenighthack.social.typing.v1.TypingPayload
 import com.latenighthack.social.typing.v1.fromByteArray
 import com.latenighthack.social.typing.v1.toByteArray
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import com.latenighthack.social.typing.v1.copy
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
@@ -29,7 +37,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.time.Clock
@@ -47,15 +55,40 @@ import kotlin.time.Clock
  */
 class TypingManagerImpl(
     private val rooms: RoomsManager,
+    private val myProfiles: com.latenighthack.social.profiles.domain.MyProfilesManager,
     private val debounceMillis: Long = 10_000,
     private val timeoutMillis: Long = 15_000,
     private val tickMillis: Long = 1_000,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val session: AccountSession? = null,
 ) : TypingManager, DomainLifecycle, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
+    override fun start(lockers: LockersClient) = run { socialTelemetry.event("typing", "start"); (run observedOperation@ {
+        runner.start(lockers) {
+             recoverTask(mutableTaskHealth) { run(lockers) } }
+
+        }) }
+    override fun stop() = run { socialTelemetry.event("typing", "stop"); (run observedOperation@ {
+        runner.stop()
+
+        }) }
+    override suspend fun setTyping(roomId: RoomId, isTyping: Boolean): Unit = socialTelemetry.measure("typing", "setTyping") { (withSession {
+        runner.command { setTypingOwned(roomId, isTyping) }
+    }) }
+    override fun watchTyping(roomId: RoomId): Flow<Set<ProfileId>>  = run { socialTelemetry.event("typing", "expired"); (combine(_typing.map { it[roomId].orEmpty() }, rooms.watchMembers(roomId)) { entries, members ->
+            val me = rooms.localProfile(roomId)
+            (entries.keys intersect members.toSet()) - setOfNotNull(me)
+        }.distinctUntilChanged()) }
+
 
     // Rooms → (profile id → started-at millis) for every member with an outstanding typing signal.
+    private val timeOrigin = kotlin.time.TimeSource.Monotonic.markNow()
+    private suspend fun <T> withSession(block: suspend () -> T): T =
+        if (session == null) block() else session.withAccount(block)
+
+    private fun elapsedMillis() = timeOrigin.elapsedNow().inWholeMilliseconds
+
     private val _typing = MutableStateFlow<Map<RoomId, Map<ProfileId, Long>>>(emptyMap())
 
     // Guards _typing (mutated by the notification collector) and lastStartedSentAt (read-modify-write
@@ -69,20 +102,14 @@ class TypingManagerImpl(
     // Rooms we've already subscribed for events (mutated only by the watchRooms collector).
     private val subscribedRooms = mutableSetOf<RoomId>()
 
-    private var job: Job? = null
-    private var lockers: LockersClient? = null
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
 
-    override fun start(lockers: LockersClient) {
-        socialTelemetry.event("typing", "start")
-        this.lockers = lockers
-        if (job?.isActive == true) return
-        job = scope.launch { socialTelemetry.measure("typing", "start") { run(lockers) } }
-    }
 
-    override fun stop() {
-        socialTelemetry.event("typing", "stop")
-        job?.cancel()
-        job = null
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
     private suspend fun run(lockers: LockersClient) {
@@ -92,10 +119,26 @@ class TypingManagerImpl(
         // One collector drains every room's typing events (the notifications flow spans all rooms,
         // filtered to this keyspace); subscribing each room is what makes its events flow. Launched as
         // children of this coroutine so stop() tears them down; supervisorScope isolates failures.
-        supervisorScope {
+        coroutineScope {
             launch { typingClient(lockers).notifications.collect { onNotification(it) } }
+            launch {
+                while (true) {
+                    delay(tickMillis)
+                    val now = elapsedMillis()
+                    mutex.withLock {
+                        _typing.value = _typing.value.mapValues { (_, signals) ->
+                            signals.filterValues { now - it < timeoutMillis }
+                        }.filterValues { it.isNotEmpty() }
+                    }
+                }
+            }
 
             rooms.watchRooms().collect { roomIds ->
+                mutex.withLock {
+                    subscribedRooms.retainAll(roomIds.toSet())
+                    lastStartedSentAt.keys.retainAll(roomIds.toSet())
+                    _typing.value = _typing.value.filterKeys { it in roomIds }
+                }
                 for (roomId in roomIds) {
                     if (subscribedRooms.add(roomId)) {
                         launch { typingClient(lockers).subscribeToRoom(roomId) }
@@ -106,12 +149,15 @@ class TypingManagerImpl(
     }
 
     private suspend fun onNotification(notification: IncomingNotification) {
+        if (notification.roomId !in mutex.withLock { subscribedRooms.toSet() } || notification.payload.size > 4096) return
         val signal = runCatching { TypingPayload.fromByteArray(notification.payload) }.getOrNull() ?: return
         val profileId = ProfileId { rawValue = notification.lockerId.rawValue }
+        if (!com.latenighthack.social.common.domain.verifyProfileClaim(profileId.rawValue, notification.roomId.rawValue,
+            signal.profileId, signal.roomId, signal.proof, 5, signal.copy(proof = null).toByteArray())) return
         mutex.withLock {
             val current = _typing.value[notification.roomId].orEmpty()
             val updated = if (signal.startedTypingMillis > 0L) {
-                current + (profileId to signal.startedTypingMillis)
+                (current + (profileId to elapsedMillis())).entries.toList().takeLast(128).associate { it.toPair() }
             } else {
                 current - profileId
             }
@@ -119,51 +165,35 @@ class TypingManagerImpl(
         }
     }
 
-    override suspend fun setTyping(roomId: RoomId, isTyping: Boolean): Unit = socialTelemetry.measure("typing", "setTyping") {
+
+    private suspend fun setTypingOwned(roomId: RoomId, isTyping: Boolean) {
         val lockers = lockers ?: error("setTyping requires start(lockers) first")
-        val me = rooms.localProfile(roomId) ?: run { result("no_profile"); return@measure }
-        val now = Clock.System.now().toEpochMilliseconds()
+        val me = rooms.localProfile(roomId) ?: return
+        val now = elapsedMillis()
 
         val signal = mutex.withLock {
             if (isTyping) {
                 val last = lastStartedSentAt[roomId]
                 if (last != null && now - last < debounceMillis) return@withLock null
                 lastStartedSentAt[roomId] = now
-                TypingPayload { startedTypingMillis = now }
+                TypingPayload { startedTypingMillis = 1 }
             } else {
                 if (lastStartedSentAt.remove(roomId) == null) return@withLock null
                 TypingPayload { startedTypingMillis = 0L }
             }
-        } ?: run { result("debounced"); return@measure }
+        } ?: return
 
+        val claim = signal.copy(roomId = roomId.rawValue, profileId = me.rawValue)
+        val proof = myProfiles.sign(me, 5, claim.toByteArray()) ?: return
+        val authenticated = claim.copy(proof = proof)
         // An empty placeholder body ({ it } keeps it unchanged); the signal rides as the attached event.
         typingClient(lockers).updateLocker(
             roomId,
             LockerId(me.rawValue, TypingKeyspaces.TYPING),
-            notificationBuilder = { payload { rawValue = signal.toByteArray() } },
+            notificationBuilder = { payload { rawValue = authenticated.toByteArray() } },
         ) { it }
     }
 
-    override fun watchTyping(roomId: RoomId): Flow<Set<ProfileId>> = flow {
-        // State belongs to this existing collection; no background observer is added.
-        var previouslyExpired = emptyMap<ProfileId, Long>()
-        combine(_typing.map { it[roomId].orEmpty() }, ticker()) { entries, now ->
-            val expired = entries.filterValues { now - it >= timeoutMillis }
-            val newlyExpired = expired.count { (id, time) -> previouslyExpired[id] != time }
-            if (newlyExpired > 0) socialTelemetry.event("typing", "expired", value = newlyExpired.toDouble())
-            previouslyExpired = expired
-            val fresh = entries.filterValues { now - it < timeoutMillis }.keys
-            val me = rooms.localProfile(roomId)
-            if (me != null) fresh - me else fresh
-        }.distinctUntilChanged().collect { emit(it) }
-    }.socialObserved(socialTelemetry, "typing")
-
-    private fun ticker(): Flow<Long> = flow {
-        while (true) {
-            emit(Clock.System.now().toEpochMilliseconds())
-            delay(tickMillis)
-        }
-    }
 
     private fun typingClient(lockers: LockersClient): TypedLockerClient<TypingPayload> =
         lockers.typed(TypingKeyspaces.TYPING, TypingPayload::toByteArray, TypingPayload.Companion::fromByteArray)

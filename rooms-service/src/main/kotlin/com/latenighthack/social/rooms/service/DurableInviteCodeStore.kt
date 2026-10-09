@@ -1,84 +1,76 @@
 package com.latenighthack.social.rooms.service
 
 import com.latenighthack.ktstore.*
-import java.io.*
-import java.security.*
-import javax.crypto.*
-import javax.crypto.spec.*
+import com.latenighthack.social.rooms.v1.*
+import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
-internal data class InviteRow(val id: ByteArray, val encrypted: ByteArray) {
-    fun encode(): ByteArray = ByteArrayOutputStream().also { buffer -> DataOutputStream(buffer).use { out ->
-        out.writeInt(1); out.writeInt(id.size); out.write(id); out.writeInt(encrypted.size); out.write(encrypted)
-    } }.toByteArray()
-    companion object {
-        fun decode(bytes: ByteArray): InviteRow = DataInputStream(ByteArrayInputStream(bytes)).use {
-            require(it.readInt() == 1)
-            fun field(): ByteArray { val size = it.readInt(); require(size in 1..8192); return ByteArray(size).also(it::readFully) }
-            InviteRow(field(), field()).also { _ -> require(it.available() == 0) }
+object InviteCodeDefinitionV1 : StoreDefinition<InviteCodeRecord>(StoreName("social_invite_codes"),
+    "InviteCodeRecord-protobuf-v1", InviteCodeRecord.Companion::fromByteArray, InviteCodeRecord::toByteArray) {
+    val lookup = bytesIndex(IndexName("lookupKey"), InviteCodeRecord::lookupKey, "sha256-code-v1").also { primaryKey(it) }
+}
+object RoomsServiceStorage {
+    val definitions: List<StoreDefinition<*>> = listOf(InviteCodeDefinitionV1)
+    fun configuration(identity: String) = definitionDatabaseConfiguration(identity, definitions)
+    /** Explicit host migration for a database that previously omitted the invite-code table. */
+    fun upgrade(previous: DatabaseConfiguration): DatabaseConfiguration {
+        require(previous.stores.none { it.name == InviteCodeDefinitionV1.storeName })
+        val target = previous.stores + InviteCodeDefinitionV1.declaration
+        val step = DatabaseMigration.configured(previous.version, previous.version + 1, previous.stores, target) {
+            createStore(InviteCodeDefinitionV1.declaration)
         }
+        return previous.copy(version = previous.version + 1, stores = target, migrations = previous.migrations + step)
     }
 }
-internal object InviteDefinition : StoreDefinition<InviteRow>(StoreName("social_invite_codes"), "invite-envelope-v1", InviteRow::decode, InviteRow::encode) {
-    val id = bytesIndex(IndexName("id"), InviteRow::id, "sha256-v1").also { primaryKey(it) }
-}
-object RoomsStorage { val definitions: List<StoreDefinition<*>> = listOf(InviteDefinition) }
 
-/** The entire invitation and remaining-use count are authenticated ciphertext.
- * The key is separated from login custody and AAD binds ciphertext to its code.
- */
-class DurableInviteCodeStore(private val database: Database, masterKey: ByteArray, private val clock: () -> Long = System::currentTimeMillis) : InviteCodeStore {
-    private class Rows(database: Database) : Store<InviteRow>(database, InviteDefinition) {
-        suspend fun put(row: InviteRow) = save(row)
-        suspend fun find(id: ByteArray) = get(InviteDefinition.id.eq(id))
-        suspend fun remove(id: ByteArray) = delete(InviteDefinition.id.eq(id))
-    }
+/** Host-owned shared database; the ciphertext includes policy and remaining uses as well as the key. */
+class DurableInviteCodeStore(private val database: Database, masterKey: ByteArray,
+    private val clock: () -> Long = System::currentTimeMillis) : InviteCodeStore {
+    private val key = SecretKeySpec(masterKey.copyOf().also { require(it.size == 32) }, "AES")
     private val rows = Rows(database)
-    private val key = SecretKeySpec(Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(masterKey, "HmacSHA256")) }
-        .doFinal("social.invitation.encryption.v1".toByteArray()), "AES")
     private val random = SecureRandom()
-    init { require(masterKey.size == 32) }
-    private fun id(code: ByteArray) = MessageDigest.getInstance("SHA-256").digest(code)
-    private fun lock(id: ByteArray) = "social.invite." + java.util.Base64.getEncoder().encodeToString(id)
-    private fun seal(id: ByteArray, record: StoredInviteCode, remaining: Long): InviteRow {
-        val bytes = ByteArrayOutputStream().also { buffer -> DataOutputStream(buffer).use { out ->
-            fun field(value: ByteArray) { require(value.size <= 4096); out.writeInt(value.size); out.write(value) }
-            field(record.roomId); field(record.groupPrivateKey); field(record.allowedProfileId)
-            out.writeLong(record.expiryMillis); out.writeLong(record.maxUses); out.writeLong(remaining)
-        } }.toByteArray()
+    private class Rows(database: Database) : Store<InviteCodeRecord>(database, InviteCodeDefinitionV1) {
+        suspend fun lookup(id: ByteArray) = get(InviteCodeDefinitionV1.lookup.eq(id))
+        suspend fun put(record: InviteCodeRecord) = save(record)
+        suspend fun remove(id: ByteArray) = delete(InviteCodeDefinitionV1.lookup.eq(id))
+    }
+    suspend fun prepare() = rows.prepare()
+    private fun lookup(code: ByteArray) = MessageDigest.getInstance("SHA-256").digest(code)
+    private fun decode(row: InviteCodeRecord): InviteCodeSecret {
+        require(row.ciphertext.size >= 28)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, row.ciphertext.copyOfRange(0, 12)))
+        cipher.updateAAD("social/invite-code/v1".encodeToByteArray() + row.lookupKey)
+        return InviteCodeSecret.fromByteArray(cipher.doFinal(row.ciphertext.copyOfRange(12, row.ciphertext.size)))
+    }
+    private fun encode(id: ByteArray, secret: InviteCodeSecret): InviteCodeRecord {
         val nonce = ByteArray(12).also(random::nextBytes)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, nonce)); cipher.updateAAD(id)
-        return InviteRow(id, nonce + cipher.doFinal(bytes))
+        cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, nonce))
+        cipher.updateAAD("social/invite-code/v1".encodeToByteArray() + id)
+        return InviteCodeRecord(lookupKey = id, ciphertext = nonce + cipher.doFinal(secret.toByteArray()))
     }
-    private fun open(row: InviteRow): Pair<StoredInviteCode, Long> {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, row.encrypted.copyOfRange(0, 12))); cipher.updateAAD(row.id)
-        return DataInputStream(ByteArrayInputStream(cipher.doFinal(row.encrypted.copyOfRange(12, row.encrypted.size)))).use { input ->
-            fun field(): ByteArray { val size = input.readInt(); require(size in 0..4096); return ByteArray(size).also(input::readFully) }
-            val room = field(); val privateKey = field(); val profile = field()
-            StoredInviteCode(room, privateKey, input.readLong(), input.readLong(), profile) to input.readLong()
-        }
-    }
-    override suspend fun put(code: ByteArray, record: StoredInviteCode) {
-        val id = id(code)
-        database.transaction(lock(id)) { rows.put(seal(id, record, record.maxUses)) }
+    override suspend fun put(code: ByteArray, record: StoredInviteCode) = database.transaction("social.invite.codes") {
+        val id = lookup(code)
+        check(rows.lookup(id) == null) { "invite codes are immutable; mint a fresh code" }
+        rows.put(encode(id, InviteCodeSecret(roomId = record.roomId, groupPrivateKey = record.groupPrivateKey,
+            expiryMillis = record.expiryMillis, maxUses = record.maxUses, allowedProfileId = record.allowedProfileId,
+            remainingUses = record.maxUses)))
     }
     override suspend fun get(code: ByteArray): StoredInviteCode? {
-        val row = rows.find(id(code)) ?: return null
-        return open(row).first.takeIf { it.expiryMillis == 0L || it.expiryMillis > clock() }
+        val secret = rows.lookup(lookup(code))?.let(::decode) ?: return null
+        if (secret.expiryMillis != 0L && secret.expiryMillis <= clock()) return null
+        return StoredInviteCode(secret.roomId, secret.groupPrivateKey, secret.expiryMillis, secret.maxUses, secret.allowedProfileId)
     }
-    override suspend fun delete(code: ByteArray) {
-        val id = id(code)
-        database.transaction(lock(id)) { rows.remove(id) }
-    }
-    override suspend fun consumeUse(code: ByteArray): Boolean {
-        val id = id(code)
-        return database.transaction(lock(id)) {
-            val row = rows.find(id) ?: return@transaction false
-            val (record, remaining) = open(row)
-            if ((record.expiryMillis != 0L && record.expiryMillis <= clock()) || remaining <= 0) return@transaction false
-            rows.put(seal(id, record, remaining - 1))
-            true
-        }
+    override suspend fun delete(code: ByteArray) = database.transaction("social.invite.codes") { rows.remove(lookup(code)) }
+    override suspend fun consumeUse(code: ByteArray): Boolean = database.transaction("social.invite.codes") {
+        val id = lookup(code)
+        val secret = rows.lookup(id)?.let(::decode) ?: return@transaction false
+        if (secret.remainingUses <= 0 || (secret.expiryMillis != 0L && secret.expiryMillis <= clock())) return@transaction false
+        rows.put(encode(id, secret.copy(remainingUses = secret.remainingUses - 1)))
+        true
     }
 }

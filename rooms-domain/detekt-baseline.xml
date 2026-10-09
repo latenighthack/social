@@ -1,0 +1,8 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>TooManyFunctions:RoomsManager.kt$RoomsManager</ID>
+    <ID>TooManyFunctions:RoomsManagerImpl.kt$RoomsManagerImpl : RoomsManagerDomainLifecycleSocialTelemetryOwner</ID>
+  </CurrentIssues>
+</SmellBaseline>

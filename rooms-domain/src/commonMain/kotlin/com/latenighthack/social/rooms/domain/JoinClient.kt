@@ -27,6 +27,7 @@ interface JoinClient {
 class JoinClientImpl(rpcClient: RpcClient) : JoinClient, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
+
     private val rpc = JoinServiceRpc(rpcClient)
 
     override suspend fun createInviteCode(request: CreateInviteCodeRequest): CreateInviteCodeResponse =

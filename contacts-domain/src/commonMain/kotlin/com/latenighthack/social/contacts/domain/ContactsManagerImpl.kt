@@ -6,6 +6,8 @@ package com.latenighthack.social.contacts.domain
 
 import com.latenighthack.social.observability.*
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
@@ -16,9 +18,12 @@ import com.latenighthack.social.contacts.v1.fromByteArray
 import com.latenighthack.social.contacts.v1.toByteArray
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.withAccount
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -27,6 +32,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlin.time.Clock
 
 /**
@@ -43,21 +50,31 @@ class ContactsManagerImpl(
 ) : ContactsManager, DomainLifecycle, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
+    override fun start(lockers: LockersClient) = run { socialTelemetry.event("contacts", "start"); (run observedOperation@ {
+        runner.start(lockers) {
+             recoverTask(mutableTaskHealth) { run(lockers) } }
 
-    private var job: Job? = null
-    private var lockers: LockersClient? = null
+        }) }
+    override fun stop() = run { socialTelemetry.event("contacts", "stop"); (run observedOperation@ {
+        runner.stop()
 
-    override fun start(lockers: LockersClient) {
-        socialTelemetry.event("contacts", "start")
-        this.lockers = lockers
-        if (job?.isActive == true) return
-        job = scope.launch { socialTelemetry.measure("contacts", "start") { run(lockers) } }
-    }
+        }) }
+    override suspend fun add(profileId: ProfileId): Unit = socialTelemetry.measure("contacts", "add") { (account.withAccount {
+        runner.command { addOwned(profileId) }
+    }) }
+    override suspend fun block(profileId: ProfileId): Unit = socialTelemetry.measure("contacts", "block") { (account.withAccount {
+        runner.command { blockOwned(profileId) }
+    }) }
 
-    override fun stop() {
-        socialTelemetry.event("contacts", "stop")
-        job?.cancel()
-        job = null
+
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
+
+
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
     // Warm the account room once the account is ready so the watch and mutations see current
@@ -66,67 +83,53 @@ class ContactsManagerImpl(
         contactsClient(lockers).subscribeToRoom(accountRoom(), waitForSubscription = false)
     }
 
-    override suspend fun add(profileId: ProfileId): Unit = socialTelemetry.measure("contacts", "add") {
+
+    private suspend fun addOwned(profileId: ProfileId) {
         val now = Clock.System.now().toEpochMilliseconds()
         contactsClient(requireLockers()).updateLocker(accountRoom(), lockerId(profileId)) { current ->
             ContactRecord(friend = ContactRecord.Friend(addedAtMillis = now), block = current.block)
         }
     }
 
-    override suspend fun block(profileId: ProfileId): Unit = socialTelemetry.measure("contacts", "block") {
+
+    private suspend fun blockOwned(profileId: ProfileId) {
         val now = Clock.System.now().toEpochMilliseconds()
         contactsClient(requireLockers()).updateLocker(accountRoom(), lockerId(profileId)) { current ->
             ContactRecord(friend = current.friend, block = ContactRecord.Block(blockedAtMillis = now))
         }
     }
 
-    override suspend fun unfriend(profileId: ProfileId) = clearField(
-        profileId, operation = "unfriend",
-        otherPresent = { it.block != null },
+    override suspend fun unfriend(profileId: ProfileId): Unit = account.withAccount { runner.command { clearField(
+        profileId,
         keep = { current -> ContactRecord(friend = null, block = current.block) },
-    )
+    ) } }
 
-    override suspend fun unblock(profileId: ProfileId) = clearField(
-        profileId, operation = "unblock",
-        otherPresent = { it.friend != null },
+    override suspend fun unblock(profileId: ProfileId): Unit = account.withAccount { runner.command { clearField(
+        profileId,
         keep = { current -> ContactRecord(friend = current.friend, block = null) },
-    )
+    ) } }
 
-    override fun watchContacts(): Flow<List<Contact>> = (flow {
-        val client = contactsClient(requireLockers())
-        val room = accountRoom()
-        emitAll(
-            client.watchAll(room, ContactsKeyspaces.CONTACTS).map { records ->
-                records.map { (lockerId, record) ->
-                    Contact(
-                        profileId = ProfileId { rawValue = lockerId.rawValue },
-                        friendedAtMillis = record.friend?.addedAtMillis,
-                        blockedAtMillis = record.block?.blockedAtMillis,
-                    )
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    override fun watchContacts(): Flow<List<Contact>> =
+        account.lifecycle.flatMapLatest { state ->
+            if (state !is AccountManager.Lifecycle.Ready) flowOf(emptyList())
+            else contactsClient(requireLockers()).watchAll(state.privateRoom, ContactsKeyspaces.CONTACTS).map { records ->
+                records.filterValues { it.friend != null || it.block != null }.map { (lockerId, record) ->
+                    Contact(ProfileId { rawValue = lockerId.rawValue }, record.friend?.addedAtMillis, record.block?.blockedAtMillis)
                 }
-            },
-        )
-    }.distinctUntilChanged()
+            }
+        }.distinctUntilChanged()
 
     // Clears one field: keeps the record (rewriting via [keep]) only if the other field is still set
     // (per [otherPresent]), otherwise deletes the locker so an empty record is never stored.
-    ).socialObserved(socialTelemetry, "contacts")
-
     private suspend fun clearField(
         profileId: ProfileId,
-        operation: String,
-        otherPresent: (ContactRecord) -> Boolean,
         keep: (ContactRecord) -> ContactRecord,
-    ): Unit = socialTelemetry.measure("contacts", operation) {
+    ) {
         val client = contactsClient(requireLockers())
         val room = accountRoom()
         val id = lockerId(profileId)
-        val current = client.getLocker(room, id) ?: run { result("noop"); return@measure }
-        if (otherPresent(current)) {
-            client.updateLocker(room, id) { keep(it) }
-        } else {
-            client.deleteLocker(room, id)
-        }
+        client.updateLocker(room, id) { keep(it) }
     }
 
     private suspend fun accountRoom(): RoomId =

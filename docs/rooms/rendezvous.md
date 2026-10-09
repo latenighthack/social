@@ -22,9 +22,9 @@ profile private key never leaves that module.
 
 ## Why it is safe
 
-- **Confidentiality of existence & contents:** the room id is `sha256(S)`; without `S` (which needs
-  one of the two private keys) the id is unguessable, so no one else can find or read the room.
-  Reads being ungated does not matter — you must know the id to read.
+- **Room discovery:** deriving the room id requires the shared ECDH secret. The server still
+  observes the id and cleartext content, and anyone who learns the id can read that content.
+  Room-id secrecy does not provide end-to-end confidentiality.
 - **Write authority:** the room is locked at room scope to `lockKey`, which both parties derive and
   no one else can. Even someone who somehow learned the room id could not write to it. It is an
   opaque (non-public-keyed) room, so the first lock is a TOFU root (`parentKeyPair = null`); since

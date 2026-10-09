@@ -5,6 +5,7 @@ import com.latenighthack.social.observability.*
 import com.latenighthack.ktstore.Database
 import com.latenighthack.social.profiles.domain.MyProfilesManager
 import com.latenighthack.social.rooms.domain.RoomsManager
+import com.latenighthack.social.runtime.AccountSession
 import com.latenighthack.social.runtime.DomainLifecycle
 import com.latenighthack.social.runtime.SocialScope
 import me.tatarka.inject.annotations.IntoSet
@@ -15,7 +16,7 @@ import me.tatarka.inject.annotations.Provides
  * the component (the rooms and profiles managers are dependencies). The app must provide the
  * [Database] the observed-messages cache is created from.
  */
-interface MessagesProviders : SocialTelemetryProviders {
+interface MessagesProviders : com.latenighthack.social.runtime.SocialRuntimeProviders, SocialTelemetryProviders {
     @Provides
     @IntoSet
     fun messagesObservabilityFeature(): SocialFeatureDescriptor = SocialFeatureDescriptor("messages")
@@ -26,7 +27,7 @@ interface MessagesProviders : SocialTelemetryProviders {
         rooms: RoomsManager,
         myProfiles: MyProfilesManager,
         database: Database,
-    ): MessagesManagerImpl = MessagesManagerImpl(rooms, myProfiles, database).observedBy(socialTelemetry())
+        session: AccountSession, tasks: com.latenighthack.social.runtime.SocialTaskScope): MessagesManagerImpl = MessagesManagerImpl(rooms, myProfiles, database, session = session, scope = tasks.scope).observedBy(socialTelemetry())
 
     @Provides
     fun messagesManager(impl: MessagesManagerImpl): MessagesManager = impl
@@ -37,7 +38,7 @@ interface MessagesProviders : SocialTelemetryProviders {
 
     @Provides
     @SocialScope
-    fun draftsManagerImpl(database: Database): DraftsManagerImpl = DraftsManagerImpl(database).observedBy(socialTelemetry())
+    fun draftsManagerImpl(database: Database, session: AccountSession, tasks: com.latenighthack.social.runtime.SocialTaskScope): DraftsManagerImpl = DraftsManagerImpl(database, session = session, scope = tasks.scope).observedBy(socialTelemetry())
 
     @Provides
     fun draftsManager(impl: DraftsManagerImpl): DraftsManager = impl

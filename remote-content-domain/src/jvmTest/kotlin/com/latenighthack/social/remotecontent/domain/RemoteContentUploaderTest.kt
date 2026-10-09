@@ -7,7 +7,9 @@ import assertk.assertions.isNotNull
 import assertk.assertions.hasSize
 import com.latenighthack.ktstore.Database
 import com.latenighthack.social.remotecontent.v1.ContentId
+import com.latenighthack.social.remotecontent.v1.copy
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -18,6 +20,103 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 
 class RemoteContentUploaderTest {
+
+    @Test fun aNewGenerationRestoresCommittedFailureInsteadOfKeepingItsOldQueuedProjection() = runBlocking {
+        val database = RemoteContentStorage.inMemory("upload-epoch"); database.open()
+        val session = object : com.latenighthack.social.runtime.AccountSession {
+            override val owner = kotlinx.coroutines.flow.MutableStateFlow<String?>("alice")
+            override val generation = kotlinx.coroutines.flow.MutableStateFlow(0L)
+        }
+        val fake = FakeRemoteContentClient()
+        val uploader = RemoteContentUploaderImpl(fake, database, session = session)
+        try {
+            uploader.prepare()
+            val upload = uploader.enqueue(byteArrayOf(1), "image/png")
+            val store = PendingUploadStore(database)
+            val row = store.getAllPending().single()
+            // Model interruption after the durable failure commit but before the status projection.
+            store.savePending(row.copy(attempts = 1, failureReason = UploadFailure.INVALID_CONTENT.name))
+            session.generation.value++
+            uploader.start()
+            awaitUntil { uploader.watchUpload(upload.contentId).first()?.status == UploadStatus.Failed(UploadFailure.INVALID_CONTENT) }
+            kotlin.test.assertTrue(fake.uploaded.isEmpty())
+        } finally { uploader.stopAndJoin(); database.close() }
+    }
+
+    @Test fun exhaustedUploadsRemainObservableAcrossRestartAndCanBeExplicitlyRetried() = runBlocking {
+        val database = RemoteContentStorage.inMemory("failed-upload"); database.open()
+        val fake = FakeRemoteContentClient(failuresBeforeSuccess = 8)
+        val uploader = RemoteContentUploaderImpl(fake, database, retryIntervalMillis = 1)
+        try {
+            uploader.prepare(); uploader.start()
+            val upload = uploader.enqueue(byteArrayOf(1, 2), "image/png")
+            awaitUntil { uploader.watchUpload(upload.contentId).first()?.status is UploadStatus.Failed }
+            uploader.stopAndJoin()
+            val retained = PendingUploadStore(database).getAllPending().single()
+            kotlin.test.assertEquals(8L, retained.attempts)
+            assertContentEquals(byteArrayOf(1, 2), retained.bytes)
+            val resumed = RemoteContentUploaderImpl(fake, database, retryIntervalMillis = 1)
+            try {
+                resumed.prepare(); resumed.start()
+                awaitUntil { resumed.watchUpload(upload.contentId).first()?.status is UploadStatus.Failed }
+                delay(30)
+                kotlin.test.assertEquals(8L, PendingUploadStore(database).getAllPending().single().attempts)
+                resumed.retry(upload.contentId)
+                awaitUntil { resumed.watchUpload(upload.contentId).first()?.status == UploadStatus.Completed }
+                kotlin.test.assertTrue(PendingUploadStore(database).getAllPending().isEmpty())
+            } finally { resumed.stopAndJoin() }
+        } finally { uploader.stopAndJoin(); database.close() }
+    }
+
+    @Test fun legacyQueuesAdoptOrDiscardThroughPagesWithoutLoadingEveryPayload() = runBlocking {
+        for (adopt in listOf(false, true)) {
+            val base = com.latenighthack.ktstore.InMemoryStoreDelegate()
+            val delegate = object : com.latenighthack.ktstore.LifecycleStoreDelegate by base,
+                com.latenighthack.ktstore.IndexedQueryDelegate, com.latenighthack.ktstore.ScopedStoreDelegate {
+                override suspend fun <T> transaction(stores: Set<String>, mode: com.latenighthack.ktstore.TransactionMode, block: suspend () -> T): T = base.transaction(stores, mode, block)
+                override suspend fun <T> transaction(block: suspend () -> T): T = base.transaction(block)
+                override suspend fun <T> transaction(lockKey: String, block: suspend () -> T): T = base.transaction(lockKey, block)
+                override suspend fun query(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.query(tableName, query, identity, version)
+                override suspend fun count(tableName: String, query: com.latenighthack.ktstore.IndexedQuery) = base.count(tableName, query)
+                override suspend fun deleteBatch(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.deleteBatch(tableName, query, identity, version)
+                override suspend fun getAll(tableName: String, relation: com.latenighthack.ktstore.StoreRelation?): List<Any> = error("unbounded upload payload read")
+            }
+            val database = Database(RemoteContentStorage.configuration("legacy-pages-$adopt"), delegate)
+            database.open()
+            val store = PendingUploadStore(database)
+            repeat(20) { index -> store.savePending(com.latenighthack.social.remotecontent.v1.PendingUpload {
+                contentId = ContentId { rawValue = byteArrayOf(index.toByte()) }
+                uploadUrl = "legacy/$index"; downloadUrl = "download/$index"; bytes = byteArrayOf(1)
+            }) }
+            val session = object : com.latenighthack.social.runtime.AccountSession {
+                override val owner = kotlinx.coroutines.flow.MutableStateFlow<String?>("committed-account")
+                override val mayAdoptLegacyStorage = adopt
+            }
+            val fake = FakeRemoteContentClient()
+            val uploader = RemoteContentUploaderImpl(fake, database, retryIntervalMillis = 10, session = session)
+            try {
+                uploader.prepare(); uploader.start()
+                awaitUntil {
+                    var remaining = 0
+                    store.pages().collect { remaining += it.size }
+                    remaining == 0
+                }
+                kotlin.test.assertEquals(if (adopt) 20 else 0, fake.uploaded.size)
+            } finally { uploader.stopAndJoin(); database.close() }
+        }
+    }
+
+    @Test fun pausedUploaderKeepsABoundedProjectionWithoutDroppingDurableWork() = runBlocking {
+        val database = RemoteContentStorage.inMemory("paused-upload-projection")
+        database.open()
+        val uploader = RemoteContentUploaderImpl(FakeRemoteContentClient(), database)
+        try {
+            uploader.prepare()
+            repeat(1100) { uploader.enqueue(byteArrayOf(1), "image/png") }
+            kotlin.test.assertEquals(1024, uploader.watchUploads().first().size)
+            kotlin.test.assertEquals(1100, PendingUploadStore(database).getAllPending().size)
+        } finally { uploader.stopAndJoin(); database.close() }
+    }
 
     /**
      * A [RemoteContentClient] that mints deterministic ids/URLs and records each PUT, optionally
@@ -33,7 +132,7 @@ class RemoteContentUploaderTest {
         override suspend fun createContent(mimeType: String?): CreatedContent {
             val n = counter++
             return CreatedContent(
-                contentId = ContentId { rawValue = byteArrayOf(n.toByte()) },
+                contentId = ContentId { rawValue = byteArrayOf((n ushr 24).toByte(), (n ushr 16).toByte(), (n ushr 8).toByte(), n.toByte()) },
                 uploadUrl = "upload/$n",
                 downloadUrl = "download/$n",
             )
@@ -53,6 +152,66 @@ class RemoteContentUploaderTest {
 
     private suspend fun awaitUntil(condition: suspend () -> Boolean) =
         withTimeout(10_000) { while (!condition()) delay(10) }
+
+    @Test
+    fun `a new account cannot resume another account's upload queue`() = runBlocking {
+        val owner = kotlinx.coroutines.flow.MutableStateFlow<String?>("alice")
+        val session = object : com.latenighthack.social.runtime.AccountSession { override val owner = owner }
+        val database = Database(RemoteContentStorage.configuration("owner-isolation"), com.latenighthack.ktstore.InMemoryStoreDelegate())
+        database.open()
+        val fake = FakeRemoteContentClient()
+        val uploader = RemoteContentUploaderImpl(fake, database, retryIntervalMillis = 10, session = session)
+        uploader.prepare()
+        val upload = uploader.enqueue(byteArrayOf(1), "image/png")
+        owner.value = "bob"
+        uploader.start()
+        try {
+            delay(100)
+            kotlin.test.assertTrue(fake.uploaded.isEmpty())
+            kotlin.test.assertNull(uploader.watchUpload(upload.contentId).first())
+            owner.value = "alice"
+            awaitUntil { uploader.watchUpload(upload.contentId).first()?.status == UploadStatus.Completed }
+        } finally { uploader.stop() }
+    }
+
+    @Test
+    fun `review queue registration must not overwrite a completed upload`() = runBlocking {
+        val base = com.latenighthack.ktstore.InMemoryStoreDelegate()
+        val saved = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val finishSave = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val delegate = object : com.latenighthack.ktstore.LifecycleStoreDelegate by base, com.latenighthack.ktstore.IndexedQueryDelegate, com.latenighthack.ktstore.ScopedStoreDelegate {
+            override suspend fun <T> transaction(stores: Set<String>, mode: com.latenighthack.ktstore.TransactionMode, block: suspend () -> T): T = base.transaction(stores, mode, block)
+            override suspend fun <T> transaction(block: suspend () -> T): T = base.transaction(block)
+            override suspend fun <T> transaction(lockKey: String, block: suspend () -> T): T = base.transaction(lockKey, block)
+            override suspend fun query(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.query(tableName, query, identity, version)
+            override suspend fun count(tableName: String, query: com.latenighthack.ktstore.IndexedQuery) = base.count(tableName, query)
+            override suspend fun deleteBatch(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.deleteBatch(tableName, query, identity, version)
+            override suspend fun save(tableName: String, data: Any, keys: List<com.latenighthack.ktstore.BoundStoreKey>) {
+                base.save(tableName, data, keys)
+                saved.complete(Unit)
+                finishSave.await()
+            }
+        }
+        val database = Database(RemoteContentStorage.configuration("review-upload-race"), delegate)
+        database.open()
+        val fake = FakeRemoteContentClient()
+        val uploader = RemoteContentUploaderImpl(fake, database, retryIntervalMillis = 1)
+        uploader.prepare()
+        uploader.start()
+        try {
+            kotlinx.coroutines.coroutineScope {
+                val task = async { uploader.enqueue(byteArrayOf(1, 2), "image/png") }
+                saved.await()
+                delay(25)
+                kotlin.test.assertTrue(fake.uploaded.isEmpty(), "worker ran before queue registration committed")
+                finishSave.complete(Unit)
+                val upload = task.await()
+                awaitUntil { uploader.watchUpload(upload.contentId).first()?.status == UploadStatus.Completed }
+                kotlin.test.assertEquals(UploadStatus.Completed, uploader.watchUpload(upload.contentId).first()?.status,
+                    "durable row is gone but late queue registration replaced completion with Queued")
+            }
+        } finally { finishSave.complete(Unit); uploader.stop() }
+    }
 
     @Test
     fun `enqueue returns the download URL immediately and durably queues the bytes before transfer`() =

@@ -48,6 +48,8 @@ object Sealing {
             val kek = AESSymmetricKey.decodeKey(SHA256.digest(sharedSecret))
             val contentKey = AESSymmetricKey.decodeKey(AES.GCM.decrypt(kek, envelope.wrappedKey))
             AES.GCM.decrypt(contentKey, envelope.ciphertext)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             null
         }

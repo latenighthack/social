@@ -1,0 +1,8 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>MatchingDeclarationName:DraftStoreDefinitionsV1.kt$DraftStoreDefinitionV1 : StoreDefinition</ID>
+    <ID>TooManyFunctions:MessagesManagerImpl.kt$MessagesManagerImpl : MessagesManagerDomainLifecycleSocialTelemetryOwner</ID>
+  </CurrentIssues>
+</SmellBaseline>

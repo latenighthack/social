@@ -1,6 +1,11 @@
+// Manager recovery / untrusted input boundaries catch transport-specific failures; cancellation escapes.
+@file:Suppress("TooGenericExceptionCaught")
+
 package com.latenighthack.social.messages.domain
 
 import com.latenighthack.social.observability.*
+
+import kotlinx.coroutines.flow.asStateFlow
 
 import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.common.v1.RoomId
@@ -8,17 +13,24 @@ import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.messages.v1.Draft
 import com.latenighthack.social.messages.v1.DraftAttachment
 import com.latenighthack.social.messages.v1.LocalDraft
-import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.*
+import com.latenighthack.social.messages.v1.copy
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Keeps each room's single draft in memory and mirrors it into a persistent [DraftStore]. Purely
@@ -29,71 +41,126 @@ import kotlinx.coroutines.launch
 class DraftsManagerImpl(
     private val database: Database,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val session: AccountSession? = null,
 ) : DraftsManager, DomainLifecycle, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
+    override suspend fun prepare() = socialTelemetry.measure("messages", "prepare") { (run observedOperation@ {
+        store.prepare()
+
+        }) }
+    override fun start(lockers: LockersClient) = run { socialTelemetry.event("messages", "start"); (run observedOperation@ {
+        runner.start { recoverTask(mutableTaskHealth) {
+            if (ready.isCancelled) ready = CompletableDeferred()
+            try {
+            session.ownerChanges().collectLatest { owner ->
+                mutex.withLock {
+                    _drafts.value = emptyMap()
+                    loadedOwner = owner
+                    if (owner != null) {
+                        val rows = store.getAllDrafts()
+                        for (row in rows) if (session != null && row.ownerAccountId.isEmpty()) {
+                            database.transaction("social.drafts") {
+                                if (session.owns(row.ownerAccountId)) store.saveDraft(row.copy(ownerAccountId = owner))
+                                store.removeDraft(RoomId(rawValue = row.roomId))
+                            }
+                        }
+                        _drafts.value = rows.filter { session.owns(it.ownerAccountId) }.associate {
+                            RoomId(rawValue = it.roomId) to (it.draft ?: Draft { })
+                        }
+                    }
+                    if (!ready.isCompleted) ready.complete(Unit)
+                }
+                kotlinx.coroutines.awaitCancellation()
+            }
+            } catch (failure: Exception) {
+                if (!ready.isCompleted) ready.completeExceptionally(failure)
+                throw failure
+            }
+        } }
+
+        }) }
+    override fun stop() = run { socialTelemetry.event("messages", "stop"); (run observedOperation@ {
+        runner.stop()
+
+        }) }
+    override suspend fun clear(roomId: RoomId): Unit = socialTelemetry.measure("messages", "clear") { (withSession { clearOwned(roomId) }) }
+    override fun watchDraft(roomId: RoomId): Flow<Draft?>  = (combine(_drafts, session.ownerChanges()) { drafts, owner -> if (owner != null && owner == loadedOwner) drafts[roomId] else null }.distinctUntilChanged()).socialObserved(socialTelemetry, "messages")
+
 
     private val store = DraftStore(database)
+    private val mutex = Mutex()
 
+    private var loadedOwner: String? = null
     private val _drafts = MutableStateFlow<Map<RoomId, Draft>>(emptyMap())
 
-    private var job: Job? = null
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     // Completes once the store has been loaded — gates all store access.
-    private val ready = CompletableDeferred<Unit>()
+    private var ready = CompletableDeferred<Unit>()
 
-    override suspend fun prepare(): Unit = socialTelemetry.measure("messages", "prepare") {
-        store.prepare()
+
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
-    override fun start(lockers: LockersClient) {
-        socialTelemetry.event("messages", "start")
-        if (job?.isActive == true) return
-        job = scope.launch {
-            _drafts.value = buildMap {
-                store.getAllDrafts().forEach { local ->
-                    put(RoomId(rawValue = local.roomId), local.draft ?: Draft { })
-                }
-            }
-            if (!ready.isCompleted) ready.complete(Unit)
-        }
-    }
-
-    override fun stop() {
-        socialTelemetry.event("messages", "stop")
-        job?.cancel()
-        job = null
-    }
-
-    override suspend fun setText(roomId: RoomId, text: String) = mutate(roomId, "setText") { current ->
+    override suspend fun setText(roomId: RoomId, text: String) = mutate(roomId) { current ->
         Draft { this.text = text; attachments = current.attachments }
     }
 
-    override suspend fun addAttachment(roomId: RoomId, attachment: DraftAttachment) = mutate(roomId, "addAttachment") { current ->
+    override suspend fun addAttachment(roomId: RoomId, attachment: DraftAttachment) = mutate(roomId) { current ->
         Draft { text = current.text; attachments = current.attachments + attachment }
     }
 
-    override suspend fun removeAttachment(roomId: RoomId, contentId: ByteArray) = mutate(roomId, "removeAttachment") { current ->
+    override suspend fun removeAttachment(roomId: RoomId, contentId: ByteArray) = mutate(roomId) { current ->
         Draft { text = current.text; attachments = current.attachments.filterNot { it.contentId.contentEquals(contentId) } }
     }
 
     // Read-modify-write of [roomId]'s draft: applies [transform] to the current draft (or an empty one)
     // and mirrors the result into memory and the store, so each field can be edited without clobbering
     // the others.
-    private suspend fun mutate(roomId: RoomId, operation: String, transform: (Draft) -> Draft): Unit = socialTelemetry.measure("messages", operation) {
+    private suspend fun <T> withSession(block: suspend () -> T): T =
+        if (session == null) block() else session.withAccount(block)
+
+    private suspend fun mutate(roomId: RoomId, transform: (Draft) -> Draft): Unit = withSession { mutateOwned(roomId, transform) }
+
+    private suspend fun mutateOwned(roomId: RoomId, transform: (Draft) -> Draft) {
+        val owner = session.currentOwner()
         ready.await()
-        val updated = transform(_drafts.value[roomId] ?: Draft { })
-        _drafts.value = _drafts.value + (roomId to updated)
-        store.saveDraft(LocalDraft(roomId = roomId.rawValue, draft = updated))
+        mutex.withLock {
+            session?.requireOperationOwner()
+            val updated = transform(if (loadedOwner == owner) _drafts.value[roomId] ?: Draft { } else store.getDraft(roomId, owner)?.draft ?: Draft { })
+            store.saveDraft(LocalDraft(roomId = roomId.rawValue, draft = updated, ownerAccountId = owner))
+            session?.requireOperationOwner()
+            _drafts.value = (if (loadedOwner == owner) _drafts.value else emptyMap()) + (roomId to updated)
+            loadedOwner = owner
+        }
     }
 
-    override suspend fun clear(roomId: RoomId): Unit = socialTelemetry.measure("messages", "clear") {
+
+    private suspend fun clearOwned(roomId: RoomId) {
+        val owner = session.currentOwner()
         ready.await()
-        _drafts.value = _drafts.value - roomId
-        store.removeDraft(roomId)
+        mutex.withLock {
+            session?.requireOperationOwner()
+            store.removeDraft(roomId, owner)
+            if (session.currentOwner() == owner && loadedOwner == owner) _drafts.value = _drafts.value - roomId
+        }
     }
 
-    override fun watchDraft(roomId: RoomId): Flow<Draft?> =
-        (_drafts.map { it[roomId] }.distinctUntilChanged()
-    ).socialObserved(socialTelemetry, "messages")
+    override suspend fun clearIfUnchanged(roomId: RoomId, sent: Draft): Unit = withSession { clearUnchangedOwned(roomId, sent) }
+
+    private suspend fun clearUnchangedOwned(roomId: RoomId, sent: Draft) {
+        val owner = session.currentOwner()
+        ready.await()
+        mutex.withLock {
+            val current = if (loadedOwner == owner) _drafts.value[roomId] else store.getDraft(roomId, owner)?.draft
+            session?.requireOperationOwner()
+            if (current != sent) return
+            store.removeDraft(roomId, owner)
+            if (session.currentOwner() == owner && loadedOwner == owner) _drafts.value = _drafts.value - roomId
+        }
+    }
 
 }

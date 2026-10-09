@@ -92,12 +92,14 @@ already did); holding `G` lets its own membership write verify against the exist
 
 ```
 RoomsManager.leave(roomId):
+  persist left + leaving intent, retaining the encrypted key in keyspace 8
   delete this member's Member (keyspace 6) and MemberProfile (keyspace 7)   # signed by G, still held
-  drop the in-memory RoomRecord and shared key
-  delete the RoomRecord from the account room (keyspace 8)                  # signed by account key
+  complete the account-room tombstone and discard its encrypted key
+  remove the in-memory room and shared key
 ```
 
-The order matters: the entries are deleted while `G` is still routed for the room, then the local
+The persisted intent lets a restart finish partial deletion without redeeming another invite.
+The entries are deleted while `G` is still routed for the room, then the local
 key is dropped. The member still *knows* `G` afterward — true revocation would require rotating the
 group key and re-distributing it to the remaining members, which is deferred.
 

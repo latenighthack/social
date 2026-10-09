@@ -15,22 +15,52 @@ import com.latenighthack.social.messages.v1.toByteArray
  * are loaded a room at a time via [getMessagesForRoom]; the manager never loads every room's history
  * up front.
  */
-internal class MessageStore(database: Database) : Store<LocalMessage>(database, MessageStoreDefinitionV1) {
-    private val roomIdKey = MessageStoreDefinitionV1.roomIdKey
-    private val messageIdKey = MessageStoreDefinitionV1.messageIdKey
-    private val roomIdMessageIdKey = MessageStoreDefinitionV1.roomIdMessageIdKey
+internal class MessageStore(private val handle: Database) : Store<LocalMessage>(handle, MessageStoreDefinitionV2) {
+    private val roomIdKey = MessageStoreDefinitionV2.roomIdKey
+    private val messageIdKey = MessageStoreDefinitionV2.messageIdKey
+    private val roomIdMessageIdKey = MessageStoreDefinitionV2.ownerRoomMessageKey
 
     suspend fun getMessagesForRoom(roomId: RoomId): List<LocalMessage> = getAll(roomIdKey.eq(roomId.rawValue))
 
+    suspend fun getRecentMessages(roomId: RoomId, owned: (LocalMessage) -> Boolean, limit: Int = 1000,
+        before: MessageEntry? = null): List<LocalMessage> {
+        var selected = emptyList<Pair<LocalMessage, MessageEntry>>()
+        com.latenighthack.social.runtime.storePages(handle, MessageStoreDefinitionV2, roomIdKey,
+            roomId.rawValue, roomId.rawValue).collect { page ->
+            val rows = page.filter(owned).mapNotNull { local -> local.message?.let { signed ->
+                val payload = com.latenighthack.social.messages.v1.BoundedMessagePayload.decode(signed.content) ?: return@let null
+                local to MessageEntry(payload, local.status)
+            } }.filter { before == null || messageOrder.compare(it.second, before) < 0 }
+            selected = (selected + rows).sortedWith { a, b -> messageOrder.compare(a.second, b.second) }.takeLast(limit)
+        }
+        return selected.map { it.first }
+    }
+
     /** Dedup lookup for a room that isn't loaded in memory; loaded rooms check their in-memory id set. */
-    suspend fun getMessage(roomId: RoomId, messageId: MessageId): LocalMessage? = get(
+    suspend fun getMessage(roomId: RoomId, messageId: MessageId, owner: String = ""): LocalMessage? = get(
         roomIdMessageIdKey.eq(
             listOf(
+                BoundStoreKey.SerializedKey("ownerAccountIdUtf8", owner.encodeToByteArray()),
                 BoundStoreKey.SerializedKey(roomIdKey.name.value, roomId.rawValue),
                 BoundStoreKey.SerializedKey(messageIdKey.name.value, messageId.toByteArray()),
             ),
         ),
     )
+
+    suspend fun compareMessageOrder(roomId: RoomId, first: MessageId, second: MessageId, owner: String): Int? {
+        fun payload(row: LocalMessage?) = row?.message?.let { com.latenighthack.social.messages.v1.BoundedMessagePayload.decode(it.content) }
+        val a = payload(getMessage(roomId, first, owner)) ?: return null
+        val b = payload(getMessage(roomId, second, owner)) ?: return null
+        return messageOrder.compare(MessageEntry(a, com.latenighthack.social.messages.v1.MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT),
+            MessageEntry(b, com.latenighthack.social.messages.v1.MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT))
+    }
+
+    suspend fun getAllMessages(): List<LocalMessage> = getAll()
+    suspend fun deleteMessage(roomId: RoomId, messageId: MessageId, owner: String = "") = delete(roomIdMessageIdKey.eq(listOf(
+                BoundStoreKey.SerializedKey("ownerAccountIdUtf8", owner.encodeToByteArray()),
+        BoundStoreKey.SerializedKey(roomIdKey.name.value, roomId.rawValue),
+        BoundStoreKey.SerializedKey(messageIdKey.name.value, messageId.toByteArray()),
+    )))
 
     suspend fun saveMessage(message: LocalMessage) = save(message)
 }

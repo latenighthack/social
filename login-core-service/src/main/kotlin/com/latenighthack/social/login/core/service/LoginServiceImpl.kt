@@ -2,6 +2,10 @@ package com.latenighthack.social.login.core.service
 
 import com.latenighthack.social.observability.*
 
+import com.latenighthack.ktcrypto.Secp256r1KeyPair
+import com.latenighthack.ktcrypto.fromPrivateKey
+import com.latenighthack.ktcrypto.encode
+
 import com.latenighthack.ktbuf.net.GrpcRequestContext
 import com.latenighthack.social.login.v1.AuthenticateResponse
 import com.latenighthack.social.login.v1.AuthenticateSocialRequest
@@ -20,6 +24,9 @@ import com.latenighthack.social.login.v1.StartEmailLinkRequest
 import com.latenighthack.social.login.v1.StartPhoneCodeRequest
 import com.latenighthack.social.login.v1.VerifyPhoneCodeRequest
 import com.latenighthack.social.login.v1.copy
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -49,10 +56,10 @@ class LoginServiceImpl(
     private val emailSender: EmailSender?,
     private val smsSender: SmsSender?,
     private val linkBaseUrl: String,
-    private val nonces: NonceService = NonceService(),
+    private val nonces: NonceService = NonceService(store = challenges),
     // When true, AuthenticateSocial rejects requests whose nonce is absent or fails the single-use
-    // check. Off by default for rollout: legacy clients carry no nonce.
-    private val requireNonce: Boolean = false,
+    // check. Enforced by default; disable only in an explicitly controlled development rollout.
+    private val requireNonce: Boolean = true,
     private val clock: () -> Long = System::currentTimeMillis,
     private val random: SecureRandom = SecureRandom(),
     private val challengeTtlMillis: Long = 15 * 60 * 1000L,
@@ -60,6 +67,8 @@ class LoginServiceImpl(
     private val maxAttempts: Int = 5,
     private val otpDigits: Int = 6,
     private val tokenBytes: Int = 32,
+    private val requestsPerMinute: Int = 240,
+    private val startCooldownMillis: Long = 60_000,
 ) : LoginServer, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
         set(value) {
@@ -68,33 +77,26 @@ class LoginServiceImpl(
             (googleVerifier as? SocialTelemetryOwner)?.socialTelemetry = value
         }
 
-
-    override suspend fun requestNonce(
-        context: GrpcRequestContext,
-        request: RequestNonceRequest,
-    ): RequestNonceResponse = socialTelemetry.measure("login", "requestNonce", "none") {
-        val issued = nonces.issue()
-        RequestNonceResponse {
-            result = LoginResult.LOGIN_RESULT_OK
-            nonce = issued
-            expiresInSeconds = nonces.expiresInSeconds
+    override suspend fun requestNonce(context: GrpcRequestContext, request: RequestNonceRequest): RequestNonceResponse = socialTelemetry.measure("login", "requestNonce", "none") { (run observedOperation@ {
+        if (!reserveBudget()) return@observedOperation RequestNonceResponse { result = LoginResult.LOGIN_RESULT_RATE_LIMITED }
+        return@observedOperation RequestNonceResponse {
+            result = LoginResult.LOGIN_RESULT_OK; nonce = nonces.issue(); expiresInSeconds = nonces.expiresInSeconds
         }
-    }
 
+        }).also { result(socialResult(it.result.toString())) } }
     override suspend fun authenticateSocial(
         context: GrpcRequestContext,
         request: AuthenticateSocialRequest,
-    ): AuthenticateResponse = socialTelemetry.measure("login", "authenticateSocial", socialProvider(request.provider.value)) {
-        run operation@ {
+    ): AuthenticateResponse = socialTelemetry.measure("login", "authenticateSocial", socialProvider(request.provider.value)) { (run observedOperation@ {
+        if (request.idToken.length !in 1..16_384 || request.nonce.length > 128) return@observedOperation authResult(LoginResult.LOGIN_RESULT_INVALID)
+        if (!reserveBudget()) return@observedOperation authResult(LoginResult.LOGIN_RESULT_RATE_LIMITED)
         val verifier = when (request.provider) {
             Provider.PROVIDER_APPLE -> appleVerifier
             Provider.PROVIDER_GOOGLE -> googleVerifier
             else -> null
-        } ?: return@operation authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
-        val claims = socialTelemetry.measure("login", "verify", socialProvider(request.provider.value)) {
-            verifier.verify(request.idToken).also { if (it == null) result("unauthorized") }
-        }
-            ?: return@operation authResult(LoginResult.LOGIN_RESULT_UNAUTHORIZED)
+        } ?: return@observedOperation authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
+        val claims = verifier.verify(request.idToken)
+            ?: return@observedOperation authResult(LoginResult.LOGIN_RESULT_UNAUTHORIZED)
         // Replay defense: under enforcement, a nonce must be present, issued here, and match the
         // token's claim (verbatim or SHA-256 hex). Outside enforcement the check is best-effort — the
         // nonce is still spent, but a mismatch is non-fatal (a non-enforcing server already accepts
@@ -102,85 +104,86 @@ class LoginServiceImpl(
         // claim, e.g. the dev verifier, without adding protection).
         if (requireNonce) {
             if (request.nonce.isEmpty() || !nonces.consume(request.nonce, claims.nonce)) {
-                return@operation authResult(LoginResult.LOGIN_RESULT_UNAUTHORIZED)
+                return@observedOperation authResult(LoginResult.LOGIN_RESULT_UNAUTHORIZED)
             }
         } else if (request.nonce.isNotEmpty()) {
             nonces.consume(request.nonce, claims.nonce)
         }
-        return@operation recoverOrIssueTicket(request.provider.value, subjectBytes(claims.subject), claims)
+        return@observedOperation recoverOrIssueTicket(request.provider.value, subjectBytes(claims.subject), claims)
 
-        }.also { response -> result(socialResult(response.result.toString())) }
-    }
-
+        }).also { result(socialResult(it.result.toString())) } }
     override suspend fun startEmailLink(
         context: GrpcRequestContext,
         request: StartEmailLinkRequest,
-    ): StartChallengeResponse = socialTelemetry.measure("login", "startEmailLink", "email") {
-        run operation@ {
-        val sender = emailSender ?: return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE }
+    ): StartChallengeResponse = socialTelemetry.measure("login", "startEmailLink", "email") { (run observedOperation@ {
+        val sender = emailSender ?: return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE }
         val email = request.email.trim()
-        if (email.isEmpty()) return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (email.length !in 3..254 || !email.contains('@') || email.any { it.isWhitespace() || it.code < 32 })
+            return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (!reserveBudget(providerNumber(Provider.PROVIDER_EMAIL), subjectBytes(email)))
+            return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_RATE_LIMITED }
         val token = randomToken()
         storeChallenge(providerNumber(Provider.PROVIDER_EMAIL), subjectBytes(email), token)
-        socialTelemetry.measure("login", "send", "email") { sender.sendMagicLink(email, buildLink(email, token)) }
-        return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_OK }
+        sender.sendMagicLink(email, buildLink(email, token))
+        return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_OK }
 
-        }.also { response -> result(socialResult(response.result.toString())) }
-    }
-
+        }).also { result(socialResult(it.result.toString())) } }
     override suspend fun completeEmailLink(
         context: GrpcRequestContext,
         request: CompleteEmailLinkRequest,
-    ): AuthenticateResponse = socialTelemetry.measure("login", "completeEmailLink", "email") {
-        run operation@ {
-        if (emailSender == null) return@operation authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
-        return@operation verifyChallenge(providerNumber(Provider.PROVIDER_EMAIL), subjectBytes(request.email.trim()), request.token)
+    ): AuthenticateResponse = socialTelemetry.measure("login", "completeEmailLink", "email") { (run observedOperation@ {
+        if (emailSender == null) return@observedOperation authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
+        return@observedOperation verifyChallenge(providerNumber(Provider.PROVIDER_EMAIL), subjectBytes(request.email.trim()), request.token)
 
-        }.also { response -> result(socialResult(response.result.toString())) }
-    }
-
+        }).also { result(socialResult(it.result.toString())) } }
     override suspend fun startPhoneCode(
         context: GrpcRequestContext,
         request: StartPhoneCodeRequest,
-    ): StartChallengeResponse = socialTelemetry.measure("login", "startPhoneCode", "phone") {
-        run operation@ {
-        val sender = smsSender ?: return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE }
+    ): StartChallengeResponse = socialTelemetry.measure("login", "startPhoneCode", "phone") { (run observedOperation@ {
+        val sender = smsSender ?: return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE }
         val phone = request.phoneNumber.trim()
-        if (phone.isEmpty()) return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (phone.length !in 4..32 || phone.any { it !in "+0123456789" })
+            return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (!reserveBudget(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(phone)))
+            return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_RATE_LIMITED }
         val code = randomCode()
         storeChallenge(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(phone), code)
-        socialTelemetry.measure("login", "send", "phone") { sender.sendCode(phone, code) }
-        return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_OK }
+        sender.sendCode(phone, code)
+        return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_OK }
 
-        }.also { response -> result(socialResult(response.result.toString())) }
-    }
-
+        }).also { result(socialResult(it.result.toString())) } }
     override suspend fun verifyPhoneCode(
         context: GrpcRequestContext,
         request: VerifyPhoneCodeRequest,
-    ): AuthenticateResponse = socialTelemetry.measure("login", "verifyPhoneCode", "phone") {
-        run operation@ {
-        if (smsSender == null) return@operation authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
-        return@operation verifyChallenge(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(request.phoneNumber.trim()), request.code)
+    ): AuthenticateResponse = socialTelemetry.measure("login", "verifyPhoneCode", "phone") { (run observedOperation@ {
+        if (smsSender == null) return@observedOperation authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
+        return@observedOperation verifyChallenge(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(request.phoneNumber.trim()), request.code)
 
-        }.also { response -> result(socialResult(response.result.toString())) }
-    }
-
-    override suspend fun bind(context: GrpcRequestContext, request: BindRequest): BindResponse = socialTelemetry.measure("login", "bind", "none") {
-        run operation@ {
+        }).also { result(socialResult(it.result.toString())) } }
+    override suspend fun bind(context: GrpcRequestContext, request: BindRequest): BindResponse = socialTelemetry.measure("login", "bind", "none") { (run observedOperation@ {
+        if (request.bindTicket.size !in 16..128 || request.accountId.size != 33 || request.accountPrivateKey.size != 32)
+            return@observedOperation BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (!reserveBudget(excludeLookup = ticketKey(request.bindTicket))) return@observedOperation BindResponse { result = LoginResult.LOGIN_RESULT_RATE_LIMITED }
+        val identity = try { Secp256r1KeyPair.fromPrivateKey(request.accountPrivateKey) }
+            catch (_: IllegalArgumentException) { null }
+            catch (_: java.security.GeneralSecurityException) { null }
+        if (identity == null || !identity.publicKey.encode().contentEquals(request.accountId)) {
+            return@observedOperation BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        }
+        return@observedOperation challenges.database.transaction("social.login.credentials") {
         val ticketLookup = ticketKey(request.bindTicket)
         val ticket = challenges.getByLookup(ticketLookup)
-            ?: return@operation BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+            ?: return@transaction BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
         // Single-use: a ticket is spent whether or not the bind succeeds.
         challenges.deleteByLookup(ticketLookup)
         if (ticket.expiryMillis != 0L && clock() >= ticket.expiryMillis) {
-            return@operation BindResponse { result = LoginResult.LOGIN_RESULT_EXPIRED }
+            return@transaction BindResponse { result = LoginResult.LOGIN_RESULT_EXPIRED }
         }
 
         val credentialLookup = credentialKey(ticket.provider, ticket.subject)
         val existing = credentials.getByLookup(credentialLookup)
         if (existing != null && !existing.accountId.contentEquals(request.accountId)) {
-            return@operation BindResponse { result = LoginResult.LOGIN_RESULT_ALREADY_BOUND }
+            return@transaction BindResponse { result = LoginResult.LOGIN_RESULT_ALREADY_BOUND }
         }
 
         val sealed = custody.encrypt(request.accountPrivateKey, CustodyCrypto.Binding(ticket.provider, ticket.subject))
@@ -199,17 +202,27 @@ class LoginServiceImpl(
                 updatedAtMillis = now
             },
         )
-        return@operation BindResponse { result = LoginResult.LOGIN_RESULT_OK }
-
-        }.also { response -> result(socialResult(response.result.toString())) }
+        BindResponse { result = LoginResult.LOGIN_RESULT_OK }
     }
+
+
+        }).also { result(socialResult(it.result.toString())) } }
+
+
+    private val hashSlots = kotlinx.coroutines.sync.Semaphore(4)
+
+    init {
+        require(requestsPerMinute > 0 && startCooldownMillis >= 0)
+        require(credentials.database === challenges.database) { "login stores must share one database" }
+    }
+
 
     /** After a method is proven, recover its bound key or, if none, issue a single-use bind ticket. */
     private suspend fun recoverOrIssueTicket(
         provider: Int,
         subject: ByteArray,
         claims: VerifiedClaims? = null,
-    ): AuthenticateResponse {
+    ): AuthenticateResponse = challenges.database.transaction("social.login.credentials") {
         val credential = credentials.getByLookup(credentialKey(provider, subject))
         if (credential != null) {
             val binding = CustodyCrypto.Binding(provider, subject)
@@ -229,7 +242,7 @@ class LoginServiceImpl(
                     },
                 )
             }
-            return AuthenticateResponse {
+            return@transaction AuthenticateResponse {
                 result = LoginResult.LOGIN_RESULT_OK
                 identity {
                     accountId = credential.accountId
@@ -248,7 +261,7 @@ class LoginServiceImpl(
                 attemptsRemaining = 1
             },
         )
-        return AuthenticateResponse {
+        AuthenticateResponse {
             result = LoginResult.LOGIN_RESULT_NEEDS_BINDING
             bindTicket = ticket
             applyPrefill(claims)
@@ -256,7 +269,8 @@ class LoginServiceImpl(
     }
 
     private suspend fun storeChallenge(provider: Int, subject: ByteArray, secret: String) {
-        val hashed = hasher.hash(secret)
+        val hashed = hashSlots.withPermit { withContext(Dispatchers.Default) { hasher.hash(secret) } }
+        challenges.database.transaction("social.login.credentials") {
         challenges.put(
             ChallengeRecord {
                 lookupKey = challengeKey(provider, subject)
@@ -271,28 +285,55 @@ class LoginServiceImpl(
         )
     }
 
+    }
+
     private suspend fun verifyChallenge(provider: Int, subject: ByteArray, presented: String): AuthenticateResponse {
+        if (subject.size !in 1..254 || presented.length !in 1..512) return authResult(LoginResult.LOGIN_RESULT_INVALID)
         val lookup = challengeKey(provider, subject)
-        val record = challenges.getByLookup(lookup) ?: return authResult(LoginResult.LOGIN_RESULT_INVALID)
-        if (record.expiryMillis != 0L && clock() >= record.expiryMillis) {
-            challenges.deleteByLookup(lookup)
-            return authResult(LoginResult.LOGIN_RESULT_EXPIRED)
-        }
-        if (record.attemptsRemaining <= 0) {
-            challenges.deleteByLookup(lookup)
-            return authResult(LoginResult.LOGIN_RESULT_EXHAUSTED)
-        }
-        if (!hasher.verify(presented, record.secretHash, record.salt, record.kdfIterations)) {
-            val remaining = record.attemptsRemaining - 1
-            if (remaining <= 0) {
+        if (!reserveBudget(excludeLookup = lookup)) return authResult(LoginResult.LOGIN_RESULT_RATE_LIMITED)
+        val snapshot = challenges.getByLookup(lookup) ?: return authResult(LoginResult.LOGIN_RESULT_INVALID)
+        val valid = if (snapshot.attemptsRemaining <= 0 || clock() >= snapshot.expiryMillis) false else
+            hashSlots.withPermit { withContext(Dispatchers.Default) {
+                hasher.verify(presented, snapshot.secretHash, snapshot.salt, snapshot.kdfIterations)
+            } }
+        return challenges.database.transaction("social.login.credentials") {
+            val record = challenges.getByLookup(lookup) ?: return@transaction authResult(LoginResult.LOGIN_RESULT_INVALID)
+            if (record.expiryMillis != 0L && clock() >= record.expiryMillis) {
                 challenges.deleteByLookup(lookup)
-                return authResult(LoginResult.LOGIN_RESULT_EXHAUSTED)
+                return@transaction authResult(LoginResult.LOGIN_RESULT_EXPIRED)
             }
-            challenges.put(record.copy { attemptsRemaining = remaining })
-            return authResult(LoginResult.LOGIN_RESULT_INVALID)
+            if (!record.secretHash.contentEquals(snapshot.secretHash) || !record.salt.contentEquals(snapshot.salt) ||
+                record.kdfIterations != snapshot.kdfIterations || record.expiryMillis != snapshot.expiryMillis)
+                return@transaction authResult(LoginResult.LOGIN_RESULT_INVALID)
+            if (record.attemptsRemaining <= 0) return@transaction authResult(LoginResult.LOGIN_RESULT_EXHAUSTED)
+            if (!valid) {
+                val remaining = record.attemptsRemaining - 1
+                challenges.put(record.copy(attemptsRemaining = remaining))
+                return@transaction authResult(if (remaining <= 0) LoginResult.LOGIN_RESULT_EXHAUSTED else LoginResult.LOGIN_RESULT_INVALID)
+            }
+            challenges.deleteByLookup(lookup)
+            recoverOrIssueTicket(provider, subject)
         }
-        challenges.deleteByLookup(lookup)
-        return recoverOrIssueTicket(provider, subject)
+    }
+
+    /** Database-backed global cost budget and per-subject delivery cooldown, shared by replicas. */
+    private suspend fun reserveBudget(provider: Int? = null, subject: ByteArray? = null, excludeLookup: ByteArray? = null): Boolean {
+        challenges.pruneExpired(clock(), excludeLookup)
+        return challenges.database.transaction("social.login.credentials") {
+            val now = clock()
+            val globalKey = byteArrayOf(3, 0)
+            val global = challenges.getByLookup(globalKey)
+            val remaining = if (global == null || global.expiryMillis <= now) requestsPerMinute else global.attemptsRemaining
+            if (remaining <= 0) return@transaction false
+            val subjectKey = if (provider == null || subject == null) null else byteArrayOf(3, 1) + sha256(credentialKey(provider, subject))
+            if (subjectKey != null && challenges.getByLookup(subjectKey)?.expiryMillis?.let { it > now } == true)
+                return@transaction false
+            challenges.put(ChallengeRecord(lookupKey = globalKey, expiryMillis = if (global != null && global.expiryMillis > now)
+                global.expiryMillis else now + 60_000, attemptsRemaining = remaining - 1))
+            if (subjectKey != null) challenges.put(ChallengeRecord(lookupKey = subjectKey, expiryMillis = now + startCooldownMillis))
+            true
+        }
+
     }
 
     private fun authResult(result: LoginResult) = AuthenticateResponse { this.result = result }

@@ -1,30 +1,35 @@
 package com.latenighthack.social.remotecontent.domain
 
+import com.latenighthack.social.runtime.OperationsObserver
+import com.latenighthack.social.runtime.record
+import com.latenighthack.social.runtime.measure
+
 import com.latenighthack.social.observability.*
 
 import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.social.remotecontent.v1.ContentId
 import com.latenighthack.social.remotecontent.v1.CreateContentRequest
 import com.latenighthack.social.remotecontent.v1.RemoteContentServiceRpc
+import io.ktor.client.plugins.expectSuccess
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.onDownload
 import io.ktor.client.plugins.onUpload
-import io.ktor.client.request.get
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
-import io.ktor.client.statement.HttpResponse
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.readRemaining
+import kotlinx.io.readByteArray
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import io.ktor.http.contentType
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.withTimeout
-import kotlin.time.TimeSource
-import com.latenighthack.social.runtime.OperationsObserver
-import com.latenighthack.social.runtime.record
 
 /** A created content handle: its id and the URLs its bytes are uploaded to / served from. */
 class CreatedContent(
@@ -82,73 +87,69 @@ class RemoteContentClientImpl(
 ) : RemoteContentClient, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
+    override suspend fun createContent(mimeType: String?): CreatedContent = socialTelemetry.measure("remote_content", "createContent") { (run observedOperation@ {
+        val mime = mimeType.orEmpty()
+        val response = rpc.createContent(CreateContentRequest { this.mimeType = mime })
+        return@observedOperation CreatedContent(
+            contentId = response.contentId ?: ContentId { rawValue = ByteArray(0) },
+            uploadUrl = response.uploadUrl,
+            downloadUrl = response.downloadUrl,
+        )
+
+        }) }
+    override suspend fun upload(uploadUrl: String, bytes: ByteArray): Unit = socialTelemetry.measure("remote_content", "upload") { observer.measure("content_upload", bytes.size.toLong()) { (run observedOperation@ {
+        require(bytes.size <= MAX_TRANSFER_BYTES) { "upload exceeds 16 MiB" }
+        withTimeout(30_000) { transfers.withPermit {
+        httpClient.put(uploadUrl) {
+            expectSuccess = true
+            setBody(bytes)
+            onUpload { sent, total ->
+                uploads.update { (it + (uploadUrl to TransferProgress(sent, total ?: bytes.size.toLong()))).entries.toList().takeLast(256).associate { it.toPair() } }
+            }
+        }
+        } }
+
+        }) } }
+    override suspend fun download(downloadUrl: String): DownloadedContent = socialTelemetry.measure("remote_content", "download") { observer.measure("content_download") { (run observedOperation@ {
+        val started = kotlin.time.TimeSource.Monotonic.markNow()
+        var firstByte = false
+        return@observedOperation withTimeout(30_000) {
+        transfers.withPermit {
+            httpClient.prepareGet(downloadUrl) {
+                expectSuccess = true
+                onDownload { received, total ->
+                    if (received > 0 && !firstByte) {
+                        firstByte = true
+                        observer.record("content_first_byte", seconds = started.elapsedNow().inWholeNanoseconds / 1e9, bytes = total ?: 0)
+                    }
+                    downloads.update { (it + (downloadUrl to TransferProgress(received, total ?: 0L))).entries.toList().takeLast(256).associate { it.toPair() } }
+                }
+            }.execute { response ->
+                val bytes = response.body<ByteReadChannel>().readRemaining(MAX_TRANSFER_BYTES + 1L).readByteArray()
+                require(bytes.size <= MAX_TRANSFER_BYTES) { "download exceeds 16 MiB" }
+                DownloadedContent(bytes, response.contentType()?.toString())
+            }
+        }
+    }
+
+
+        }) } }
+    override suspend fun upload(bytes: ByteArray, mimeType: String?): CreatedContent = socialTelemetry.measure("remote_content", "upload") { (run observedOperation@ {
+        val created = createContent(mimeType)
+        upload(created.uploadUrl, bytes)
+        return@observedOperation created
+
+        }) }
+
+
     private val rpc = RemoteContentServiceRpc(rpcClient)
 
     private val uploads = MutableStateFlow<Map<String, TransferProgress>>(emptyMap())
     private val downloads = MutableStateFlow<Map<String, TransferProgress>>(emptyMap())
 
-    override suspend fun createContent(mimeType: String?): CreatedContent = socialTelemetry.measure("remote_content", "createContent") {
-        val mime = mimeType.orEmpty()
-        val response = rpc.createContent(CreateContentRequest { this.mimeType = mime })
-        return@measure CreatedContent(
-            contentId = response.contentId ?: ContentId { rawValue = ByteArray(0) },
-            uploadUrl = response.uploadUrl,
-            downloadUrl = response.downloadUrl,
-        )
-    }
 
-    override suspend fun upload(uploadUrl: String, bytes: ByteArray): Unit = socialTelemetry.measure("remote_content", "upload") {
-        val started = TimeSource.Monotonic.markNow()
-        var outcome = "success"
-        try { withTimeout(30_000) {
-        val response = httpClient.put(uploadUrl) {
-            setBody(bytes)
-            onUpload { sent, total ->
-                uploads.update { it + (uploadUrl to TransferProgress(sent, total ?: bytes.size.toLong())) }
-            }
-        }
-        result(socialHttpResult(response.status.value))
-        socialTelemetry.event("remote_content", "upload", result = socialHttpResult(response.status.value), kind = "bytes", value = bytes.size.toDouble())
-        check(response.status.value in 200..299) { "Content upload rejected" }
-        } } catch (cancelled: CancellationException) { outcome = "cancelled"; throw cancelled }
-        catch (failure: Exception) { outcome = "failure"; throw failure }
-        finally { observer.record("content_upload", outcome, started.elapsedNow().inWholeNanoseconds / 1e9, bytes = bytes.size.toLong()) }
-    }
+    private val transfers = Semaphore(4)
 
-    override suspend fun download(downloadUrl: String): DownloadedContent = socialTelemetry.measure("remote_content", "download") {
-        val started = TimeSource.Monotonic.markNow()
-        var firstByte = false
-        var size = 0L
-        var outcome = "success"
-        try { withTimeout(30_000) {
-        val response: HttpResponse = httpClient.get(downloadUrl) {
-            onDownload { received, total ->
-                if (received > 0 && !firstByte) {
-                    firstByte = true
-                    observer.record("content_first_byte", seconds = started.elapsedNow().inWholeNanoseconds / 1e9, bytes = total ?: 0)
-                }
-                downloads.update { it + (downloadUrl to TransferProgress(received, total ?: 0L)) }
-            }
-        }
-        result(socialHttpResult(response.status.value))
-        check(response.status.value in 200..299) { "Content download rejected" }
-        val bytes = response.body<ByteArray>()
-        size = bytes.size.toLong()
-        socialTelemetry.event("remote_content", "download", result = socialHttpResult(response.status.value), kind = "bytes", value = size.toDouble())
-        DownloadedContent(
-            bytes = bytes,
-            mimeType = response.contentType()?.toString(),
-        )
-        } } catch (cancelled: CancellationException) { outcome = "cancelled"; throw cancelled }
-        catch (failure: Exception) { outcome = "failure"; throw failure }
-        finally { observer.record("content_download", outcome, started.elapsedNow().inWholeNanoseconds / 1e9, bytes = size) }
-    }
-
-    override suspend fun upload(bytes: ByteArray, mimeType: String?): CreatedContent = socialTelemetry.measure("remote_content", "upload") {
-        val created = createContent(mimeType)
-        upload(created.uploadUrl, bytes)
-        return@measure created
-    }
 
     override fun watchUpload(uploadUrl: String): Flow<TransferProgress?> =
         uploads.map { it[uploadUrl] }.distinctUntilChanged()
@@ -156,3 +157,5 @@ class RemoteContentClientImpl(
     override fun watchDownload(downloadUrl: String): Flow<TransferProgress?> =
         downloads.map { it[downloadUrl] }.distinctUntilChanged()
 }
+
+private const val MAX_TRANSFER_BYTES = 16 * 1024 * 1024

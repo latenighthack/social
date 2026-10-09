@@ -5,10 +5,10 @@ public typealias MessageActionHandler = (MessageAction) -> Void
 /// A UIView that renders a single message's Component tree. Point it at a `MessageComponent`
 /// and a `MessageTheme`; it builds the native subview hierarchy and sizes to its content.
 public final class MessageComponentView: UIView {
-    public init(component: MessageComponent, theme: MessageTheme = .incoming, onAction: MessageActionHandler? = nil) {
+    public init(component: MessageComponent, theme: MessageTheme = .incoming, onAction: MessageActionHandler? = nil, imageLoader: MessageImageLoader = URLSessionMessageImageLoader.shared) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        let renderer = MessageRenderer(theme: theme, onAction: onAction)
+        let renderer = MessageRenderer(theme: theme, onAction: onAction, imageLoader: imageLoader)
         let content = renderer.build(component, inOverlay: false, axis: .vertical, textAlign: .natural)
         content.translatesAutoresizingMaskIntoConstraints = false
         addSubview(content)
@@ -29,8 +29,17 @@ public final class MessageComponentView: UIView {
 struct MessageRenderer {
     let theme: MessageTheme
     let onAction: MessageActionHandler?
+    let imageLoader: MessageImageLoader
 
     func build(_ component: MessageComponent, inOverlay: Bool, axis: NSLayoutConstraint.Axis, textAlign: NSTextAlignment) -> UIView {
+        let view = buildContents(component, inOverlay: inOverlay, axis: axis, textAlign: textAlign)
+        guard component.hasAction, let handler = onAction else { return view }
+        if case .button? = component.contents { return view }
+        let wrapper = AttachedActionView(view, action: component.action, handler: handler)
+        return wrapper
+    }
+
+    func buildContents(_ component: MessageComponent, inOverlay: Bool, axis: NSLayoutConstraint.Axis, textAlign: NSTextAlignment) -> UIView {
         switch component.contents {
         case .container(let container):
             return buildContainer(component, container, inOverlay: inOverlay, textAlign: textAlign)
@@ -216,7 +225,10 @@ struct MessageRenderer {
     // MARK: leaves
 
     private func buildText(_ text: MessageText, inOverlay: Bool, textAlign: NSTextAlignment) -> UIView {
-        let label = UILabel()
+        let label = MessageActionLabel(frame: .zero)
+        label.onAction = onAction
+        label.imageLoader = imageLoader
+        label.accessibilityLabel = MessagePreviewView.redactedText(text)
         label.numberOfLines = 0
         label.textAlignment = textAlign
         // A multiline UILabel has no intrinsic width on its own, so a bubble that hugs it is
@@ -231,7 +243,7 @@ struct MessageRenderer {
             label.textColor = color
             label.font = font
         } else {
-            label.attributedText = attributedString(text, baseColor: color, baseFont: font)
+            label.attributedText = attributedString(text, baseColor: color, baseFont: font, label: label)
         }
         switch text.style {
         case .title:
@@ -248,7 +260,7 @@ struct MessageRenderer {
 
     private func buildImage(_ image: MessageImageContent) -> UIView {
         let ref = image.image
-        let imageView = UIImageView()
+        let imageView = LoadingMessageImageView(reference: ref, loader: imageLoader)
         imageView.translatesAutoresizingMaskIntoConstraints = false
         imageView.backgroundColor = UIColor(argb: ref.previewColor)
         imageView.contentMode = .scaleAspectFill
@@ -257,7 +269,7 @@ struct MessageRenderer {
 
         switch image.style {
         case .small:
-            return fixedImage(imageView, width: 64, height: 64, corner: 8)
+            return fixedImage(imageView, width: 64, height: 64 / aspect, corner: 8)
         case .circular:
             return fixedImage(imageView, width: 64, height: 64, corner: 32)
         case .medium:
@@ -349,37 +361,53 @@ struct MessageRenderer {
 
     // MARK: text styling
 
-    private func attributedString(_ text: MessageText, baseColor: UIColor, baseFont: UIFont) -> NSAttributedString {
+    private func attributedString(_ text: MessageText, baseColor: UIColor, baseFont: UIFont, label: MessageActionLabel) -> NSAttributedString {
         let string = NSMutableAttributedString(
-            string: text.text,
+            string: MessagePreviewView.redactedText(text),
             attributes: [.foregroundColor: baseColor, .font: baseFont]
         )
-        let full = text.text as NSString
         for inline in text.inlines {
-            let start = max(0, min(Int(inline.offset), full.length))
-            let length = max(0, min(Int(inline.length), full.length - start))
-            if length == 0 { continue }
-            let range = NSRange(location: start, length: length)
+            let range = MessageInlineRanges.range(text.text, offset: inline.offset, length: inline.length)
+            if range.length == 0 { continue }
             guard let rule = inline.rule.contents else { continue }
             switch rule {
             case .bold:
-                string.addAttribute(.font, value: bold(baseFont), range: range)
+                applyFontTrait(.traitBold, to: string, range: range, fallback: baseFont)
             case .italic:
-                string.addAttribute(.font, value: italic(baseFont), range: range)
+                applyFontTrait(.traitItalic, to: string, range: range, fallback: baseFont)
             case .strikethrough:
                 string.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range)
-            case .tappable:
+            case .tappable(let tappable):
+                if tappable.hasAction { label.actions.append((range, tappable.action)) }
                 string.addAttribute(.foregroundColor, value: theme.linkColor, range: range)
                 string.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
             case .userLink:
                 string.addAttribute(.foregroundColor, value: theme.linkColor, range: range)
-                string.addAttribute(.font, value: bold(baseFont), range: range)
+                applyFontTrait(.traitBold, to: string, range: range, fallback: baseFont)
             case .redaction:
+                label.redactions.append(range)
                 string.addAttribute(.backgroundColor, value: theme.redactionColor, range: range)
                 string.addAttribute(.foregroundColor, value: UIColor.clear, range: range)
-            case .icon:
-                break
+            case .icon(let icon):
+                let redacted = text.inlines.contains { other in
+                    guard case .redaction? = other.rule.contents else { return false }
+                    let hidden = MessageInlineRanges.range(text.text, offset: other.offset, length: other.length)
+                    return NSIntersectionRange(range, hidden).length > 0
+                }
+                if redacted { continue }
+                let attachment = NSTextAttachment()
+                attachment.bounds = CGRect(x: 0, y: baseFont.descender, width: baseFont.lineHeight, height: baseFont.lineHeight)
+                string.replaceCharacters(in: range, with: "\u{fffc}" + String(repeating: "\u{200b}", count: range.length - 1))
+                string.addAttribute(.attachment, value: attachment, range: NSRange(location: range.location, length: 1))
+                if let url = URL(string: icon.image.url) { label.icons.append((attachment, url)) }
             }
+        }
+        label.accessibilityCustomActions = label.actions.compactMap { range, _ in
+            guard let offset = (range.location..<NSMaxRange(range)).first(where: { position in
+                !label.redactions.contains(where: { NSLocationInRange(position, $0) })
+            }) else { return nil }
+            let name = (MessagePreviewView.redactedText(text) as NSString).substring(with: range)
+            return UIAccessibilityCustomAction(name: name) { [weak label] _ in label?.activate(offset: offset) ?? false }
         }
         return string
     }
@@ -403,14 +431,15 @@ struct MessageRenderer {
         }
     }
 
-    private func bold(_ font: UIFont) -> UIFont {
-        let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitBold)) ?? font.fontDescriptor
-        return UIFont(descriptor: descriptor, size: font.pointSize)
-    }
-
-    private func italic(_ font: UIFont) -> UIFont {
-        let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitItalic)) ?? font.fontDescriptor
-        return UIFont(descriptor: descriptor, size: font.pointSize)
+    private func applyFontTrait(_ trait: UIFontDescriptor.SymbolicTraits, to string: NSMutableAttributedString,
+                                range: NSRange, fallback: UIFont) {
+        var spans: [(NSRange, UIFont)] = []
+        string.enumerateAttribute(.font, in: range) { value, span, _ in
+            let font = value as? UIFont ?? fallback
+            let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(trait)) ?? font.fontDescriptor
+            spans.append((span, UIFont(descriptor: descriptor, size: font.pointSize)))
+        }
+        for (span, font) in spans { string.addAttribute(.font, value: font, range: span) }
     }
 
     private func textAlignment(_ alignment: Com_Latenighthack_Social_Messages_V1_Container.HorizontalAlignment) -> NSTextAlignment {
@@ -429,4 +458,53 @@ struct MessageRenderer {
         default: return .top
         }
     }
+}
+
+private final class AttachedActionView: UIView {
+    private var activation: MessageAccessibilityAction?
+    init(_ content: UIView, action: MessageAction, handler: @escaping MessageActionHandler) {
+        super.init(frame: .zero)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(content)
+        NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: leadingAnchor), content.trailingAnchor.constraint(equalTo: trailingAnchor),
+            content.topAnchor.constraint(equalTo: topAnchor), content.bottomAnchor.constraint(equalTo: bottomAnchor)])
+        let tap = ActionGesture { handler(action) }
+        tap.owner = self
+        addGestureRecognizer(tap)
+        let element = MessageAccessibilityAction(container: self) { handler(action) }
+        element.accessibilityLabel = "Activate message"
+        element.accessibilityTraits = .button
+        activation = element
+        accessibilityElements = [content, element]
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        activation?.accessibilityFrameInContainerSpace = bounds
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+}
+private final class MessageAccessibilityAction: UIAccessibilityElement {
+    private let handler: () -> Void
+    init(container: Any, handler: @escaping () -> Void) { self.handler = handler; super.init(accessibilityContainer: container) }
+    override func accessibilityActivate() -> Bool { handler(); return true }
+}
+private final class ActionGesture: UITapGestureRecognizer, UIGestureRecognizerDelegate {
+    private let handler: () -> Void
+    weak var owner: UIView?
+    init(_ handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(target: nil, action: nil)
+        addTarget(self, action: #selector(run))
+        delegate = self
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        var view = touch.view
+        while let child = view, child !== owner {
+            if child is UIControl || child is AttachedActionView { return false }
+            if let label = child as? MessageActionLabel, label.actionOffset(at: touch.location(in: label)) != nil { return false }
+            view = child.superview
+        }
+        return true
+    }
+    @objc private func run() { handler() }
 }

@@ -14,7 +14,7 @@ here before shipping a new feature.
 | 6 | social/rooms-domain | `RoomsKeyspaces.MEMBERSHIP` | any | member roster entries |
 | 7 | social/rooms-domain | `RoomsKeyspaces.MEMBER_PROFILES` | any | member profile associations |
 | 8 | social/rooms-domain | `RoomsKeyspaces.ACCOUNT_ROOMS` | account | synced room records |
-| 9 | social/messages-domain | `MessagesKeyspaces.MESSAGING` | any | single locker; messages ride as notifications |
+| 9 | social/messages-domain | `MessagesKeyspaces.MESSAGING` | any | one immutable signed locker per message; notifications accelerate discovery |
 | 10 | social/contacts-domain | `ContactsKeyspaces` | account | contact records |
 | 11 | social/typing-domain | `TypingKeyspaces` | any | typing signals |
 | 12 | social/read-receipts-domain | `ReadReceiptsKeyspaces` | any | read pointers |
@@ -26,3 +26,9 @@ here before shipping a new feature.
 | 18 | gwb/widgets-domain | `WidgetsKeyspaces.WIDGET_KV` | widget child room | agent notes/counters (locker id = sha256(key)) |
 | 19 | gwb (reserved) | — | — | reserved for widgets growth |
 | 20+ | unallocated | | | |
+
+## Signed-content labels
+
+Signature labels are separate from locker keyspaces: profile disclosure = 1, room-info disclosure = 2,
+message = 3, read receipt = 4, typing = 5, direct invite = 6. Receipt and typing signatures bind the
+claimed profile and room as well as the content; a shared room write key is not proof of authorship.

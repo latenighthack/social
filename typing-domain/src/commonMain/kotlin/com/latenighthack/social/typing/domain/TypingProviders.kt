@@ -12,14 +12,14 @@ import me.tatarka.inject.annotations.Provides
  * kotlin-inject bindings for the typing feature. Requires RoomsProviders in the component (the rooms
  * manager is a dependency).
  */
-interface TypingProviders : SocialTelemetryProviders {
+interface TypingProviders : com.latenighthack.social.runtime.SocialRuntimeProviders, SocialTelemetryProviders {
     @Provides
     @IntoSet
     fun typingObservabilityFeature(): SocialFeatureDescriptor = SocialFeatureDescriptor("typing")
 
     @Provides
     @SocialScope
-    fun typingManagerImpl(rooms: RoomsManager): TypingManagerImpl = TypingManagerImpl(rooms).observedBy(socialTelemetry())
+    fun typingManagerImpl(rooms: RoomsManager, myProfiles: com.latenighthack.social.profiles.domain.MyProfilesManager, tasks: com.latenighthack.social.runtime.SocialTaskScope, session: com.latenighthack.social.runtime.AccountSession): TypingManagerImpl = TypingManagerImpl(rooms, myProfiles, scope = tasks.scope, session = session).observedBy(socialTelemetry())
 
     @Provides
     fun typingManager(impl: TypingManagerImpl): TypingManager = impl

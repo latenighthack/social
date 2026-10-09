@@ -1,0 +1,8 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>SwallowedException:AuthenticateWithGoogleUseCase.kt$AuthenticateWithGoogleUseCase$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:AuthenticateWithGoogleUseCase.kt$AuthenticateWithGoogleUseCase$e: Exception</ID>
+  </CurrentIssues>
+</SmellBaseline>

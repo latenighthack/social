@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
  * hands that material to the `LockersClient`. Build the client from an [AccountKeySource]
  * wrapping this manager, then [start] the manager with that client.
  */
-interface AccountManager {
+interface AccountManager : com.latenighthack.social.runtime.AccountSession {
     val lifecycle: StateFlow<Lifecycle>
 
     /** Begin driving the lifecycle over [lockers]. Idempotent; resumable after [stop]. */
@@ -47,6 +47,12 @@ interface AccountManager {
      * lockers client via [AccountKeySource]. Throws if no identity exists yet.
      */
     suspend fun exportIdentity(): Identity
+
+    /** Encrypt account-owned secret material with a key bound to its record context. */
+    suspend fun protectSecret(context: String, plaintext: ByteArray): ByteArray
+
+    /** Decrypt account-owned material; authentication failure throws. */
+    suspend fun unprotectSecret(context: String, ciphertext: ByteArray): ByteArray
 
     /** An account's identity secret: its account id paired with the raw private key that backs it. */
     class Identity(val accountId: ByteArray, val privateKey: ByteArray)

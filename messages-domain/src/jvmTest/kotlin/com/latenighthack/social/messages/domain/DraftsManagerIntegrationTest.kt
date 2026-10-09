@@ -42,7 +42,7 @@ class DraftsManagerIntegrationTest {
     private suspend fun lockersClient(rpcClient: RpcClient): LockersClient =
         LockersClient.create(
             rpcClient = rpcClient,
-            database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate()),
+            database = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate()),
             keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
             keySource = FakeKeySource(),
             appVersion = Version(0, 0, 1),
@@ -54,7 +54,7 @@ class DraftsManagerIntegrationTest {
     fun `a draft's text is observable and replaced by a later set`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val lockers = lockersClient(server.rpcClient)
-            val delegate = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
+            val delegate = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
             val drafts = DraftsManagerImpl(delegate)
             drafts.prepare()
             delegate.open()
@@ -75,7 +75,7 @@ class DraftsManagerIntegrationTest {
     fun `attachments are added and removed without disturbing the text`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val lockers = lockersClient(server.rpcClient)
-            val delegate = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
+            val delegate = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
             val drafts = DraftsManagerImpl(delegate)
             drafts.prepare()
             delegate.open()
@@ -108,7 +108,7 @@ class DraftsManagerIntegrationTest {
     fun `clearing a room's draft leaves other rooms untouched`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val lockers = lockersClient(server.rpcClient)
-            val delegate = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
+            val delegate = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
             val drafts = DraftsManagerImpl(delegate)
             drafts.prepare()
             delegate.open()
@@ -132,7 +132,7 @@ class DraftsManagerIntegrationTest {
     fun `a saved draft is written through to the persistent draft store`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val lockers = lockersClient(server.rpcClient)
-            val delegate = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
+            val delegate = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
             val drafts = DraftsManagerImpl(delegate)
             drafts.prepare()
             delegate.open()

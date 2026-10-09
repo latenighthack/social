@@ -4,36 +4,50 @@
 
 package com.latenighthack.social.remotecontent.domain
 
+import com.latenighthack.social.runtime.OperationsObserver
+import com.latenighthack.social.runtime.record
+import com.latenighthack.social.runtime.measure
+
 import com.latenighthack.social.observability.*
+
+import kotlinx.coroutines.flow.asStateFlow
 
 import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.remotecontent.v1.ContentId
 import com.latenighthack.social.remotecontent.v1.PendingUpload
-import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.*
+import com.latenighthack.social.remotecontent.v1.copy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Clock
-import kotlin.time.TimeSource
-import com.latenighthack.social.runtime.OperationsObserver
-import com.latenighthack.social.runtime.record
 
 /**
  * Where an upload is in its lifecycle, from enqueued through the background transfer to done. This is
  * the durable-queue state; byte-level transfer progress is observed separately via
  * [RemoteContentClient.watchUpload].
  */
+/** Stable failure categories; never expose capability URLs or raw transport exception messages. */
+enum class UploadFailure { AUTHORIZATION_REJECTED, INVALID_CONTENT, PERMANENT_REJECTION, RETRIES_EXHAUSTED }
+
 sealed interface UploadStatus {
     /** Enqueued and waiting — either not yet attempted, or between retries after a failed attempt. */
     data object Queued : UploadStatus
@@ -43,6 +57,9 @@ sealed interface UploadStatus {
 
     /** The bytes have been fully uploaded and are being served from the download URL. */
     data object Completed : UploadStatus
+
+    /** Bytes are retained durably; background retry is paused until the host chooses an action. */
+    data class Failed(val reason: UploadFailure) : UploadStatus
 }
 
 /** An observable upload: its content id, the URL it is served from, and its current [status]. */
@@ -55,7 +72,7 @@ data class Upload(
 /**
  * Durable, set-and-forget uploads. [enqueue] mints the content id + URL synchronously (so the caller
  * gets a usable download URL immediately), durably queues the bytes, and returns — it does NOT wait
- * for the transfer, which happens in the background and is retried until it lands, surviving restarts.
+ * for the transfer, which happens in the background and is retried up to eight attempts, surviving restarts. Permanent or exhausted failures retain their bytes and are exposed as [UploadStatus.Failed].
  * The returned download URL is valid from the moment it is returned, though it 404s until the bytes
  * have been uploaded, so consumers must treat it as eventually consistent. [watchUploads] /
  * [watchUpload] expose each upload's progress and status so a UI can reflect the background transfer.
@@ -67,6 +84,12 @@ interface RemoteContentUploader {
      * [watchUpload].
      */
     suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload
+
+    /** Retry a failed upload using the same authorization. Expired authorization requires reattachment. */
+    suspend fun retry(contentId: ContentId): Unit = throw UnsupportedOperationException("retry is unavailable")
+
+    /** Delete the retained bytes of a failed upload. */
+    suspend fun discardFailed(contentId: ContentId): Unit = throw UnsupportedOperationException("discard is unavailable")
 
     /** The uploads known this session (in-flight, retrying, or recently completed). */
     fun watchUploads(): Flow<List<Upload>>
@@ -88,12 +111,26 @@ class RemoteContentUploaderImpl(
     private val database: Database,
     private val retryIntervalMillis: Long = DEFAULT_RETRY_INTERVAL_MILLIS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val session: AccountSession? = null,
     private val observer: OperationsObserver = OperationsObserver.NONE,
 ) : RemoteContentUploader, DomainLifecycle, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
+    override suspend fun prepare() = socialTelemetry.measure("remote_content", "prepare") { (run observedOperation@ {
+        store.prepare()
 
+        }) }
+    override fun stop() = run { socialTelemetry.event("remote_content", "stop"); (run observedOperation@ {
+        runner.stop()
+
+        }) }
+    override suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload = socialTelemetry.measure("remote_content", "enqueue") { (withSession { enqueueOwned(bytes, mimeType) }) }
+
+
+    private var loadedOwner: String? = null
+    private var loadedGeneration = -1L
     private val store = PendingUploadStore(database)
+    private val stateMutex = Mutex()
 
     // Observable status per upload, keyed by content id bytes. Completed entries are retained (bytes
     // already dropped from the durable store, so this is metadata only) so observers see completion.
@@ -103,58 +140,114 @@ class RemoteContentUploaderImpl(
     // out the retry interval. Conflated: coalesced nudges are fine since the loop drains everything.
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
-    private var job: Job? = null
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
 
-    override suspend fun prepare(): Unit = socialTelemetry.measure("remote_content", "prepare") {
-        store.prepare()
-    }
 
     /** Launches the background drain loop. Idempotent; resumes a queue left by a prior [stop]. */
     fun start() {
-        if (job?.isActive == true) return
-        job = scope.launch { socialTelemetry.measure("remote_content", "start") { run() } }
+        runner.start { recoverTask(mutableTaskHealth) { run() } }
     }
 
     /** [DomainLifecycle] entry point; the [lockers] client is unused (see the class doc). */
     override fun start(lockers: LockersClient) = start()
 
-    override fun stop() {
-        socialTelemetry.event("remote_content", "stop")
-        job?.cancel()
-        job = null
+
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
-    override suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload = socialTelemetry.measure("remote_content", "enqueue") {
+
+    private suspend fun <T> withSession(block: suspend () -> T): T = if (session == null) block() else session.withAccount(block)
+
+    private suspend fun enqueueOwned(bytes: ByteArray, mimeType: String?): Upload {
         // Mint the id + URLs up front; this is the only step that needs the server to be reachable,
         // and it hands back the download URL before the bytes are transferred.
+        require(bytes.size <= 16 * 1024 * 1024) { "upload exceeds 16 MiB" }
+        val owner = session.currentOwner()
         val created = client.createContent(mimeType)
+        session?.requireOperationOwner()
+        val upload = Upload(created.contentId, created.downloadUrl, UploadStatus.Queued)
+        stateMutex.withLock {
+        check(session.currentOwner() == owner) { "account changed during upload creation" }
+        if (loadedOwner != owner || loadedGeneration != (session?.generation?.value ?: 0L)) {
+            uploads.value = emptyMap(); loadedOwner = owner; loadedGeneration = session?.generation?.value ?: 0L
+        }
         store.savePending(PendingUpload {
             contentId = created.contentId
+            ownerAccountId = owner
             uploadUrl = created.uploadUrl
             downloadUrl = created.downloadUrl
             this.bytes = bytes
             createdAtMillis = Clock.System.now().toEpochMilliseconds()
         })
-        val upload = Upload(created.contentId, created.downloadUrl, UploadStatus.Queued)
-        uploads.update { it + (created.contentId.rawValue.toList() to upload) }
+        uploads.update { (it + (created.contentId.rawValue.toList() to upload)).entries.toList().takeLast(1024).associate { it.toPair() } }
+        }
         wake.trySend(Unit)
-        return@measure upload
+        return upload
+    }
+
+    override suspend fun retry(contentId: ContentId): Unit = withSession {
+        stateMutex.withLock {
+            val pending = store.getPending(contentId) ?: return@withLock
+            check(session.owns(pending.ownerAccountId) && pending.failureReason.isNotEmpty()) { "upload is not an owned failure" }
+            store.savePending(pending.copy(attempts = 0, failureReason = ""))
+            uploads.update { (it + (contentId.rawValue.toList() to Upload(contentId, pending.downloadUrl, UploadStatus.Queued))).entries.toList().takeLast(1024).associate { entry -> entry.toPair() } }
+        }
+        wake.trySend(Unit)
+        Unit
+    }
+
+    override suspend fun discardFailed(contentId: ContentId): Unit = withSession {
+        stateMutex.withLock {
+            val pending = store.getPending(contentId) ?: return@withLock
+            check(session.owns(pending.ownerAccountId) && pending.failureReason.isNotEmpty()) { "upload is not an owned failure" }
+            store.deletePending(contentId)
+            uploads.update { it - setOf(contentId.rawValue.toList()) }
+        }
     }
 
     override fun watchUploads(): Flow<List<Upload>> =
-        uploads.map { it.values.toList() }.distinctUntilChanged()
+        combine(uploads, session.ownerChanges()) { map, owner -> if (owner != null && owner == loadedOwner && loadedGeneration == (session?.generation?.value ?: 0L)) map.values.toList() else emptyList() }.distinctUntilChanged()
 
     override fun watchUpload(contentId: ContentId): Flow<Upload?> =
-        uploads.map { it[contentId.rawValue.toList()] }.distinctUntilChanged()
+        combine(uploads, session.ownerChanges()) { map, owner -> if (owner != null && owner == loadedOwner && loadedGeneration == (session?.generation?.value ?: 0L)) map[contentId.rawValue.toList()] else null }.distinctUntilChanged()
 
     private suspend fun run() {
+        session.ownerChanges().collectLatest { owner ->
+            stateMutex.withLock {
+                val generation = session?.generation?.value ?: 0L
+                if (loadedOwner != owner || loadedGeneration != generation) uploads.value = emptyMap()
+                loadedOwner = owner; loadedGeneration = generation
+            }
+            if (owner != null && session != null) store.pages().collect { page ->
+                stateMutex.withLock {
+                    check(session.currentOwner() == owner)
+                    for (row in page) {
+                        if (row.ownerAccountId.isNotEmpty()) continue
+                        if (session.owns("")) store.savePending(row.copy(ownerAccountId = owner))
+                        else row.contentId?.let { store.deletePending(it) }
+                    }
+                }
+            }
+            if (owner != null) withSession {
+                if (session.currentOwner() != owner) throw CancellationException("account changed")
+                runForOwner()
+            }
+        }
+    }
+
+    private suspend fun runForOwner() {
         // Re-surface uploads that survived a restart as queued, so observers see them resume. Anything
         // already tracked in memory (freshly enqueued) wins over the persisted snapshot.
-        val resumed = store.getAllPending().mapNotNull { pending ->
-            val contentId = pending.contentId ?: return@mapNotNull null
-            contentId.rawValue.toList() to Upload(contentId, pending.downloadUrl, UploadStatus.Queued)
-        }.toMap()
-        uploads.update { resumed + it }
+        store.pages().collect { page ->
+            val resumed = page.filter { session.owns(it.ownerAccountId) }.mapNotNull { pending ->
+                val id = pending.contentId ?: return@mapNotNull null
+                id.rawValue.toList() to Upload(id, pending.downloadUrl, failureStatus(pending) ?: UploadStatus.Queued)
+            }.toMap()
+            stateMutex.withLock { uploads.update { (resumed + it).entries.toList().takeLast(1024).associate { it.toPair() } } }
+        }
         while (true) {
             drainOnce()
             // Wait for a freshly enqueued upload, or fall through after the interval to retry
@@ -164,46 +257,81 @@ class RemoteContentUploaderImpl(
     }
 
     private suspend fun drainOnce() {
-        val pendingUploads = store.getAllPending().sortedBy { it.createdAtMillis }
+        var queueDepth = 0
+        var unknownAge = 0
+        var oldestAge = 0.0
         val now = Clock.System.now().toEpochMilliseconds()
-        observer.record("content_queue", seconds = pendingUploads.firstOrNull { it.createdAtMillis > 0 }?.let { (now - it.createdAtMillis).coerceAtLeast(0) / 1000.0 } ?: 0.0, depth = pendingUploads.size)
-        observer.record("content_unknown_age", depth = pendingUploads.count { it.createdAtMillis <= 0 })
-        socialTelemetry.event("remote_content", "queue", kind = "queue_depth", value = pendingUploads.size.toDouble())
-        socialTelemetry.event("remote_content", "queue", kind = "queue_age", value = pendingUploads.firstOrNull { it.createdAtMillis > 0 }?.let { (now - it.createdAtMillis).coerceAtLeast(0) / 1000.0 } ?: 0.0)
-        for (pending in pendingUploads) {
-            val contentId = pending.contentId ?: continue
-            val key = contentId.rawValue.toList()
-            setStatus(key, UploadStatus.Uploading)
-            val started = TimeSource.Monotonic.markNow()
-            if (pending.createdAtMillis > 0) observer.record("content_wait", seconds = (now - pending.createdAtMillis).coerceAtLeast(0) / 1000.0, depth = pendingUploads.size)
-            var outcome = "success"
-            try {
-                // Byte-level progress is tracked by the transport and observed via watchUpload(uploadUrl).
-                client.upload(pending.uploadUrl, pending.bytes)
-                store.deletePending(contentId)
-                setStatus(key, UploadStatus.Completed)
-            } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
-                outcome = "failure"
-                setStatus(key, UploadStatus.Queued)
-            } catch (e: CancellationException) {
-                outcome = "cancelled"
-                throw e
-            } catch (_: Exception) {
-                socialTelemetry.event("remote_content", "retry", "retry")
-                outcome = "failure"
-                // Keep the entry for the next pass; a transient network/server error must not drop it.
-                setStatus(key, UploadStatus.Queued)
-            } finally {
-                observer.record("content_processing", outcome, started.elapsedNow().inWholeNanoseconds / 1e9, bytes = pending.bytes.size.toLong())
+        store.pages().collect { page ->
+            val own = page.filter { session.owns(it.ownerAccountId) && it.failureReason.isEmpty() }
+            queueDepth += own.size
+            unknownAge += own.count { it.createdAtMillis <= 0 }
+            oldestAge = maxOf(oldestAge, own.filter { it.createdAtMillis > 0 }.maxOfOrNull { (now - it.createdAtMillis).coerceAtLeast(0) / 1000.0 } ?: 0.0)
+            for (batch in page.filter { session.owns(it.ownerAccountId) && it.failureReason.isEmpty() }.chunked(4)) kotlinx.coroutines.coroutineScope {
+                batch.map { pending -> launch { transfer(pending) } }.forEach { it.join() }
             }
+        }
+        observer.record("content_queue", seconds = oldestAge, depth = queueDepth)
+        observer.record("content_unknown_age", depth = unknownAge)
+        socialTelemetry.event("remote_content", "queue", kind = "queue_depth", value = queueDepth.toDouble())
+        socialTelemetry.event("remote_content", "queue", kind = "queue_age", value = oldestAge)
+    }
+
+    // Transport adapters may throw platform-specific failures; cancellation is handled first.
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun transfer(pending: com.latenighthack.social.remotecontent.v1.PendingUpload) {
+        observer.measure("content_processing", pending.bytes.size.toLong()) {
+            if (pending.createdAtMillis > 0) observer.record("content_wait", seconds = (Clock.System.now().toEpochMilliseconds() - pending.createdAtMillis).coerceAtLeast(0) / 1000.0)
+            (run observedOperation@ {
+        val contentId = pending.contentId ?: return@observedOperation
+        val key = contentId.rawValue.toList()
+        session?.requireOperationOwner()
+        setStatus(key, UploadStatus.Uploading)
+        try {
+            kotlinx.coroutines.withTimeout(30_000) { client.upload(pending.uploadUrl, pending.bytes) }
+            session?.requireOperationOwner()
+            store.deletePending(contentId)
+            setStatus(key, UploadStatus.Completed)
+        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            recordFailure(pending, null)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: IllegalArgumentException) {
+            recordFailure(pending, UploadFailure.INVALID_CONTENT)
+        } catch (failure: io.ktor.client.plugins.ClientRequestException) {
+            val permanent = when (failure.response.status.value) {
+                401, 403 -> UploadFailure.AUTHORIZATION_REJECTED
+                408, 429 -> null
+                else -> UploadFailure.PERMANENT_REJECTION
+            }
+            recordFailure(pending, permanent)
+        } catch (_: Exception) {
+            recordFailure(pending, null)
+        }
+
+        })
         }
     }
 
-    private fun setStatus(key: List<Byte>, status: UploadStatus) {
-        uploads.update { map -> map[key]?.let { map + (key to it.copy(status = status)) } ?: map }
+
+    private fun failureStatus(pending: PendingUpload): UploadStatus.Failed? = if (pending.failureReason.isEmpty()) null else
+        UploadStatus.Failed(UploadFailure.entries.firstOrNull { it.name == pending.failureReason } ?: UploadFailure.RETRIES_EXHAUSTED)
+
+    private suspend fun recordFailure(pending: PendingUpload, permanent: UploadFailure?) {
+        session?.requireOperationOwner()
+        socialTelemetry.event("remote_content", "retry", "retry")
+        val attempts = (pending.attempts + 1).coerceAtMost(MAX_ATTEMPTS)
+        val reason = permanent ?: UploadFailure.RETRIES_EXHAUSTED.takeIf { attempts >= MAX_ATTEMPTS }
+        store.savePending(pending.copy(attempts = attempts, failureReason = reason?.name ?: ""))
+        pending.contentId?.let { setStatus(it.rawValue.toList(), reason?.let { UploadStatus.Failed(it) } ?: UploadStatus.Queued) }
+    }
+
+    private suspend fun setStatus(key: List<Byte>, status: UploadStatus) = stateMutex.withLock {
+        uploads.update { map -> map[key]?.let { (map + (key to it.copy(status = status))).entries.toList().takeLast(1024).associate { it.toPair() } } ?: map }
     }
 
     private companion object {
+        const val MAX_ATTEMPTS = 8L
         const val DEFAULT_RETRY_INTERVAL_MILLIS = 15_000L
     }
 }

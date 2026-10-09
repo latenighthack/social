@@ -21,7 +21,7 @@ detekt = "1.23.7"
 mavenPublish = "0.30.0"
 
 # login-service: JWT/JWKS verification for Apple/Google id tokens + SMTP via Jakarta Mail.
-nimbusJoseJwt = "9.40"
+nimbusJoseJwt = "10.0.2"
 angusMail = "2.0.3"
 # login-domain androidMain: native Google sign-in via Credential Manager + Google Identity.
 androidxCredentials = "1.3.0"

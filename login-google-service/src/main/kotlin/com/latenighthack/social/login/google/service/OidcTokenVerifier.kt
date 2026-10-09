@@ -1,7 +1,7 @@
 package com.latenighthack.social.login.google.service
 
 import com.latenighthack.social.observability.*
-import com.nimbusds.jose.KeySourceException
+
 import com.latenighthack.social.login.core.service.SocialTokenVerifier
 import com.latenighthack.social.login.core.service.VerifiedClaims
 import com.nimbusds.jose.JWSAlgorithm
@@ -10,9 +10,9 @@ import com.nimbusds.jose.jwk.source.JWKSourceBuilder
 import com.nimbusds.jose.proc.JWSVerificationKeySelector
 import com.nimbusds.jose.proc.SecurityContext
 import com.nimbusds.jwt.proc.DefaultJWTProcessor
-import java.net.URL
 import com.nimbusds.jose.util.DefaultResourceRetriever
 import com.nimbusds.jose.util.ResourceRetriever
+import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -30,8 +30,32 @@ class OidcTokenVerifier(
     observeRefresh: (String, Long) -> Unit = { _, _ -> },
 ) : SocialTokenVerifier, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+
+    override suspend fun verify(idToken: String): VerifiedClaims?  = run { socialTelemetry.event("login", "verify"); (withContext(Dispatchers.IO) {
+        val claims = try {
+            processor.process(idToken, null)
+        } catch (e: Exception) {
+            return@withContext null
+        }
+        if (claims.issuer !in issuers) return@withContext null
+        val audience = claims.audience ?: emptyList()
+        if (audience.none { it in audiences }) return@withContext null
+        val subject = claims.subject ?: return@withContext null
+        VerifiedClaims(
+            subject = subject,
+            nonce = claims.getClaim("nonce") as? String,
+            displayName = claims.getClaim("name") as? String,
+            photoUrl = claims.getClaim("picture") as? String,
+            email = claims.getClaim("email") as? String,
+        )
+    }) }
+
+
+    init { require(audiences.isNotEmpty()) { "OIDC audiences must be configured" } }
+
     private val processor = DefaultJWTProcessor<SecurityContext>().apply {
         val delegate = DefaultResourceRetriever(3_000, 5_000, 256 * 1024)
+        @Suppress("TooGenericExceptionCaught")
         val retriever = ResourceRetriever { url ->
             val start = System.nanoTime()
             var outcome = "success"
@@ -43,24 +67,4 @@ class OidcTokenVerifier(
         jwsKeySelector = JWSVerificationKeySelector(JWSAlgorithm.RS256, source)
     }
 
-    override suspend fun verify(idToken: String): VerifiedClaims? = withContext(Dispatchers.IO) {
-        val claims = try {
-            processor.process(idToken, null)
-        } catch (e: Exception) {
-            // JWKS dependency failure is operationally distinct from an invalid token.
-            if (e is KeySourceException) socialTelemetry.event("login", "verify", "error", provider = "google")
-            return@withContext null
-        }
-        if (claims.issuer !in issuers) return@withContext null
-        val audience = claims.audience ?: emptyList()
-        if (audiences.isNotEmpty() && audience.none { it in audiences }) return@withContext null
-        val subject = claims.subject ?: return@withContext null
-        VerifiedClaims(
-            subject = subject,
-            nonce = claims.getClaim("nonce") as? String,
-            displayName = claims.getClaim("name") as? String,
-            photoUrl = claims.getClaim("picture") as? String,
-            email = claims.getClaim("email") as? String,
-        )
-    }
 }

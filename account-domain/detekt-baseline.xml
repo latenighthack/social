@@ -1,0 +1,8 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>TooManyFunctions:AccountManagerImpl.kt$AccountManagerImpl : AccountManagerDomainLifecycleSocialTelemetryOwner</ID>
+    <ID>UnusedParameter:AccountManagerImpl.kt$AccountManagerImpl$lockerId: LockerId</ID>
+  </CurrentIssues>
+</SmellBaseline>

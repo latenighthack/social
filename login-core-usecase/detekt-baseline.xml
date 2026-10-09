@@ -1,0 +1,8 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues></ManuallySuppressedIssues>
+  <CurrentIssues>
+    <ID>TooGenericExceptionCaught:BindCurrentAccountUseCase.kt$BindCurrentAccountUseCase$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:LoginResults.kt$e: Exception</ID>
+  </CurrentIssues>
+</SmellBaseline>

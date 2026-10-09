@@ -4,7 +4,7 @@ Because the server does not gate reads, any key material handed to a recipient m
 that **only the intended recipient profile can read it**. This ECIES-style sealed envelope is
 implemented in `Sealing` (`social-common-domain`, using ktcrypto's ECDH and AES-GCM) and is shared by
 two paths: the group `JoinService` seals each per-joiner grant with it (see [groups.md](groups.md)),
-and the rendezvous bootstrap seals its invite into the peer's inbox.
+and direct rendezvous/group invites seal a profile-signed invite into the peer's inbox.
 
 ## The inbox (rendezvous bootstrap)
 
@@ -12,12 +12,13 @@ Each profile's own room carries an unlocked **inbox** keyspace (`4`). Because pr
 locked only at the profile-content keyspace (`3`), the inbox keyspace is open: anyone who knows a
 profile id can compute `RoomKeying.publicKeyed(profileId)` and write a locker there. That write
 stays open (no signing key is routed for another profile's room), so no authorization is needed to
-deliver a rendezvous invite — but the payload is sealed, so delivery ≠ disclosure. (Groups no longer
-use the inbox; their key travels through the server-mediated `JoinService`.)
+deliver an invite. The sealed plaintext is `SignedContent` (label 6) signed by the inviter profile,
+so encryption does not substitute for sender authentication. Invite codes instead return a grant
+through the server-mediated `JoinService`.
 
 The invite locker id is `sha256(envelope.ephemeral_public_key)`: unique per invite (the ephemeral
-key is random) and **unlinkable** — an observer of the inbox learns nothing about which room or
-inviter it concerns.
+key is random). Ciphertext hides the room and inviter payload; transport and timing metadata
+remain visible to the host.
 
 ## Envelope format (`SealedEnvelope`)
 
@@ -53,8 +54,8 @@ ECDH secret, then `Sealing.unsealWith(secret, envelope)`.
 ## Delivery & discovery
 
 `RoomsManagerImpl` watches keyspace `4` on **each** of the user's profile rooms. New envelopes are
-unsealed with that profile's key; only rendezvous bootstrap invites arrive here now (a group grant is
-returned directly by the `JoinService.Join` RPC, not dropped in an inbox). Already-known rooms are
+unsealed with that profile's key and verified against the claimed inviter profile signature.
+Direct invites arrive here; code grants return through `JoinService.Join`. Already-known rooms are
 skipped (idempotent). Discovery of *who* to invite (learning a peer's `profileId`) is out of band.
 
 ## What is and isn't confidential

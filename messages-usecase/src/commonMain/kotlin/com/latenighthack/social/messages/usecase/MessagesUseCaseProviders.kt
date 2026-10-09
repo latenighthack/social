@@ -12,8 +12,8 @@ import me.tatarka.inject.annotations.Provides
  */
 interface MessagesUseCaseProviders {
     @Provides
-    fun sendMessageUseCase(messages: MessagesManager, drafts: DraftsManager): SendMessageUseCase =
-        SendMessageUseCase(messages, drafts)
+    fun sendMessageUseCase(messages: MessagesManager, drafts: DraftsManager, session: com.latenighthack.social.runtime.AccountSession): SendMessageUseCase =
+        SendMessageUseCase(messages, drafts, session)
 
     @Provides
     fun retryFailedMessageUseCase(messages: MessagesManager): RetryFailedMessageUseCase =

@@ -10,9 +10,11 @@ class StoredContent(val bytes: ByteArray, val mimeType: String?)
  * download and returns null until they have actually been uploaded.
  */
 interface ContentStore {
-    suspend fun create(id: ByteArray, mimeType: String?)
+    suspend fun create(id: ByteArray, mimeType: String?, uploadToken: ByteArray)
 
-    suspend fun put(id: ByteArray, bytes: ByteArray)
+    suspend fun put(id: ByteArray, bytes: ByteArray, uploadToken: ByteArray)
 
     suspend fun get(id: ByteArray): StoredContent?
 }
+
+class UploadRejected(val conflict: Boolean = false) : Exception("upload capability rejected")

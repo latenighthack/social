@@ -16,7 +16,10 @@ class Pbkdf2Hasher(
     val iterations: Int = DEFAULT_ITERATIONS,
     private val random: SecureRandom = SecureRandom(),
 ) {
+    init { require(iterations in 1..1_000_000) }
+
     fun hash(secret: String): Hashed {
+        require(secret.length <= 512)
         val salt = ByteArray(SALT_BYTES).also(random::nextBytes)
         return Hashed(derive(secret, salt, iterations), salt)
     }
@@ -26,8 +29,9 @@ class Pbkdf2Hasher(
         MessageDigest.isEqual(derive(secret, salt, iterations), expectedHash)
 
     private fun derive(secret: String, salt: ByteArray, iterations: Int): ByteArray {
+        require(iterations in 1..1_000_000 && salt.size == SALT_BYTES && secret.length <= 512)
         val spec = PBEKeySpec(secret.toCharArray(), salt, iterations, KEY_BITS)
-        return SecretKeyFactory.getInstance(ALGORITHM).generateSecret(spec).encoded
+        return try { SecretKeyFactory.getInstance(ALGORITHM).generateSecret(spec).encoded } finally { spec.clearPassword() }
     }
 
     class Hashed(val hash: ByteArray, val salt: ByteArray)

@@ -1,3 +1,5 @@
+@file:Suppress("TooGenericExceptionCaught")
+
 package com.latenighthack.social.observability
 
 import kotlinx.coroutines.CancellationException
@@ -18,7 +20,7 @@ interface SocialTelemetry {
 
 object NoopSocialTelemetry : SocialTelemetry {
     override val enabled = false
-    override fun record(observation: SocialObservation) {}
+    override fun record(observation: SocialObservation) = Unit
 }
 
 interface SocialSpanScope {

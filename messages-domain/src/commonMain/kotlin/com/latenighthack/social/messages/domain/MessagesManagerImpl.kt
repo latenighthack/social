@@ -1,15 +1,27 @@
+// Manager recovery / untrusted input boundaries catch transport-specific failures; cancellation escapes.
+@file:Suppress("TooGenericExceptionCaught")
+
 // kotlin.time.Clock replaces kotlinx-datetime's (removed in datetime 0.7): stdlib-only, still
 // experimental on Kotlin 2.2.x. Only .now().toEpochMilliseconds() is used.
 @file:OptIn(kotlin.time.ExperimentalTime::class)
 
 package com.latenighthack.social.messages.domain
 
+import com.latenighthack.social.runtime.OperationsObserver
+import com.latenighthack.social.runtime.record
+import com.latenighthack.social.runtime.measure
+
 import com.latenighthack.social.observability.*
+
+import kotlinx.coroutines.flow.asStateFlow
+
+import com.latenighthack.social.messages.v1.BoundedMessagePayload
 
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
 import com.latenighthack.ktcrypto.decode
 import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.common.v1.RoomId
+import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.connector.IncomingNotification
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
@@ -28,14 +40,21 @@ import com.latenighthack.social.messages.v1.toByteArray
 import com.latenighthack.social.profiles.domain.MyProfilesManager
 import com.latenighthack.social.profiles.v1.ProfileId
 import com.latenighthack.social.rooms.domain.RoomsManager
-import com.latenighthack.social.runtime.DomainLifecycle
+import com.latenighthack.social.runtime.*
+import com.latenighthack.social.messages.v1.copy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
+import com.latenighthack.social.runtime.TaskHealth
+import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -43,15 +62,12 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Clock
 import kotlin.random.Random
-import kotlin.time.TimeSource
-import com.latenighthack.social.runtime.OperationsObserver
-import com.latenighthack.social.runtime.record
 
 /**
  * Runs the messages feature over one gated MESSAGING locker per room. Sending enqueues the message
@@ -76,9 +92,32 @@ class MessagesManagerImpl(
     private val backoffCapMillis: Long = DEFAULT_BACKOFF_CAP_MILLIS,
     private val idleWaitMillis: Long = DEFAULT_IDLE_WAIT_MILLIS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val session: AccountSession? = null,
     private val observer: OperationsObserver = OperationsObserver.NONE,
 ) : MessagesManager, DomainLifecycle, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+
+    override suspend fun prepare() = socialTelemetry.measure("messages", "prepare") { (run observedOperation@ {
+        store.prepare()
+        pending.prepare()
+        deadLetters.prepare()
+
+        }) }
+    override fun start(lockers: LockersClient) = run { socialTelemetry.event("messages", "start"); (run observedOperation@ {
+        runner.start(lockers) {
+             recoverTask(mutableTaskHealth) { run(lockers) } }
+
+        }) }
+    override fun stop() = run { socialTelemetry.event("messages", "stop"); (run observedOperation@ {
+        runner.stop()
+
+        }) }
+    override suspend fun send(roomId: RoomId, draft: Draft): Unit = socialTelemetry.measure("messages", "send") { (withSession { sendOwned(roomId, draft) }) }
+    override suspend fun retry(roomId: RoomId, messageId: MessageId): Unit = socialTelemetry.measure("messages", "retry") { (withSession { retryOwned(roomId, messageId) }) }
+    override fun watchMessages(roomId: RoomId): Flow<List<MessageEntry>>  = (session.ownerChanges().flatMapLatest { owner ->
+        if (owner == null) flowOf(emptyList()) else watchOwnedMessages(roomId)
+    }).socialObserved(socialTelemetry, "messages")
+    override fun watchMessageIds(roomId: RoomId): Flow<List<MessageId>>  = (watchMessages(roomId).map { entries -> entries.map { MessageId(rawValue = it.payload.messageId) } }.distinctUntilChanged()).socialObserved(socialTelemetry, "messages")
 
 
     private val store = MessageStore(database)
@@ -93,7 +132,8 @@ class MessagesManagerImpl(
     // held until their sender's membership syncs, and the set of rooms already subscribed for events.
     private val mutex = Mutex()
     private val members = mutableMapOf<RoomId, Set<ProfileId>>()
-    private val unverified = mutableMapOf<RoomId, MutableList<SignedContent>>()
+    private val unverified = mutableMapOf<RoomId, com.latenighthack.social.runtime.BoundedCache<List<Byte>, SignedContent>>()
+    private val elapsedClock = com.latenighthack.social.runtime.monotonicMillisClock()
     private val subscribedRooms = mutableSetOf<RoomId>()
 
     // Completes on first start — by then the app has created the prepared stores — gating store access.
@@ -101,30 +141,69 @@ class MessagesManagerImpl(
 
     // Nudges the drain loop to attempt immediately when a new message is enqueued.
     private val wake = Channel<Unit>(Channel.CONFLATED)
+    private data class RoomBump(val room: RoomId, val owner: String, val generation: Long)
+    private val bumps = Channel<RoomBump>(64, kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
 
-    private var job: Job? = null
-    private var lockers: LockersClient? = null
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
+    private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
+    private val lockers: LockersClient? get() = runner.token as? LockersClient
 
-    override suspend fun prepare(): Unit = socialTelemetry.measure("messages", "prepare") {
-        store.prepare()
-        pending.prepare()
-        deadLetters.prepare()
-    }
 
-    override fun start(lockers: LockersClient) {
-        socialTelemetry.event("messages", "start")
-        this.lockers = lockers
-        if (job?.isActive == true) return
-        job = scope.launch { socialTelemetry.measure("messages", "start") { run(lockers) } }
-    }
-
-    override fun stop() {
-        socialTelemetry.event("messages", "stop")
-        job?.cancel()
-        job = null
+    override suspend fun stopAndJoin() {
+        runner.stopAndJoin()
     }
 
     private suspend fun run(lockers: LockersClient) {
+        session.ownerChanges().collectLatest { owner ->
+            roomsMutex.withLock { roomLists.entries.removeAll { it.value.owner != owner || it.value.generation != (session?.generation?.value ?: 0L) } }
+            if (owner != null) {
+                migrateOwnership(owner)
+                withSession {
+                    if (session.currentOwner() != owner) throw CancellationException("account changed")
+                    runForOwner(lockers)
+                }
+            }
+        }
+    }
+
+    private suspend fun migrateOwnership(owner: String) {
+        if (session == null) return
+        com.latenighthack.social.runtime.storePages(database, MessageStoreDefinitionV2,
+            MessageStoreDefinitionV2.roomIdKey).collect { page ->
+            database.transaction("social.messages") {
+                check(session.currentOwner() == owner)
+                for (row in page) if (row.ownerAccountId.isEmpty()) {
+                    val id = row.messageId ?: continue
+                    if (session.owns("")) store.saveMessage(row.copy(ownerAccountId = owner))
+                    store.deleteMessage(RoomId(rawValue = row.roomId), id)
+                }
+            }
+        }
+        pending.pages().collect { page ->
+            database.transaction("social.messages") {
+                check(session.currentOwner() == owner)
+                for (row in page) if (row.ownerAccountId.isEmpty()) {
+                    val id = row.messageId ?: continue
+                    if (session.owns("")) pending.savePending(row.copy(ownerAccountId = owner))
+                    pending.deletePending(RoomId(rawValue = row.roomId), id)
+                }
+            }
+        }
+        com.latenighthack.social.runtime.storePages(database, DeadLetterStoreDefinitionV2,
+            DeadLetterStoreDefinitionV2.roomIdKey).collect { page ->
+            database.transaction("social.messages") {
+                check(session.currentOwner() == owner)
+                for (row in page) if (row.ownerAccountId.isEmpty()) {
+                    val id = row.messageId ?: continue
+                    if (session.owns("")) deadLetters.saveDeadLettered(row.copy(ownerAccountId = owner))
+                    deadLetters.deleteDeadLettered(RoomId(rawValue = row.roomId), id)
+                }
+            }
+        }
+    }
+
+    private suspend fun runForOwner(lockers: LockersClient) {
         // A prior stop() cancelled the collectors and drain loop, so forget the per-room subscription
         // state and re-establish it below. Cached room lists are kept (the store is unchanged).
         mutex.withLock {
@@ -134,15 +213,39 @@ class MessagesManagerImpl(
         }
         if (!ready.isCompleted) ready.complete(Unit)
 
-        supervisorScope {
+        coroutineScope {
             launch { drainLoop(lockers) }
+            launch {
+                for (bump in bumps) {
+                    if (bump.owner == session.currentOwner() && bump.generation == (session?.generation?.value ?: 0L)) {
+                        performBump(bump.room)
+                    }
+                }
+            }
             launch { messageClient(lockers).notifications.collect { onNotification(it) } }
 
+            val observers = mutableMapOf<RoomId, Job>()
             rooms.watchRooms().collect { roomIds ->
-                for (roomId in roomIds) {
-                    if (mutex.withLock { subscribedRooms.add(roomId) }) {
+                val active = roomIds.toSet()
+                mutex.withLock {
+                    subscribedRooms.clear(); subscribedRooms.addAll(active)
+                    members.keys.retainAll(active); unverified.keys.retainAll(active)
+                }
+                roomsMutex.withLock { roomLists.entries.removeAll { it.key !in active && it.value.observers == 0 } }
+                for (removed in observers.keys.toList() - active) observers.remove(removed)?.cancel()
+                for (roomId in active) if (roomId !in observers) observers[roomId] = launch {
+                    coroutineScope {
                         launch { messageClient(lockers).subscribeToRoom(roomId) }
                         launch { watchMembership(roomId) }
+                        launch {
+                            messageClient(lockers).watchAll(roomId).collect { snapshot ->
+                                for ((id, signed) in snapshot) {
+                                    val payload = BoundedMessagePayload.decode(signed.content) ?: continue
+                                    if (!payload.messageId.contentEquals(id.rawValue)) continue
+                                    tryIngest(roomId, signed)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -154,7 +257,7 @@ class MessagesManagerImpl(
             val set = memberList.toSet()
             val buffered = mutex.withLock {
                 members[roomId] = set
-                unverified.remove(roomId).orEmpty()
+                unverified.remove(roomId)?.values().orEmpty()
             }
             // Membership advanced: re-evaluate anything that was held because its sender was unknown.
             for (signed in buffered) tryIngest(roomId, signed)
@@ -162,6 +265,7 @@ class MessagesManagerImpl(
     }
 
     private suspend fun onNotification(notification: IncomingNotification) {
+        if (notification.payload.size > 70_000) return
         val signed = runCatching { SignedContent.fromByteArray(notification.payload) }.getOrNull() ?: return
         // A malformed or transiently-failing message must not tear down the shared notification collector.
         try {
@@ -172,42 +276,56 @@ class MessagesManagerImpl(
         }
     }
 
-    private suspend fun tryIngest(roomId: RoomId, signed: SignedContent): Unit = socialTelemetry.measure("messages", "ingest") {
-        val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull() ?: return@measure
-        if (!payload.roomId.contentEquals(roomId.rawValue)) return@measure
+    private suspend fun tryIngest(roomId: RoomId, signed: SignedContent) {
+        val payload = BoundedMessagePayload.decode(signed.content) ?: return
+        if (!payload.roomId.contentEquals(roomId.rawValue) || payload.orderingCounter < 0 || payload.orderingCounter == Long.MAX_VALUE) return
         val senderId = ProfileId { rawValue = payload.senderProfileId }
 
+        if (signed.content.size > 65_536 || payload.messageId.size != 32) return
+        val senderKey = try { Secp256r1PublicKey.decode(payload.senderProfileId) }
+            catch (failure: CancellationException) {
+                throw failure
+            } catch (_: Exception) {
+                return
+            }
+        if (!MessageSigning.verify(signed, senderKey)) return
         val isMember = mutex.withLock {
-            if (senderId in members[roomId].orEmpty()) {
-                true
-            } else {
-                // Sender's membership hasn't synced yet; hold and re-check when it advances.
-                unverified.getOrPut(roomId) { mutableListOf() }.add(signed)
+            if (roomId !in subscribedRooms) return@withLock false
+            if (senderId in members[roomId].orEmpty()) true else {
+                unverified.getOrPut(roomId) {
+                    com.latenighthack.social.runtime.BoundedCache(128, 30_000, elapsedClock)
+                }.put(payload.messageId.toList(), signed)
                 false
             }
         }
-        if (!isMember) return@measure
-
-        // The signature proves the author controls senderProfileId; the membership check above is what
-        // stops a member posting under a profile that isn't in the room.
-        val senderKey = runCatching { Secp256r1PublicKey.decode(payload.senderProfileId) }.getOrNull() ?: return@measure
-        if (!MessageSigning.verify(signed, senderKey)) { result("invalid_signature"); return@measure }
+        if (!isMember) return
 
         if (roomList(roomId).ingest(payload, signed)) bestEffortBump(roomId)
     }
 
     // Bump the room's updated_at to the front. Best-effort: a lost bump (network error, shutdown) must
     // never fail a send or tear down a collector — the send/receive itself is what matters.
-    private suspend fun bestEffortBump(roomId: RoomId) {
+    private fun bestEffortBump(roomId: RoomId) {
+        bumps.trySend(RoomBump(roomId, session.currentOwner(), session?.generation?.value ?: 0L))
+    }
+
+    private suspend fun performBump(roomId: RoomId) {
         try {
-            rooms.markUpdated(roomId)
+            kotlinx.coroutines.withTimeout(5000) { rooms.markUpdated(roomId) }
+        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
         }
     }
 
-    override suspend fun send(roomId: RoomId, draft: Draft): Unit = socialTelemetry.measure("messages", "send") {
+    private suspend fun <T> withSession(block: suspend () -> T): T =
+        if (session == null) block() else session.withAccount(block)
+
+
+    private suspend fun sendOwned(roomId: RoomId, draft: Draft) {
+        session.currentOwner()
         val senderId = rooms.localProfile(roomId) ?: error("not a member of this room")
         val list = roomList(roomId)
 
@@ -218,108 +336,134 @@ class MessagesManagerImpl(
                 Component { contents.text { this.text = text } }
             })
 
-        for (component in components) {
+        val counters = list.reserveCounters(components.size)
+        components.forEach { BoundedMessagePayload.requireEncodable(it) }
+        val prepared = components.mapIndexed { index, component ->
             val messageId = MessageId(rawValue = Random.nextBytes(32))
             val payload = MessagePayload(
                 roomId = roomId.rawValue,
                 senderProfileId = senderId.rawValue,
                 sentAtMillis = Clock.System.now().toEpochMilliseconds(),
+                orderingCounter = counters[index],
                 component = component,
                 messageId = messageId.rawValue,
             )
-            val signed = myProfiles.sign(senderId, MessageSigning.LABEL, payload.toByteArray())
-                ?: error("no signing key for the room's profile")
-            // Optimistic local echo: store and show the message as SENDING at once, then durably queue
-            // it. The stored row also dedups the write's own echoed notification.
-            list.addOwn(messageId, payload, signed)
-            val now = Clock.System.now().toEpochMilliseconds()
-            pending.savePending(PendingMessage {
-                this.roomId = roomId.rawValue
-                this.messageId = messageId
-                message = signed
-                attempts = 0
-                nextAttemptMillis = now
-                createdAtMillis = now
-            })
+            val bytes = payload.toByteArray()
+            require(BoundedMessagePayload.decode(bytes) != null) { "message payload exceeds supported bounds" }
+            val signature = myProfiles.sign(senderId, MessageSigning.LABEL, bytes)
+            session?.requireOperationOwner()
+            val signed = signature ?: error("no signing key for the room's profile")
+            Triple(messageId, payload, signed)
         }
+        list.addOwn(prepared)
         wake.trySend(Unit)
         // Bump the room to the front the moment the user sends, reflecting their intent — not when the
-        // message eventually lands. Launched (not awaited) and best-effort: markUpdated reorders the
+        // message eventually lands. Queued to the owned metadata worker and best-effort: markUpdated reorders the
         // room list locally first, so the send neither blocks on nor fails from the synced write.
-        scope.launch { bestEffortBump(roomId) }
+        bestEffortBump(roomId)
     }
 
-    override suspend fun retry(roomId: RoomId, messageId: MessageId): Unit = socialTelemetry.measure("messages", "retry") {
+
+    private suspend fun retryOwned(roomId: RoomId, messageId: MessageId) {
         ready.await()
-        val dead = deadLetters.getDeadLettered(roomId, messageId) ?: run { result("noop"); return@measure }
-        val signed = dead.message ?: run { result("noop"); return@measure }
+        val dead = deadLetters.getDeadLettered(roomId, messageId, session.currentOwner()) ?: return
+        if (!session.owns(dead.ownerAccountId)) return
+        val signed = dead.message ?: return
         val now = Clock.System.now().toEpochMilliseconds()
-        pending.savePending(dead.copy(attempts = 0L, nextAttemptMillis = now))
-        deadLetters.deleteDeadLettered(roomId, messageId)
-        roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING)
+        roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING) {
+            pending.savePending(dead.copy(attempts = 0L, nextAttemptMillis = now))
+            deadLetters.deleteDeadLettered(roomId, messageId, dead.ownerAccountId)
+        }
         wake.trySend(Unit)
     }
 
     private suspend fun drainLoop(lockers: LockersClient) {
         while (true) {
             val now = Clock.System.now().toEpochMilliseconds()
-            val entries = pending.getAllPending().sortedBy { it.createdAtMillis }
-            observer.record("message_queue", seconds = entries.firstOrNull { it.createdAtMillis > 0 }?.let { (now - it.createdAtMillis).coerceAtLeast(0) / 1000.0 } ?: 0.0, depth = entries.size)
-            observer.record("message_unknown_age", depth = entries.count { it.createdAtMillis <= 0 })
-            for (entry in entries) {
-                if (entry.nextAttemptMillis <= now) attemptSend(lockers, entry)
+            var soonest: Long? = null
+            var queueDepth = 0
+            var unknownAge = 0
+            var oldestAge = 0.0
+            pending.pages().collect { page ->
+                val own = page.filter { session.owns(it.ownerAccountId) }
+                queueDepth += own.size
+                unknownAge += own.count { it.createdAtMillis <= 0 }
+                oldestAge = maxOf(oldestAge, own.filter { it.createdAtMillis > 0 }.maxOfOrNull { (now - it.createdAtMillis).coerceAtLeast(0) / 1000.0 } ?: 0.0)
+                own.minOfOrNull { it.nextAttemptMillis }?.let { soonest = minOf(soonest ?: it, it) }
+                for (batch in own.filter { it.nextAttemptMillis <= now }.chunked(4)) coroutineScope {
+                    batch.map { entry -> launch { attemptSend(lockers, entry) } }.forEach { it.join() }
+                }
             }
-            val queueEntries = pending.getAllPending()
-            socialTelemetry.event("messages", "queue", kind = "queue_depth", value = queueEntries.size.toDouble())
-            socialTelemetry.event("messages", "queue", kind = "queue_age", value = queueEntries.maxOfOrNull { ((Clock.System.now().toEpochMilliseconds() - it.createdAtMillis).coerceAtLeast(0) / 1000.0) } ?: 0.0)
-            val soonest = queueEntries.minOfOrNull { it.nextAttemptMillis }
+            observer.record("message_queue", seconds = oldestAge, depth = queueDepth)
+            observer.record("message_unknown_age", depth = unknownAge)
+            socialTelemetry.event("messages", "queue", kind = "queue_depth", value = queueDepth.toDouble())
+            socialTelemetry.event("messages", "queue", kind = "queue_age", value = oldestAge)
             val wait = if (soonest == null) idleWaitMillis
-            else (soonest - Clock.System.now().toEpochMilliseconds()).coerceIn(1L, idleWaitMillis)
+            else (soonest!! - Clock.System.now().toEpochMilliseconds()).coerceIn(1L, idleWaitMillis)
             withTimeoutOrNull(wait) { wake.receive() }
         }
     }
 
-    private suspend fun attemptSend(lockers: LockersClient, entry: PendingMessage): Unit = socialTelemetry.measure("messages", "attemptSend") {
-        val messageId = entry.messageId ?: return@measure
+    private suspend fun attemptSend(lockers: LockersClient, entry: PendingMessage) {
+        observer.measure("message_processing") { socialTelemetry.measure("messages", "attemptSend") {
+            if (entry.createdAtMillis > 0) observer.record("message_wait", seconds = (Clock.System.now().toEpochMilliseconds() - entry.createdAtMillis).coerceAtLeast(0) / 1000.0)
+            attemptSendOwned(lockers, entry)
+        } }
+    }
+
+    private suspend fun attemptSendOwned(lockers: LockersClient, entry: PendingMessage) {
+        val messageId = entry.messageId ?: return
         val roomId = RoomId(rawValue = entry.roomId)
-        val signed = entry.message ?: run { pending.deletePending(roomId, messageId); return@measure }
-        val started = TimeSource.Monotonic.markNow()
-        var outcome = "success"
-        if (entry.createdAtMillis > 0) observer.record("message_wait", seconds = (Clock.System.now().toEpochMilliseconds() - entry.createdAtMillis).coerceAtLeast(0) / 1000.0)
+        session?.requireOperationOwner()
+        val admittedGeneration = session?.generation?.value ?: 0L
+        val signed = entry.message ?: run { pending.deletePending(roomId, messageId, entry.ownerAccountId); return }
         try {
+            kotlinx.coroutines.withTimeout(30_000) {
             // Empty body ({ it } keeps it unchanged); the message rides as the notification payload.
-            val committed = messageClient(lockers).updateLocker(
+            messageClient(lockers).updateLocker(
                 roomId,
-                MessagesKeyspaces.MESSAGING_LOCKER,
+                LockerId(messageId.rawValue, MessagesKeyspaces.MESSAGING),
                 notificationBuilder = { payload { rawValue = signed.toByteArray() } },
-            ) { it }
-            check(committed != null) { "Message commit was not confirmed" }
-            pending.deletePending(roomId, messageId)
-            roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT)
+            ) { current ->
+                if (!session.owns(entry.ownerAccountId) || admittedGeneration != (session?.generation?.value ?: 0L)) {
+                    throw CancellationException("account changed")
+                }
+                check(current.content.isEmpty() || current == signed) { "message id already contains different content" }
+                signed
+            }
+            session?.requireOperationOwner()
+            roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT) {
+                pending.deletePending(roomId, messageId, entry.ownerAccountId)
+            }
+            }
+        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            recordSendFailure(entry, roomId, messageId, signed)
         } catch (e: CancellationException) {
-            outcome = "cancelled"
             throw e
         } catch (_: Exception) {
-            outcome = "failure"
+            recordSendFailure(entry, roomId, messageId, signed)
+        }
+    }
+
+    private suspend fun recordSendFailure(entry: PendingMessage, roomId: RoomId, messageId: MessageId, signed: SignedContent) {
+            session?.requireOperationOwner()
             val attempts = entry.attempts + 1
             if (attempts >= maxAttempts) {
-                result("dead_letter")
-                deadLetters.saveDeadLettered(entry.copy(attempts = attempts))
-                pending.deletePending(roomId, messageId)
-                socialTelemetry.event("messages", "dead_letter", "dead_letter")
-                roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_FAILED)
                 observer.record("message_dead_letter", "failure")
+                socialTelemetry.event("messages", "dead_letter", "dead_letter")
+                roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_FAILED) {
+                    deadLetters.saveDeadLettered(entry.copy(attempts = attempts))
+                    pending.deletePending(roomId, messageId, entry.ownerAccountId)
+                }
             } else {
-                result("retry")
+                observer.record("message_retry", "failure")
+                socialTelemetry.event("messages", "retry", "retry")
                 pending.savePending(entry.copy(
                     attempts = attempts,
                     nextAttemptMillis = Clock.System.now().toEpochMilliseconds() + backoffMillis(attempts),
                 ))
-                observer.record("message_retry", "failure")
             }
-        } finally {
-            observer.record("message_processing", outcome, started.elapsedNow().inWholeNanoseconds / 1e9)
-        }
     }
 
     private fun backoffMillis(attempts: Long): Long {
@@ -327,23 +471,49 @@ class MessagesManagerImpl(
         return (backoffBaseMillis shl shift).coerceAtMost(backoffCapMillis)
     }
 
-    override fun watchMessages(roomId: RoomId): Flow<List<MessageEntry>> = (flow {
-        val list = roomList(roomId)
-        list.ensureLoaded()
-        emitAll(list.entries)
-    }.distinctUntilChanged()
-    ).socialObserved(socialTelemetry, "messages")
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 
-    override fun watchMessageIds(roomId: RoomId): Flow<List<MessageId>> = (flow {
-        val list = roomList(roomId)
-        list.ensureLoaded()
-        emitAll(list.entries.map { room -> room.map { MessageId(rawValue = it.payload.messageId) } })
+    private fun watchOwnedMessages(roomId: RoomId): Flow<List<MessageEntry>> = flow {
+        val list = roomList(roomId, retain = true)
+        try {
+            list.ensureLoaded()
+            emitAll(list.entries.map { if (session.owns(list.owner) && list.generation == (session?.generation?.value ?: 0L)) it else emptyList() })
+        } finally { roomsMutex.withLock { list.observers-- } }
     }.distinctUntilChanged()
-    ).socialObserved(socialTelemetry, "messages")
 
-    private suspend fun roomList(roomId: RoomId): RoomMessageList {
+    override suspend fun loadEarlier(roomId: RoomId, before: MessageId, limit: Int): List<MessageEntry> =
+        withSession { loadEarlierOwned(roomId, before, limit) }
+
+    private suspend fun loadEarlierOwned(roomId: RoomId, before: MessageId, limit: Int): List<MessageEntry> {
+        val owner = session.currentOwner()
+        require(limit in 1..1000)
+        val boundary = store.getMessage(roomId, before, session.currentOwner())?.takeIf { session.owns(it.ownerAccountId) }
+            ?.message?.let { BoundedMessagePayload.decode(it.content) } ?: return emptyList()
+        return store.getRecentMessages(roomId, { session == null || it.ownerAccountId == owner }, limit,
+            MessageEntry(boundary, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT)).mapNotNull {
+                it.message?.let { signed -> BoundedMessagePayload.decode(signed.content)?.let { payload -> MessageEntry(payload, it.status) } }
+            }
+    }
+
+    override suspend fun compareMessageOrder(roomId: RoomId, first: MessageId, second: MessageId): Int? =
+        withSession { store.compareMessageOrder(roomId, first, second, session.currentOwner()) }
+
+
+    private suspend fun roomList(roomId: RoomId, retain: Boolean = false): RoomMessageList {
+        val owner = if (session == null) "" else session.owner.value ?: throw CancellationException("account changed")
+        val admittedGeneration = session?.generation?.value ?: 0L
         ready.await()
-        return roomsMutex.withLock { roomLists.getOrPut(roomId) { RoomMessageList(roomId) } }
+        return roomsMutex.withLock {
+            if (!session.owns(owner) || admittedGeneration != (session?.generation?.value ?: 0L)) throw CancellationException("account changed")
+            session?.requireOperationOwner()
+            val list = roomLists[roomId]?.takeIf { it.owner == owner && it.generation == (session?.generation?.value ?: 0L) } ?: run {
+                if (roomLists.size >= 64) roomLists.entries.firstOrNull { it.value.observers == 0 }
+                    ?.key?.let { roomLists.remove(it) }
+                RoomMessageList(roomId).also { roomLists[roomId] = it }
+            }
+            if (retain) list.observers++
+            list
+        }
     }
 
     private fun messageClient(lockers: LockersClient): TypedLockerClient<SignedContent> =
@@ -356,6 +526,10 @@ class MessagesManagerImpl(
      * message id) is the dedup source of truth, so an unloaded room still drops duplicates on receive.
      */
     private inner class RoomMessageList(private val roomId: RoomId) {
+        var observers = 0
+        val owner = session.currentOwner()
+        val generation = session?.generation?.value ?: 0L
+        private fun ownsList() = session.owns(owner) && generation == (session?.generation?.value ?: 0L)
         val entries = MutableStateFlow<List<MessageEntry>>(emptyList())
 
         // The message ids this room holds, maintained in memory so receive-dedup checks a set rather
@@ -363,27 +537,49 @@ class MessagesManagerImpl(
         private val seen = mutableSetOf<List<Byte>>()
         private val mutex = Mutex()
         private var loaded = false
+        private var lastCounter = 0L
+
+        suspend fun reserveCounters(count: Int): List<Long> = mutex.withLock {
+            loadLocked()
+            check(lastCounter <= Long.MAX_VALUE - count) { "message counter exhausted" }
+            List(count) { ++lastCounter }
+        }
 
         suspend fun ensureLoaded() = mutex.withLock { loadLocked() }
 
         private suspend fun loadLocked() {
             if (loaded) return
-            entries.value = store.getMessagesForRoom(roomId).mapNotNull { local ->
+            val restored = store.getRecentMessages(roomId, { session == null || it.ownerAccountId == owner }).mapNotNull { local ->
                 val messageId = local.messageId ?: return@mapNotNull null
                 val signed = local.message ?: return@mapNotNull null
-                val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull()
+                val payload = BoundedMessagePayload.decode(signed.content)
                     ?: return@mapNotNull null
                 seen.add(messageId.rawValue.toList())
                 MessageEntry(payload, local.status)
-            }.sortedBy { it.payload.sentAtMillis }
+            }.sortedWith(messageOrder)
+            if (!ownsList()) throw CancellationException("account changed")
+            entries.value = restored
+            lastCounter = entries.value.maxOfOrNull { it.payload.orderingCounter } ?: 0L
             loaded = true
         }
 
         /** Our own send: persist it as SENDING and show it immediately (loads history first). */
-        suspend fun addOwn(messageId: MessageId, payload: MessagePayload, signed: SignedContent) = mutex.withLock {
+        suspend fun addOwn(prepared: List<Triple<MessageId, MessagePayload, SignedContent>>) = mutex.withLock {
             loadLocked()
-            store.saveMessage(local(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING))
-            putLocked(payload, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING)
+            database.transaction("social.messages") {
+                for ((id, payload, signed) in prepared) {
+                    store.saveMessage(local(id, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING))
+                    pending.savePending(PendingMessage {
+                        roomId = this@RoomMessageList.roomId.rawValue
+                        messageId = id
+                        ownerAccountId = owner
+                        message = signed
+                        createdAtMillis = payload.sentAtMillis
+                        nextAttemptMillis = payload.sentAtMillis
+                    })
+                }
+            }
+            for ((_, payload, _) in prepared) putLocked(payload, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING)
         }
 
         /**
@@ -394,7 +590,7 @@ class MessagesManagerImpl(
          */
         suspend fun ingest(payload: MessagePayload, signed: SignedContent): Boolean = mutex.withLock {
             val messageId = MessageId(rawValue = payload.messageId)
-            val duplicate = if (loaded) payload.messageId.toList() in seen else store.getMessage(roomId, messageId) != null
+            val duplicate = payload.messageId.toList() in seen || store.getMessage(roomId, messageId, owner) != null
             if (duplicate) return@withLock false
             store.saveMessage(local(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT))
             if (loaded) putLocked(payload, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT)
@@ -402,10 +598,16 @@ class MessagesManagerImpl(
         }
 
         /** Persist a delivery-status change and reflect it in memory when the room is loaded. */
-        suspend fun setStatus(messageId: MessageId, signed: SignedContent, status: MessageDeliveryStatus) = mutex.withLock {
-            store.saveMessage(local(messageId, signed, status))
+        suspend fun setStatus(
+            messageId: MessageId, signed: SignedContent, status: MessageDeliveryStatus,
+            transition: suspend () -> Unit = {},
+        ) = mutex.withLock {
+            database.transaction("social.messages") {
+                transition()
+                store.saveMessage(local(messageId, signed, status))
+            }
             if (loaded) {
-                runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull()?.let { putLocked(it, status) }
+                BoundedMessagePayload.decode(signed.content)?.let { putLocked(it, status) }
             }
         }
 
@@ -413,16 +615,23 @@ class MessagesManagerImpl(
         // id set current. Callers hold [mutex].
         private fun putLocked(payload: MessagePayload, status: MessageDeliveryStatus) {
             val idList = payload.messageId.toList()
+            lastCounter = maxOf(lastCounter, payload.orderingCounter)
+            seen.clear()
+            seen.addAll(entries.value.map { it.payload.messageId.toList() })
             seen.add(idList)
             val without = entries.value.filterNot { it.payload.messageId.toList() == idList }
-            entries.value = (without + MessageEntry(payload, status)).sortedBy { it.payload.sentAtMillis }
+            entries.value = (without + MessageEntry(payload, status)).sortedWith(messageOrder).takeLast(1000)
         }
 
-        private fun local(messageId: MessageId, signed: SignedContent, status: MessageDeliveryStatus) = LocalMessage {
+        private fun local(messageId: MessageId, signed: SignedContent, status: MessageDeliveryStatus): LocalMessage {
+            if (!ownsList()) throw CancellationException("account changed")
+            return LocalMessage {
             roomId = this@RoomMessageList.roomId.rawValue
             this.messageId = messageId
             message = signed
             this.status = status
+            ownerAccountId = owner
+            }
         }
     }
 

@@ -4,9 +4,13 @@ plugins {
 
 kotlin {
     sourceSets {
+        val commonTest by getting {
+            dependencies { implementation(kotlin("test")); implementation(libs.coroutines.test) }
+        }
         val commonMain by getting {
             dependencies {
                 // LockersClient appears in DomainLifecycle's public API, so `api`.
+                api(libs.ktstore.library)
                 api(libs.lockers.connector)
                 api(projects.socialObservabilityCore)
             }

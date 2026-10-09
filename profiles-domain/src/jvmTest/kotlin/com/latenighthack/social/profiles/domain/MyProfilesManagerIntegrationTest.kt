@@ -56,7 +56,8 @@ class MyProfilesManagerIntegrationTest {
             val source = sourceClient.getLocker(accountRoom, profileId.toSourceLockerId())
             assertNotNull(source)
             assertEquals(profileId, source.profileId)
-            assertTrue(source.privateKey.isNotEmpty())
+            assertTrue(source.privateKey.isEmpty())
+            assertTrue(source.encryptedPrivateKey.isNotEmpty())
 
             // The profile's own room holds a Profile with one signed display-name disclosure.
             val profileClient = lockers.typed(

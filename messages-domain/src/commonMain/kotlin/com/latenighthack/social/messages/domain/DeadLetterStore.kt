@@ -13,20 +13,23 @@ import com.latenighthack.social.messages.v1.toByteArray
  * dead-lettered message can be looked up and removed directly on [retry] without scanning. A
  * dead-lettered message is terminal until an explicit retry moves it back into the outbox.
  */
-internal class DeadLetterStore(database: Database) : Store<PendingMessage>(database, DeadLetterStoreDefinitionV1) {
-    private val roomIdKey = DeadLetterStoreDefinitionV1.roomIdKey
-    private val messageIdKey = DeadLetterStoreDefinitionV1.messageIdKey
-    private val roomIdMessageIdKey = DeadLetterStoreDefinitionV1.roomIdMessageIdKey
+internal class DeadLetterStore(database: Database) : Store<PendingMessage>(database, DeadLetterStoreDefinitionV2) {
+    private val roomIdKey = DeadLetterStoreDefinitionV2.roomIdKey
+    private val messageIdKey = DeadLetterStoreDefinitionV2.messageIdKey
+    private val roomIdMessageIdKey = DeadLetterStoreDefinitionV2.ownerRoomMessageKey
+
+    suspend fun getAllDeadLetters(): List<PendingMessage> = getAll()
 
     suspend fun saveDeadLettered(dead: PendingMessage) = save(dead)
 
-    suspend fun getDeadLettered(roomId: RoomId, messageId: MessageId): PendingMessage? =
-        get(roomIdMessageIdKey.eq(key(roomId, messageId)))
+    suspend fun getDeadLettered(roomId: RoomId, messageId: MessageId, owner: String = ""): PendingMessage? =
+        get(roomIdMessageIdKey.eq(key(roomId, messageId, owner)))
 
-    suspend fun deleteDeadLettered(roomId: RoomId, messageId: MessageId) =
-        delete(roomIdMessageIdKey.eq(key(roomId, messageId)))
+    suspend fun deleteDeadLettered(roomId: RoomId, messageId: MessageId, owner: String = "") =
+        delete(roomIdMessageIdKey.eq(key(roomId, messageId, owner)))
 
-    private fun key(roomId: RoomId, messageId: MessageId) = listOf(
+    private fun key(roomId: RoomId, messageId: MessageId, owner: String = "") = listOf(
+                BoundStoreKey.SerializedKey("ownerAccountIdUtf8", owner.encodeToByteArray()),
         BoundStoreKey.SerializedKey(roomIdKey.name.value, roomId.rawValue),
         BoundStoreKey.SerializedKey(messageIdKey.name.value, messageId.toByteArray()),
     )

@@ -1,3 +1,5 @@
+@file:Suppress("TooGenericExceptionCaught")
+
 package com.latenighthack.social.observability.client
 
 import com.latenighthack.ktbuf.net.*
