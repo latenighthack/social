@@ -78,3 +78,7 @@ Released builds resolve published dependencies without global Maven Local. Paire
 uses `./fh deps resolve` and `./fh deps publish --library social`, with explicit library paths in the
 ignored `.fh/workspace.json`. Publish prerequisites first; never change bytes under an existing
 version. External publication and application release remain separate operations.
+
+Hosts can override `RoomsProviders.roomInvitePolicy()` with a `RoomInvitePolicy` to apply block lists
+or require consent before any authenticated direct invitation installs membership. The default keeps
+automatic acceptance. Denied invitations are consumed without installing keys or joining a room.

@@ -91,6 +91,7 @@ class RoomsManagerImpl(
     private val myProfiles: MyProfilesManager,
     private val joinClient: JoinClient,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val invitePolicy: RoomInvitePolicy = AcceptRoomInvites,
 ) : RoomsManager, DomainLifecycle {
 
     // Room shared keys (immutable-swap for consistent reads from writeKey). The swaps themselves are
@@ -499,6 +500,7 @@ class RoomsManagerImpl(
         val invite = runCatching { Invite.fromByteArray(signed.content) }.getOrNull() ?: return
         val author = com.latenighthack.ktcrypto.Secp256r1PublicKey.decode(invite.inviterProfileId)
         if (!com.latenighthack.social.common.domain.verify(signed, 6, author)) return
+        if (!invitePolicy.accept(profileId, ProfileId(rawValue = invite.inviterProfileId), invite.kind)) return
         when (invite.kind) {
             RoomKind.ROOM_KIND_RENDEZVOUS -> {
                 val secretWithInviter = myProfiles.deriveSharedSecret(profileId, invite.inviterProfileId) ?: return

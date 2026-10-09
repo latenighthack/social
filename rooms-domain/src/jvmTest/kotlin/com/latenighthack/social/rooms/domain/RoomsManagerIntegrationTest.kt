@@ -109,12 +109,13 @@ class RoomsManagerIntegrationTest {
         joinClient: JoinClient = FakeJoinClient(),
         database: Database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
         clientStore: KeyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
+        invitePolicy: RoomInvitePolicy = AcceptRoomInvites,
     ): Party {
         val account = AccountManagerImpl(accountStore)
         val accountKeySource = AccountKeySource(account)
         val myProfiles = MyProfilesManagerImpl(account)
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
-        val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
+        val rooms = RoomsManagerImpl(account, myProfiles, joinClient, invitePolicy = invitePolicy)
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
@@ -146,6 +147,24 @@ class RoomsManagerIntegrationTest {
             readyCallback: () -> Unit,
         ): Unit = throw RpcResponseException(path = "test", verb = "POST", code = Codes.UNAVAILABLE, errorMessage = "offline")
     }
+
+    @Test(timeout = 30000)
+    fun `host policy can decline an authenticated direct invite without installing membership`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            val declined = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val alice = newParty(server.rpcClient)
+            val bob = newParty(server.rpcClient, invitePolicy = RoomInvitePolicy { _, _, _ -> declined.complete(Unit); false })
+            try {
+                alice.myProfiles.createProfile("Alice")
+                val recipient = bob.myProfiles.createProfile("Bob")
+                val room = alice.rooms.createGroup("declined")
+                alice.rooms.inviteToRoom(room, recipient)
+                declined.await()
+                val inbox = bob.lockers.typed(RoomsKeyspaces.INBOX, SealedEnvelope::toByteArray, SealedEnvelope.Companion::fromByteArray)
+                inbox.watchAll(RoomKeying.publicKeyed(recipient.rawValue)).first { it.isEmpty() }
+                assertFalse(room in bob.rooms.watchRooms().first())
+            } finally { alice.close(); bob.close() }
+        }
 
     @Test(timeout = 30000)
     fun `running devices observe profile additions and room leaves without reconnecting`() =
