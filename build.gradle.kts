@@ -23,6 +23,10 @@ allprojects {
     } else {
         base
     }
+    // Kotlin's internal npm package tasks otherwise reuse the prior version's JSON.
+    tasks.matching { it.name.endsWith("PackageJson") }.configureEach {
+        inputs.property("socialPublicationVersion", project.provider { project.version.toString() })
+    }
 }
 
 subprojects {
