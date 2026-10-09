@@ -52,8 +52,7 @@ jobs:
       - name: Publish to Maven Central
         # Version is derived from the tag via GITHUB_REF (refs/tags/v0.1.1 -> 0.1.1). ktstore,
         # lockers and ktcrypto resolve from Central, so release those first. NOTE: the published
-        # POMs reference ktcrypto:0.0.4 from Central (DER signatures) — see the repo's caveat about
-        # SignedContent verify for pure-Central consumers.
+        # POMs reference the aligned ktcrypto release with raw JVM r||s signatures.
         run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache --stacktrace
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}

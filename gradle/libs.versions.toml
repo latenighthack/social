@@ -5,9 +5,9 @@ coroutines = "1.9.0"
 ktor = "3.0.2"
 agp = "8.13.2"
 kotlinInject = "0.7.1"
-ktbuf = "1.1.10"
-ktstore = "0.2.1"
-ktcrypto = "0.0.8"
+ktbuf = "1.1.12"
+ktstore = "0.2.2"
+ktcrypto = "0.0.9"
 kmLogger = "2.0.3"
 cache4k = "0.14.0"
 micrometer = "1.10.3"
@@ -35,7 +35,7 @@ androidxAppcompat = "1.7.0"
 junit = "4.13.2"
 
 # Peer lockers release. Local development uses explicit fh workspace overrides.
-lockers = "0.1.15"
+lockers = "0.1.16"
 
 [libraries]
 kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib" }

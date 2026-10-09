@@ -4,6 +4,7 @@ import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.AuthenticationKeySource
+import com.latenighthack.lockers.connector.AuthenticationSessionGeneration
 import com.latenighthack.lockers.connector.LockKeySource
 
 /**
@@ -13,7 +14,9 @@ import com.latenighthack.lockers.connector.LockKeySource
  */
 class AccountKeySource(
     private val account: AccountManagerImpl,
-) : AuthenticationKeySource, LockKeySource {
+) : AuthenticationKeySource, AuthenticationSessionGeneration, LockKeySource {
+
+    override val sessionGeneration get() = account.generation
 
     override suspend fun getSessionKeyPair(): Secp256r1KeyPair = account.sessionKeyPair()
 

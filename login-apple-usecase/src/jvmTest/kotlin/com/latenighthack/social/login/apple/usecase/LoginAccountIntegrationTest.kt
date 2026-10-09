@@ -29,6 +29,9 @@ import com.latenighthack.social.login.core.usecase.SignInResult
 import com.latenighthack.social.login.v1.LoginServer
 import io.ktor.server.application.Application
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlin.test.Test
@@ -89,42 +92,52 @@ class LoginAccountIntegrationTest {
 
     @Test(timeout = 30_000)
     fun `sign up binds the account, then a new device recovers it via the login method`() =
-        runTestWithServer({ attachLoginAndLockers() }) { server, _ ->
+        runTestWithServer({ attachLoginAndLockers() }) { server, _ -> withContext(Dispatchers.Default) {
             val records = java.util.concurrent.ConcurrentLinkedQueue<SocialObservation>()
             val sink = object : SocialTelemetry { override fun record(observation: SocialObservation) { observation.validate(); records.add(observation) } }
-            val loginClient = LoginClientImpl(server.rpcClient).observedBy(sink)
+            val rpcClient = com.latenighthack.ktbuf.rpc.HttpRpcClient(server.serverUrl)
+            val accounts = mutableListOf<Pair<AccountManagerImpl, LockersClient>>()
+            try {
+                val loginClient = LoginClientImpl(rpcClient).observedBy(sink)
 
-            // Device A: create an account, then sign up with Apple → needs binding → bind it.
-            val (deviceA, lockersA) = bootAccount(server.rpcClient)
-            val accountId = deviceA.createAccount()
-            val readyA = deviceA.lifecycle.first { it is Lifecycle.Ready } as Lifecycle.Ready
-            // Ready is offline-first; wait for the connected-tick init to create the AccountState
-            // (the private room's only locker here) before device B tries to recover it.
-            while (lockersA.getAllKnownLockers().none { it.roomId.rawValue.contentEquals(readyA.privateRoom.rawValue) }) {
-                delay(50)
+                // Device A: create an account, then sign up with Apple → needs binding → bind it.
+                val (deviceA, lockersA) = bootAccount(rpcClient).also { accounts.add(it) }
+                val accountId = deviceA.createAccount()
+                val readyA = deviceA.lifecycle.first { it is Lifecycle.Ready } as Lifecycle.Ready
+                // Ready is offline-first; wait for the connected-tick init to create the AccountState
+                // (the private room's only locker here) before device B tries to recover it.
+                while (lockersA.getAllKnownLockers().none { it.roomId.rawValue.contentEquals(readyA.privateRoom.rawValue) }) {
+                    delay(50)
+                }
+
+                val signUp = AuthenticateWithAppleUseCase(loginClient, fakeApple, deviceA).observedBy(sink).authenticate()
+                assertTrue(signUp is SignInResult.NeedsBinding, "a first-time method should need binding")
+
+                val bound = BindCurrentAccountUseCase(loginClient, deviceA).bind(signUp.bindTicket)
+                assertTrue(bound is BindResult.Bound, "binding the current account should succeed")
+
+                // Device B: no local identity. Sign in with the same Apple identity → recover the key.
+                val (deviceB, _) = bootAccount(rpcClient).also { accounts.add(it) }
+                assertTrue(deviceB.lifecycle.first() is Lifecycle.NoAccount)
+
+                val signIn = AuthenticateWithAppleUseCase(loginClient, fakeApple, deviceB).observedBy(sink).authenticate()
+                assertTrue(signIn is SignInResult.Recovered, "a bound method should recover the account")
+                assertTrue(signIn.accountId.contentEquals(accountId), "the recovered account id must match")
+
+                val ready = deviceB.lifecycle.first { it is Lifecycle.Ready } as Lifecycle.Ready
+                assertTrue(ready.accountId.contentEquals(accountId))
+
+                kotlin.test.assertEquals(2, records.count { it.operation == "nativeSignIn" && it.provider == "apple" && it.result == "ok" })
+                assertTrue(records.any { it.operation == "authenticateSocial" && it.result == "needs_binding" })
+                assertTrue(records.none { it.toString().contains(APPLE_SUBJECT) })
+            } finally {
+                withContext(NonCancellable) {
+                    accounts.asReversed().forEach { (manager, lockers) ->
+                        manager.stopAndJoin()
+                        lockers.closeAndJoin()
+                    }
+                    rpcClient.closeAndJoin()
+                }
             }
-
-            val signUp = AuthenticateWithAppleUseCase(loginClient, fakeApple, deviceA).observedBy(sink).authenticate()
-            assertTrue(signUp is SignInResult.NeedsBinding, "a first-time method should need binding")
-
-            val bound = BindCurrentAccountUseCase(loginClient, deviceA).bind(signUp.bindTicket)
-            assertTrue(bound is BindResult.Bound, "binding the current account should succeed")
-
-            // Device B: no local identity. Sign in with the same Apple identity → recover the key.
-            val (deviceB, _) = bootAccount(server.rpcClient)
-            assertTrue(deviceB.lifecycle.first() is Lifecycle.NoAccount)
-
-            val signIn = AuthenticateWithAppleUseCase(loginClient, fakeApple, deviceB).observedBy(sink).authenticate()
-            assertTrue(signIn is SignInResult.Recovered, "a bound method should recover the account")
-            assertTrue(signIn.accountId.contentEquals(accountId), "the recovered account id must match")
-
-            val ready = deviceB.lifecycle.first { it is Lifecycle.Ready } as Lifecycle.Ready
-            assertTrue(ready.accountId.contentEquals(accountId))
-
-            kotlin.test.assertEquals(2, records.count { it.operation == "nativeSignIn" && it.provider == "apple" && it.result == "ok" })
-            assertTrue(records.any { it.operation == "authenticateSocial" && it.result == "needs_binding" })
-            assertTrue(records.none { it.toString().contains(APPLE_SUBJECT) })
-            deviceA.stop()
-            deviceB.stop()
-        }
+        } }
 }
