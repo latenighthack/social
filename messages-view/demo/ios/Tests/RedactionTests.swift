@@ -18,4 +18,17 @@ final class RedactionTests: XCTestCase {
         }
         XCTAssertEqual(labels(rendered).first?.accessibilityLabel, "Before ██████ after")
     }
+    @MainActor func testRedactedInlineActionHasNoAccessibleActivation() {
+        var text = MessageText(); text.text = "secret"
+        var hidden = Com_Latenighthack_Social_Messages_V1_Inline()
+        hidden.offset = 0; hidden.length = 6; hidden.rule.contents = .redaction(.init())
+        var link = hidden
+        var tappable = Com_Latenighthack_Social_Messages_V1_Inline.Rule.Tappable()
+        tappable.action = MessageAction(); link.rule.contents = .tappable(tappable)
+        text.inlines = [link, hidden]
+        var component = MessageComponent(); component.contents = .text(text)
+        let view = MessageComponentView(component: component)
+        let label = view.subviews.first as? UILabel
+        XCTAssertEqual(label?.accessibilityCustomActions?.count, 0)
+    }
 }

@@ -402,9 +402,12 @@ struct MessageRenderer {
                 if let url = URL(string: icon.image.url) { label.icons.append((attachment, url)) }
             }
         }
-        label.accessibilityCustomActions = label.actions.map { range, action in
+        label.accessibilityCustomActions = label.actions.compactMap { range, _ in
+            guard let offset = (range.location..<NSMaxRange(range)).first(where: { position in
+                !label.redactions.contains(where: { NSLocationInRange(position, $0) })
+            }) else { return nil }
             let name = (MessagePreviewView.redactedText(text) as NSString).substring(with: range)
-            return UIAccessibilityCustomAction(name: name) { _ in self.onAction?(action); return true }
+            return UIAccessibilityCustomAction(name: name) { [weak label] _ in label?.activate(offset: offset) ?? false }
         }
         return string
     }

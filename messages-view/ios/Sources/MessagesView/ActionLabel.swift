@@ -13,9 +13,11 @@ final class MessageActionLabel: UILabel {
         isUserInteractionEnabled = true
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
-    func activate(offset: Int) {
-        guard !redactions.contains(where: { NSLocationInRange(offset, $0) }) else { return }
-        if let action = actions.first(where: { NSLocationInRange(offset, $0.0) })?.1 { onAction?(action) }
+    @discardableResult func activate(offset: Int) -> Bool {
+        guard !redactions.contains(where: { NSLocationInRange(offset, $0) }),
+              let action = actions.first(where: { NSLocationInRange(offset, $0.0) })?.1 else { return false }
+        onAction?(action)
+        return true
     }
     @objc private func activate(_ gesture: UITapGestureRecognizer) {
         guard let attributedText = attributedText else { return }
