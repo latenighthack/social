@@ -19,6 +19,7 @@ private class AccountOperation(val session: AccountSession, val owner: String, v
 
 /** A public command and all of its children belong to the identity that admitted it. */
 suspend fun <T> AccountSession.withAccount(block: suspend () -> T): T {
+    requireOperationOwner()
     val operation = AccountOperation(this, currentOwner(), generation.value)
     return withContext(operation) {
         coroutineScope {
@@ -37,8 +38,8 @@ suspend fun <T> AccountSession.withAccount(block: suspend () -> T): T {
 suspend fun AccountSession.requireOperationOwner() {
     currentCoroutineContext().ensureActive()
     val operation = currentCoroutineContext()[AccountOperation]
-    check(owner.value != null && (operation == null ||
-        (operation.session === this && owner.value == operation.owner && generation.value == operation.generation))) {
-        "account changed during command"
+    if (operation != null && (operation.session !== this || owner.value != operation.owner || generation.value != operation.generation)) {
+        throw kotlinx.coroutines.CancellationException("account changed during command")
     }
+    check(owner.value != null) { "account is signed out" }
 }

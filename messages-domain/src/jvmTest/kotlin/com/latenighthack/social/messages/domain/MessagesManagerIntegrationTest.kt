@@ -52,6 +52,7 @@ import io.ktor.server.application.Application
 import kotlin.jvm.Volatile
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlin.random.Random
@@ -88,6 +89,7 @@ class MessagesManagerIntegrationTest {
         backoffBaseMillis: Long = 1L,
         databaseDelegate: com.latenighthack.ktstore.LifecycleStoreDelegate = com.latenighthack.ktstore.InMemoryStoreDelegate(),
         messageRooms: (com.latenighthack.social.rooms.domain.RoomsManager) -> com.latenighthack.social.rooms.domain.RoomsManager = { it },
+        messageProfiles: (com.latenighthack.social.profiles.domain.MyProfilesManager) -> com.latenighthack.social.profiles.domain.MyProfilesManager = { it },
         lockKeySourceFactory: (LockKeySource) -> LockKeySource = { it },
     ): Party {
         val account = AccountManagerImpl(accountStore)
@@ -100,7 +102,7 @@ class MessagesManagerIntegrationTest {
         // prepared first, then LockersClient.create performs the single createStores() call.
         val database = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), databaseDelegate)
         val messages = MessagesManagerImpl(
-            messageRooms(rooms), myProfiles, database,
+            messageRooms(rooms), messageProfiles(myProfiles), database,
             maxAttempts = maxAttempts, backoffBaseMillis = backoffBaseMillis, session = account,
         )
         val drafts = DraftsManagerImpl(database, session = account)
@@ -123,6 +125,33 @@ class MessagesManagerIntegrationTest {
         account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
         return Party(account, myProfiles, rooms, messages, drafts, lockers)
     }
+
+    @Test(timeout = 30000)
+    fun `sign out cancels a local enqueue waiting for its signature`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            kotlinx.coroutines.coroutineScope {
+                val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+                var cleaned = false
+                val party = newParty(server.rpcClient, messageProfiles = { delegate ->
+                    object : com.latenighthack.social.profiles.domain.MyProfilesManager by delegate {
+                        override suspend fun sign(profileId: com.latenighthack.social.profiles.v1.ProfileId, label: Long, content: ByteArray): SignedContent? {
+                            entered.complete(Unit)
+                            try { kotlinx.coroutines.awaitCancellation() } finally { cleaned = true }
+                        }
+                    }
+                })
+                try {
+                    party.myProfiles.createProfile("writer")
+                    val room = party.rooms.createGroup("cancelled local enqueue")
+                    val command = async { party.messages.send(room, Draft(text = "withdrawn")) }
+                    entered.await()
+                    party.account.signOut()
+                    kotlinx.coroutines.withTimeout(5000) { command.join() }
+                    kotlin.test.assertTrue(command.isCancelled)
+                    kotlin.test.assertTrue(cleaned)
+                } finally { party.close() }
+            }
+        }
 
     @Test(timeout = 30000)
     fun `offline room metadata cannot block durable message enqueue and stops with its owner`() =

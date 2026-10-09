@@ -34,7 +34,7 @@ class AccountOperationsTest {
     }
     @Test fun signOutAndRestoreOfTheSameAccountStillWithdrawsInFlightAuthority() = runTest {
         val session = Session()
-        assertFailsWith<IllegalStateException> {
+        assertFailsWith<CancellationException> {
             session.withAccount {
                 session.generation.value++
                 session.requireOperationOwner()
@@ -52,5 +52,16 @@ class AccountOperationsTest {
         runCurrent()
         kotlin.test.assertEquals(listOf<String?>("alice", "alice"), seen)
         collector.cancel()
+    }
+    @Test fun nestedCommandsCannotReplaceAWithdrawnAccountContext() = runTest {
+        val session = Session()
+        var nested = false
+        assertFailsWith<CancellationException> {
+            session.withAccount {
+                session.owner.value = "bob"
+                session.withAccount { nested = true }
+            }
+        }
+        kotlin.test.assertFalse(nested)
     }
 }

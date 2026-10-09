@@ -113,35 +113,47 @@ class DraftsManagerImpl(
     // Read-modify-write of [roomId]'s draft: applies [transform] to the current draft (or an empty one)
     // and mirrors the result into memory and the store, so each field can be edited without clobbering
     // the others.
-    private suspend fun mutate(roomId: RoomId, transform: (Draft) -> Draft) {
+    private suspend fun <T> withSession(block: suspend () -> T): T =
+        if (session == null) block() else session.withAccount(block)
+
+    private suspend fun mutate(roomId: RoomId, transform: (Draft) -> Draft): Unit = withSession { mutateOwned(roomId, transform) }
+
+    private suspend fun mutateOwned(roomId: RoomId, transform: (Draft) -> Draft) {
         val owner = session.currentOwner()
         ready.await()
         mutex.withLock {
+            session?.requireOperationOwner()
             val updated = transform(if (loadedOwner == owner) _drafts.value[roomId] ?: Draft { } else store.getDraft(roomId, owner)?.draft ?: Draft { })
             store.saveDraft(LocalDraft(roomId = roomId.rawValue, draft = updated, ownerAccountId = owner))
-            check(session.currentOwner() == owner) { "account changed" }
+            session?.requireOperationOwner()
             _drafts.value = (if (loadedOwner == owner) _drafts.value else emptyMap()) + (roomId to updated)
             loadedOwner = owner
         }
     }
 
-    override suspend fun clear(roomId: RoomId) {
+    override suspend fun clear(roomId: RoomId): Unit = withSession { clearOwned(roomId) }
+
+    private suspend fun clearOwned(roomId: RoomId) {
         val owner = session.currentOwner()
         ready.await()
         mutex.withLock {
-            if (loadedOwner != owner) return
+            session?.requireOperationOwner()
             store.removeDraft(roomId, owner)
-            if (session.currentOwner() == owner) _drafts.value = _drafts.value - roomId
+            if (session.currentOwner() == owner && loadedOwner == owner) _drafts.value = _drafts.value - roomId
         }
     }
 
-    override suspend fun clearIfUnchanged(roomId: RoomId, sent: Draft) {
+    override suspend fun clearIfUnchanged(roomId: RoomId, sent: Draft): Unit = withSession { clearUnchangedOwned(roomId, sent) }
+
+    private suspend fun clearUnchangedOwned(roomId: RoomId, sent: Draft) {
         val owner = session.currentOwner()
         ready.await()
         mutex.withLock {
-            if (loadedOwner != owner || _drafts.value[roomId] != sent) return
+            val current = if (loadedOwner == owner) _drafts.value[roomId] else store.getDraft(roomId, owner)?.draft
+            session?.requireOperationOwner()
+            if (current != sent) return
             store.removeDraft(roomId, owner)
-            if (session.currentOwner() == owner) _drafts.value = _drafts.value - roomId
+            if (session.currentOwner() == owner && loadedOwner == owner) _drafts.value = _drafts.value - roomId
         }
     }
 

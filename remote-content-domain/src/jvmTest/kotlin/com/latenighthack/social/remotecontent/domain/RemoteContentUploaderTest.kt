@@ -7,6 +7,7 @@ import assertk.assertions.isNotNull
 import assertk.assertions.hasSize
 import com.latenighthack.ktstore.Database
 import com.latenighthack.social.remotecontent.v1.ContentId
+import com.latenighthack.social.remotecontent.v1.copy
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -19,6 +20,28 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 
 class RemoteContentUploaderTest {
+
+    @Test fun aNewGenerationRestoresCommittedFailureInsteadOfKeepingItsOldQueuedProjection() = runBlocking {
+        val database = RemoteContentStorage.inMemory("upload-epoch"); database.open()
+        val session = object : com.latenighthack.social.runtime.AccountSession {
+            override val owner = kotlinx.coroutines.flow.MutableStateFlow<String?>("alice")
+            override val generation = kotlinx.coroutines.flow.MutableStateFlow(0L)
+        }
+        val fake = FakeRemoteContentClient()
+        val uploader = RemoteContentUploaderImpl(fake, database, session = session)
+        try {
+            uploader.prepare()
+            val upload = uploader.enqueue(byteArrayOf(1), "image/png")
+            val store = PendingUploadStore(database)
+            val row = store.getAllPending().single()
+            // Model interruption after the durable failure commit but before the status projection.
+            store.savePending(row.copy(attempts = 1, failureReason = UploadFailure.INVALID_CONTENT.name))
+            session.generation.value++
+            uploader.start()
+            awaitUntil { uploader.watchUpload(upload.contentId).first()?.status == UploadStatus.Failed(UploadFailure.INVALID_CONTENT) }
+            kotlin.test.assertTrue(fake.uploaded.isEmpty())
+        } finally { uploader.stopAndJoin(); database.close() }
+    }
 
     @Test fun exhaustedUploadsRemainObservableAcrossRestartAndCanBeExplicitlyRetried() = runBlocking {
         val database = RemoteContentStorage.inMemory("failed-upload"); database.open()

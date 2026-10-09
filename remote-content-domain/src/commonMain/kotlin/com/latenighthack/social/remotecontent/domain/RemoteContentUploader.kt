@@ -109,6 +109,7 @@ class RemoteContentUploaderImpl(
 ) : RemoteContentUploader, DomainLifecycle {
 
     private var loadedOwner: String? = null
+    private var loadedGeneration = -1L
     private val store = PendingUploadStore(database)
     private val stateMutex = Mutex()
 
@@ -158,7 +159,9 @@ class RemoteContentUploaderImpl(
         val upload = Upload(created.contentId, created.downloadUrl, UploadStatus.Queued)
         stateMutex.withLock {
         check(session.currentOwner() == owner) { "account changed during upload creation" }
-        if (loadedOwner != owner) { uploads.value = emptyMap(); loadedOwner = owner }
+        if (loadedOwner != owner || loadedGeneration != (session?.generation?.value ?: 0L)) {
+            uploads.value = emptyMap(); loadedOwner = owner; loadedGeneration = session?.generation?.value ?: 0L
+        }
         store.savePending(PendingUpload {
             contentId = created.contentId
             ownerAccountId = owner
@@ -194,16 +197,17 @@ class RemoteContentUploaderImpl(
     }
 
     override fun watchUploads(): Flow<List<Upload>> =
-        combine(uploads, session.ownerChanges()) { map, owner -> if (owner != null && owner == loadedOwner) map.values.toList() else emptyList() }.distinctUntilChanged()
+        combine(uploads, session.ownerChanges()) { map, owner -> if (owner != null && owner == loadedOwner && loadedGeneration == (session?.generation?.value ?: 0L)) map.values.toList() else emptyList() }.distinctUntilChanged()
 
     override fun watchUpload(contentId: ContentId): Flow<Upload?> =
-        combine(uploads, session.ownerChanges()) { map, owner -> if (owner != null && owner == loadedOwner) map[contentId.rawValue.toList()] else null }.distinctUntilChanged()
+        combine(uploads, session.ownerChanges()) { map, owner -> if (owner != null && owner == loadedOwner && loadedGeneration == (session?.generation?.value ?: 0L)) map[contentId.rawValue.toList()] else null }.distinctUntilChanged()
 
     private suspend fun run() {
         session.ownerChanges().collectLatest { owner ->
             stateMutex.withLock {
-                if (loadedOwner != owner) uploads.value = emptyMap()
-                loadedOwner = owner
+                val generation = session?.generation?.value ?: 0L
+                if (loadedOwner != owner || loadedGeneration != generation) uploads.value = emptyMap()
+                loadedOwner = owner; loadedGeneration = generation
             }
             if (owner != null && session != null) store.pages().collect { page ->
                 stateMutex.withLock {
@@ -215,7 +219,10 @@ class RemoteContentUploaderImpl(
                     }
                 }
             }
-            if (owner != null) runForOwner()
+            if (owner != null) withSession {
+                if (session.currentOwner() != owner) throw CancellationException("account changed")
+                runForOwner()
+            }
         }
     }
 
@@ -250,9 +257,11 @@ class RemoteContentUploaderImpl(
     private suspend fun transfer(pending: com.latenighthack.social.remotecontent.v1.PendingUpload) {
         val contentId = pending.contentId ?: return
         val key = contentId.rawValue.toList()
+        session?.requireOperationOwner()
         setStatus(key, UploadStatus.Uploading)
         try {
             kotlinx.coroutines.withTimeout(30_000) { client.upload(pending.uploadUrl, pending.bytes) }
+            session?.requireOperationOwner()
             store.deletePending(contentId)
             setStatus(key, UploadStatus.Completed)
         } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
@@ -278,6 +287,7 @@ class RemoteContentUploaderImpl(
         UploadStatus.Failed(UploadFailure.entries.firstOrNull { it.name == pending.failureReason } ?: UploadFailure.RETRIES_EXHAUSTED)
 
     private suspend fun recordFailure(pending: PendingUpload, permanent: UploadFailure?) {
+        session?.requireOperationOwner()
         val attempts = (pending.attempts + 1).coerceAtMost(MAX_ATTEMPTS)
         val reason = permanent ?: UploadFailure.RETRIES_EXHAUSTED.takeIf { attempts >= MAX_ATTEMPTS }
         store.savePending(pending.copy(attempts = attempts, failureReason = reason?.name ?: ""))

@@ -5,6 +5,7 @@ import com.latenighthack.social.runtime.AccountSession
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
 import com.latenighthack.ktbuf.test.server.runTestWithServer
 import com.latenighthack.ktstore.*
@@ -59,5 +60,22 @@ class AccountPartitionRegressionTest {
             assertEquals("alice", pending.getAllPending().single().ownerAccountId)
             assertEquals("alice", dead.getDeadLettered(room, id, "alice")?.ownerAccountId)
         } finally { database.close() }
+    }
+    @Test fun revokingTheSameIdentityCancelsADraftCommandWaitingForStartup() = runBlocking {
+        val database = MessagesStorage.inMemory("queued-draft-owner"); database.open()
+        val session = object : AccountSession {
+            override val owner = MutableStateFlow<String?>("alice")
+            override val generation = MutableStateFlow(0L)
+        }
+        val drafts = DraftsManagerImpl(database, session = session)
+        val command = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            drafts.setText(RoomId(rawValue = byteArrayOf(1)), "withdrawn")
+        }
+        try {
+            session.generation.value++
+            withTimeout(5000) { command.join() }
+            kotlin.test.assertTrue(command.isCancelled)
+            kotlin.test.assertTrue(DraftStore(database).getAllDrafts().isEmpty())
+        } finally { command.cancel(); drafts.stopAndJoin(); database.close() }
     }
 }

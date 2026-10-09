@@ -32,7 +32,7 @@ class SendAccountRegressionTest {
             override suspend fun clear(roomId: RoomId) { cleared = true }
             override suspend fun clearIfUnchanged(roomId: RoomId, sent: Draft) { cleared = true }
         }
-        assertFailsWith<IllegalStateException> {
+        assertFailsWith<CancellationException> {
             SendMessageUseCase(messages, drafts, session).send(RoomId(rawValue = byteArrayOf(1)), Draft(text = "same text"))
         }
         assertFalse(cleared)
