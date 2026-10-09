@@ -7,6 +7,8 @@
 
 package com.latenighthack.social.messages.domain
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.social.messages.v1.BoundedMessagePayload
 
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
@@ -111,7 +113,8 @@ class MessagesManagerImpl(
     private data class RoomBump(val room: RoomId, val owner: String, val generation: Long)
     private val bumps = Channel<RoomBump>(64, kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
 
-    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private val lockers: LockersClient? get() = runner.token as? LockersClient
 
@@ -123,7 +126,7 @@ class MessagesManagerImpl(
 
     override fun start(lockers: LockersClient) {
         runner.start(lockers) {
-             recoverTask(taskHealth) { run(lockers) } }
+             recoverTask(mutableTaskHealth) { run(lockers) } }
     }
 
     override fun stop() {

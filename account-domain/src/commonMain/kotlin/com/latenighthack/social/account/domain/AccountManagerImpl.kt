@@ -4,6 +4,8 @@
 
 package com.latenighthack.social.account.domain
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.ktcrypto.AES
 import com.latenighthack.ktcrypto.digest
 import com.latenighthack.ktcrypto.AESSymmetricKey
@@ -63,9 +65,9 @@ class AccountManagerImpl(
 
     private val identityMutex = Mutex()
     private val _owner = MutableStateFlow<String?>(null)
-    override val owner: StateFlow<String?> get() = _owner
+    override val owner: StateFlow<String?> = _owner.asStateFlow()
     private val _generation = MutableStateFlow(0L)
-    override val generation: StateFlow<Long> get() = _generation
+    override val generation: StateFlow<Long> = _generation.asStateFlow()
     override var mayAdoptLegacyStorage: Boolean = false
         private set
 
@@ -148,9 +150,10 @@ class AccountManagerImpl(
     // --- session lifecycle ---
 
     private val _lifecycle = MutableStateFlow<Lifecycle>(Lifecycle.NoAccount)
-    override val lifecycle: StateFlow<Lifecycle> get() = _lifecycle
+    override val lifecycle: StateFlow<Lifecycle> = _lifecycle.asStateFlow()
 
-    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private var everReady = false
     private var roomInitialized = false
@@ -247,7 +250,7 @@ class AccountManagerImpl(
     override fun start(lockers: LockersClient) {
         runner.start(lockers) {
         roomInitialized = false
-             recoverTask(taskHealth) { run(lockers) } }
+             recoverTask(mutableTaskHealth) { run(lockers) } }
     }
 
     override fun stop() {

@@ -1,5 +1,7 @@
 package com.latenighthack.social.runtime
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.lockers.connector.LockersClient
 
 /**
@@ -16,4 +18,4 @@ interface DomainLifecycle {
     suspend fun stopAndJoin() { stop() }
 }
 
-private val IdleTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+private val IdleTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle).asStateFlow()

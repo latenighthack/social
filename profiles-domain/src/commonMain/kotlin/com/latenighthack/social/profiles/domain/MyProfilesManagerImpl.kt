@@ -1,5 +1,7 @@
 package com.latenighthack.social.profiles.domain
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.social.runtime.withAccount
 import com.latenighthack.social.runtime.requireOperationOwner
 
@@ -70,16 +72,17 @@ class MyProfilesManagerImpl(
     private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value &&
         account.generation.value == loadedGeneration.value
 
-    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private val lockers: LockersClient? get() = runner.token as? LockersClient
 
-    override val isLoaded: StateFlow<Boolean> get() = _isLoaded
+    override val isLoaded: StateFlow<Boolean> = _isLoaded.asStateFlow()
 
     override fun start(lockers: LockersClient) {
         runner.start(lockers) {
         _isLoaded.value = false
-             recoverTask(taskHealth) { run() } }
+             recoverTask(mutableTaskHealth) { run() } }
     }
 
     override fun stop() {

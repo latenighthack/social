@@ -1,5 +1,7 @@
 package com.latenighthack.social.runtime
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -17,4 +19,4 @@ fun AccountSession?.currentOwner(): String = if (this == null) "" else checkNotN
 fun AccountSession?.owns(recordOwner: String): Boolean = this == null ||
     (owner.value != null && (recordOwner == owner.value || (recordOwner.isEmpty() && mayAdoptLegacyStorage)))
 
-private val DEFAULT_GENERATION: StateFlow<Long> = kotlinx.coroutines.flow.MutableStateFlow(0L)
+private val DEFAULT_GENERATION: StateFlow<Long> = kotlinx.coroutines.flow.MutableStateFlow(0L).asStateFlow()

@@ -4,6 +4,8 @@
 
 package com.latenighthack.social.contacts.domain
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
@@ -45,13 +47,14 @@ class ContactsManagerImpl(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : ContactsManager, DomainLifecycle {
 
-    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private val lockers: LockersClient? get() = runner.token as? LockersClient
 
     override fun start(lockers: LockersClient) {
         runner.start(lockers) {
-             recoverTask(taskHealth) { run(lockers) } }
+             recoverTask(mutableTaskHealth) { run(lockers) } }
     }
 
     override fun stop() {

@@ -3,6 +3,8 @@
 
 package com.latenighthack.social.messages.domain
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
@@ -46,7 +48,8 @@ class DraftsManagerImpl(
     private var loadedOwner: String? = null
     private val _drafts = MutableStateFlow<Map<RoomId, Draft>>(emptyMap())
 
-    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     // Completes once the store has been loaded — gates all store access.
     private var ready = CompletableDeferred<Unit>()
@@ -56,7 +59,7 @@ class DraftsManagerImpl(
     }
 
     override fun start(lockers: LockersClient) {
-        runner.start { recoverTask(taskHealth) {
+        runner.start { recoverTask(mutableTaskHealth) {
             if (ready.isCancelled) ready = CompletableDeferred()
             try {
             session.ownerChanges().collectLatest { owner ->

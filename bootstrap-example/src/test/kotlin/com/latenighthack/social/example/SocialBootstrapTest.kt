@@ -27,6 +27,11 @@ class SocialBootstrapTest {
                 database.open()
                 val component = SocialComponent::class.create(
                     KeyValueStore(InMemoryKeyValueStoreDelegate()), database, server.rpcClient, http)
+                kotlin.test.assertFalse(component.account.owner is kotlinx.coroutines.flow.MutableStateFlow<*>)
+                kotlin.test.assertFalse(component.account.generation is kotlinx.coroutines.flow.MutableStateFlow<*>)
+                kotlin.test.assertFalse(component.account.lifecycle is kotlinx.coroutines.flow.MutableStateFlow<*>)
+                kotlin.test.assertFalse(component.profiles.isLoaded is kotlinx.coroutines.flow.MutableStateFlow<*>)
+                component.lifecycles.forEach { kotlin.test.assertFalse(it.taskHealth is kotlinx.coroutines.flow.MutableStateFlow<*>) }
                 val client = component.startSocial(KeyValueStore(InMemoryKeyValueStoreDelegate()), Version(0, 0, 1))
                 try {
                     component.account.createAccount()

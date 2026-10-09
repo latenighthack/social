@@ -4,6 +4,8 @@
 
 package com.latenighthack.social.rooms.domain
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.social.runtime.withAccount
 import com.latenighthack.social.runtime.requireOperationOwner
 
@@ -109,13 +111,14 @@ class RoomsManagerImpl(
     private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value &&
         account.generation.value == loadedGeneration.value
 
-    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private val lockers: LockersClient? get() = runner.token as? LockersClient
 
     override fun start(lockers: LockersClient) {
         runner.start(lockers) {
-             recoverTask(taskHealth) { run(lockers) } }
+             recoverTask(mutableTaskHealth) { run(lockers) } }
     }
 
     override fun stop() {
@@ -566,7 +569,7 @@ class RoomsManagerImpl(
             if (record.encryptedSharedPrivateKey.isEmpty()) writeAccountRecord(lockers, decrypted)
             if (record.membershipPending || record.leaving) {
                 CoroutineScope(kotlinx.coroutines.currentCoroutineContext()).launch {
-                    recoverTask(taskHealth) {
+                    recoverTask(mutableTaskHealth) {
                         account.withAccount { if (record.leaving) repairLeave(lockers, decrypted) else repairMembership(lockers, decrypted) }
                     }
                 }

@@ -4,6 +4,8 @@
 
 package com.latenighthack.social.typing.domain
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.IncomingNotification
@@ -79,13 +81,14 @@ class TypingManagerImpl(
     // Rooms we've already subscribed for events (mutated only by the watchRooms collector).
     private val subscribedRooms = mutableSetOf<RoomId>()
 
-    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private val lockers: LockersClient? get() = runner.token as? LockersClient
 
     override fun start(lockers: LockersClient) {
         runner.start(lockers) {
-             recoverTask(taskHealth) { run(lockers) } }
+             recoverTask(mutableTaskHealth) { run(lockers) } }
     }
 
     override fun stop() {

@@ -3,6 +3,8 @@
 
 package com.latenighthack.social.profiles.domain
 
+import kotlinx.coroutines.flow.asStateFlow
+
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
 import com.latenighthack.ktcrypto.decode
 import com.latenighthack.ktstore.Database
@@ -45,7 +47,8 @@ class ProfilesManagerImpl(
 
     private val _profiles = MutableStateFlow<Map<ProfileId, Profile>>(emptyMap())
 
-    override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    private val mutableTaskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
+    override val taskHealth = mutableTaskHealth.asStateFlow()
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private val lockers: LockersClient? get() = runner.token as? LockersClient
     // Completes once the cache has been loaded — gates all store access.
@@ -57,7 +60,7 @@ class ProfilesManagerImpl(
 
     override fun start(lockers: LockersClient) {
         runner.start(lockers) {
-             recoverTask(taskHealth) {
+             recoverTask(mutableTaskHealth) {
             if (ready.isCancelled) ready = CompletableDeferred()
             try {
             val client = profileClient(lockers)
