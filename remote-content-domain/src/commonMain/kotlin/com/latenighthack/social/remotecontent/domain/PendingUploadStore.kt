@@ -16,6 +16,8 @@ internal class PendingUploadStore(private val handle: Database) : Store<PendingU
 
     fun pages() = com.latenighthack.social.runtime.storePages(handle, PendingUploadStoreDefinitionV1, contentIdKey, pageSize = 4)
 
+    suspend fun getPending(contentId: ContentId): PendingUpload? = get(contentIdKey.eq(contentId.toByteArray()))
+
     suspend fun getAllPending(): List<PendingUpload> = getAll()
 
     suspend fun savePending(pending: PendingUpload) = save(pending)

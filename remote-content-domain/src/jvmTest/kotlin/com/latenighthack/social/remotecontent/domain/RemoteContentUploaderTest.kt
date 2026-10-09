@@ -20,6 +20,31 @@ import kotlin.test.assertContentEquals
 
 class RemoteContentUploaderTest {
 
+    @Test fun exhaustedUploadsRemainObservableAcrossRestartAndCanBeExplicitlyRetried() = runBlocking {
+        val database = RemoteContentStorage.inMemory("failed-upload"); database.open()
+        val fake = FakeRemoteContentClient(failuresBeforeSuccess = 8)
+        val uploader = RemoteContentUploaderImpl(fake, database, retryIntervalMillis = 1)
+        try {
+            uploader.prepare(); uploader.start()
+            val upload = uploader.enqueue(byteArrayOf(1, 2), "image/png")
+            awaitUntil { uploader.watchUpload(upload.contentId).first()?.status is UploadStatus.Failed }
+            uploader.stopAndJoin()
+            val retained = PendingUploadStore(database).getAllPending().single()
+            kotlin.test.assertEquals(8L, retained.attempts)
+            assertContentEquals(byteArrayOf(1, 2), retained.bytes)
+            val resumed = RemoteContentUploaderImpl(fake, database, retryIntervalMillis = 1)
+            try {
+                resumed.prepare(); resumed.start()
+                awaitUntil { resumed.watchUpload(upload.contentId).first()?.status is UploadStatus.Failed }
+                delay(30)
+                kotlin.test.assertEquals(8L, PendingUploadStore(database).getAllPending().single().attempts)
+                resumed.retry(upload.contentId)
+                awaitUntil { resumed.watchUpload(upload.contentId).first()?.status == UploadStatus.Completed }
+                kotlin.test.assertTrue(PendingUploadStore(database).getAllPending().isEmpty())
+            } finally { resumed.stopAndJoin() }
+        } finally { uploader.stopAndJoin(); database.close() }
+    }
+
     @Test fun legacyQueuesAdoptOrDiscardThroughPagesWithoutLoadingEveryPayload() = runBlocking {
         for (adopt in listOf(false, true)) {
             val base = com.latenighthack.ktstore.InMemoryStoreDelegate()

@@ -37,6 +37,9 @@ import kotlin.time.Clock
  * the durable-queue state; byte-level transfer progress is observed separately via
  * [RemoteContentClient.watchUpload].
  */
+/** Stable failure categories; never expose capability URLs or raw transport exception messages. */
+enum class UploadFailure { AUTHORIZATION_REJECTED, INVALID_CONTENT, PERMANENT_REJECTION, RETRIES_EXHAUSTED }
+
 sealed interface UploadStatus {
     /** Enqueued and waiting — either not yet attempted, or between retries after a failed attempt. */
     data object Queued : UploadStatus
@@ -46,6 +49,9 @@ sealed interface UploadStatus {
 
     /** The bytes have been fully uploaded and are being served from the download URL. */
     data object Completed : UploadStatus
+
+    /** Bytes are retained durably; background retry is paused until the host chooses an action. */
+    data class Failed(val reason: UploadFailure) : UploadStatus
 }
 
 /** An observable upload: its content id, the URL it is served from, and its current [status]. */
@@ -58,7 +64,7 @@ data class Upload(
 /**
  * Durable, set-and-forget uploads. [enqueue] mints the content id + URL synchronously (so the caller
  * gets a usable download URL immediately), durably queues the bytes, and returns — it does NOT wait
- * for the transfer, which happens in the background and is retried until it lands, surviving restarts.
+ * for the transfer, which happens in the background and is retried up to eight attempts, surviving restarts. Permanent or exhausted failures retain their bytes and are exposed as [UploadStatus.Failed].
  * The returned download URL is valid from the moment it is returned, though it 404s until the bytes
  * have been uploaded, so consumers must treat it as eventually consistent. [watchUploads] /
  * [watchUpload] expose each upload's progress and status so a UI can reflect the background transfer.
@@ -70,6 +76,12 @@ interface RemoteContentUploader {
      * [watchUpload].
      */
     suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload
+
+    /** Retry a failed upload using the same authorization. Expired authorization requires reattachment. */
+    suspend fun retry(contentId: ContentId): Unit = throw UnsupportedOperationException("retry is unavailable")
+
+    /** Delete the retained bytes of a failed upload. */
+    suspend fun discardFailed(contentId: ContentId): Unit = throw UnsupportedOperationException("discard is unavailable")
 
     /** The uploads known this session (in-flight, retrying, or recently completed). */
     fun watchUploads(): Flow<List<Upload>>
@@ -129,12 +141,17 @@ class RemoteContentUploaderImpl(
         runner.stopAndJoin()
     }
 
-    override suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload {
+    override suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload = withSession { enqueueOwned(bytes, mimeType) }
+
+    private suspend fun <T> withSession(block: suspend () -> T): T = if (session == null) block() else session.withAccount(block)
+
+    private suspend fun enqueueOwned(bytes: ByteArray, mimeType: String?): Upload {
         // Mint the id + URLs up front; this is the only step that needs the server to be reachable,
         // and it hands back the download URL before the bytes are transferred.
         require(bytes.size <= 16 * 1024 * 1024) { "upload exceeds 16 MiB" }
         val owner = session.currentOwner()
         val created = client.createContent(mimeType)
+        session?.requireOperationOwner()
         val upload = Upload(created.contentId, created.downloadUrl, UploadStatus.Queued)
         stateMutex.withLock {
         check(session.currentOwner() == owner) { "account changed during upload creation" }
@@ -151,6 +168,26 @@ class RemoteContentUploaderImpl(
         }
         wake.trySend(Unit)
         return upload
+    }
+
+    override suspend fun retry(contentId: ContentId): Unit = withSession {
+        stateMutex.withLock {
+            val pending = store.getPending(contentId) ?: return@withLock
+            check(session.owns(pending.ownerAccountId) && pending.failureReason.isNotEmpty()) { "upload is not an owned failure" }
+            store.savePending(pending.copy(attempts = 0, failureReason = ""))
+            uploads.update { (it + (contentId.rawValue.toList() to Upload(contentId, pending.downloadUrl, UploadStatus.Queued))).entries.toList().takeLast(1024).associate { entry -> entry.toPair() } }
+        }
+        wake.trySend(Unit)
+        Unit
+    }
+
+    override suspend fun discardFailed(contentId: ContentId): Unit = withSession {
+        stateMutex.withLock {
+            val pending = store.getPending(contentId) ?: return@withLock
+            check(session.owns(pending.ownerAccountId) && pending.failureReason.isNotEmpty()) { "upload is not an owned failure" }
+            store.deletePending(contentId)
+            uploads.update { it - setOf(contentId.rawValue.toList()) }
+        }
     }
 
     override fun watchUploads(): Flow<List<Upload>> =
@@ -185,7 +222,7 @@ class RemoteContentUploaderImpl(
         store.pages().collect { page ->
             val resumed = page.filter { session.owns(it.ownerAccountId) }.mapNotNull { pending ->
                 val id = pending.contentId ?: return@mapNotNull null
-                id.rawValue.toList() to Upload(id, pending.downloadUrl, UploadStatus.Queued)
+                id.rawValue.toList() to Upload(id, pending.downloadUrl, failureStatus(pending) ?: UploadStatus.Queued)
             }.toMap()
             stateMutex.withLock { uploads.update { (resumed + it).entries.toList().takeLast(1024).associate { it.toPair() } } }
         }
@@ -199,12 +236,14 @@ class RemoteContentUploaderImpl(
 
     private suspend fun drainOnce() {
         store.pages().collect { page ->
-            for (batch in page.filter { session.owns(it.ownerAccountId) }.chunked(4)) kotlinx.coroutines.coroutineScope {
+            for (batch in page.filter { session.owns(it.ownerAccountId) && it.failureReason.isEmpty() }.chunked(4)) kotlinx.coroutines.coroutineScope {
                 batch.map { pending -> launch { transfer(pending) } }.forEach { it.join() }
             }
         }
     }
 
+    // Transport adapters may throw platform-specific failures; cancellation is handled first.
+    @Suppress("TooGenericExceptionCaught")
     private suspend fun transfer(pending: com.latenighthack.social.remotecontent.v1.PendingUpload) {
         val contentId = pending.contentId ?: return
         val key = contentId.rawValue.toList()
@@ -215,12 +254,31 @@ class RemoteContentUploaderImpl(
             setStatus(key, UploadStatus.Completed)
         } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            setStatus(key, UploadStatus.Queued)
+            recordFailure(pending, null)
         } catch (e: CancellationException) {
             throw e
+        } catch (_: IllegalArgumentException) {
+            recordFailure(pending, UploadFailure.INVALID_CONTENT)
+        } catch (failure: io.ktor.client.plugins.ClientRequestException) {
+            val permanent = when (failure.response.status.value) {
+                401, 403 -> UploadFailure.AUTHORIZATION_REJECTED
+                408, 429 -> null
+                else -> UploadFailure.PERMANENT_REJECTION
+            }
+            recordFailure(pending, permanent)
         } catch (_: Exception) {
-            setStatus(key, UploadStatus.Queued)
+            recordFailure(pending, null)
         }
+    }
+
+    private fun failureStatus(pending: PendingUpload): UploadStatus.Failed? = if (pending.failureReason.isEmpty()) null else
+        UploadStatus.Failed(UploadFailure.entries.firstOrNull { it.name == pending.failureReason } ?: UploadFailure.RETRIES_EXHAUSTED)
+
+    private suspend fun recordFailure(pending: PendingUpload, permanent: UploadFailure?) {
+        val attempts = (pending.attempts + 1).coerceAtMost(MAX_ATTEMPTS)
+        val reason = permanent ?: UploadFailure.RETRIES_EXHAUSTED.takeIf { attempts >= MAX_ATTEMPTS }
+        store.savePending(pending.copy(attempts = attempts, failureReason = reason?.name ?: ""))
+        pending.contentId?.let { setStatus(it.rawValue.toList(), reason?.let { UploadStatus.Failed(it) } ?: UploadStatus.Queued) }
     }
 
     private suspend fun setStatus(key: List<Byte>, status: UploadStatus) = stateMutex.withLock {
@@ -228,6 +286,7 @@ class RemoteContentUploaderImpl(
     }
 
     private companion object {
+        const val MAX_ATTEMPTS = 8L
         const val DEFAULT_RETRY_INTERVAL_MILLIS = 15_000L
     }
 }
