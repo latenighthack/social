@@ -27,7 +27,8 @@ suspend fun recoverTask(health: MutableStateFlow<TaskHealth>, block: suspend kot
                 throw cancelled
             } catch (failure: Exception) {
                 attempt = (attempt + 1).coerceAtMost(16)
-                health.value = TaskHealth.Recovering(attempt, failure.message ?: failure::class.simpleName.orEmpty())
+                // Exception messages may contain credential-bearing URLs or server response bodies.
+                health.value = TaskHealth.Recovering(attempt, failure::class.simpleName ?: "worker failure")
                 delay((250L shl (attempt - 1)).coerceAtMost(30_000L))
             }
         }

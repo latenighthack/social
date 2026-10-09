@@ -15,9 +15,9 @@ class TaskRecoveryTest {
     @Test fun failureIsVisibleAndRetriedWithBackoff() = runTest {
         val health = MutableStateFlow<TaskHealth>(TaskHealth.Idle)
         var runs = 0
-        val job = launch { recoverTask(health) { if (++runs < 3) error("store unavailable") else awaitCancellation() } }
+        val job = launch { recoverTask(health) { if (++runs < 3) error("https://upload.example/private?token=secret-capability") else awaitCancellation() } }
         runCurrent()
-        assertIs<TaskHealth.Recovering>(health.value)
+        assertEquals("IllegalStateException", assertIs<TaskHealth.Recovering>(health.value).reason)
         advanceTimeBy(249); runCurrent(); assertEquals(1, runs)
         advanceTimeBy(1); runCurrent(); assertEquals(2, runs)
         advanceTimeBy(500); runCurrent(); assertEquals(3, runs)
