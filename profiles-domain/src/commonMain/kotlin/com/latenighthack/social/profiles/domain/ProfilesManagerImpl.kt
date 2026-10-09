@@ -92,7 +92,9 @@ class ProfilesManagerImpl(
         runner.stopAndJoin()
     }
 
-    override suspend fun observe(profileId: ProfileId) {
+    override suspend fun observe(profileId: ProfileId): Unit = runner.command { observeOwned(profileId) }
+
+    private suspend fun observeOwned(profileId: ProfileId) {
         val lockers = lockers ?: error("observe requires start(lockers) first")
         val client = profileClient(lockers)
         client.subscribeToRoom(profileId.toRoomId(), waitForSubscription = false)

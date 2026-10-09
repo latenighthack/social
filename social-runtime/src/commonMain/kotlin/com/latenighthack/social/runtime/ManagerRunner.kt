@@ -49,7 +49,11 @@ class ManagerRunner(private val scope: CoroutineScope) {
 
     /** Public network commands are children of the admitted generation and their caller. */
     suspend fun <T> command(block: suspend () -> T): T {
-        val current = checkNotNull(generation.value?.takeIf { it.job.isActive }) { "manager must be started" }
+        currentCoroutineContext().ensureActive()
+        val current = generation.value?.takeIf { it.job.isActive } ?: run {
+            currentCoroutineContext().ensureActive()
+            error("manager must be started")
+        }
         current.ready.await()
         check(generation.value === current) { "manager generation changed" }
         val parent = SupervisorJob(current.job)

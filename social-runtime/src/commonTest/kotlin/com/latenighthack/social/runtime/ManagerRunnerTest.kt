@@ -5,6 +5,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
@@ -89,5 +90,16 @@ class ManagerRunnerTest {
         val stopped = launch { runner.stopAndJoin() }
         runCurrent(); assertFalse(stopped.isCompleted)
         release.complete(Unit); stopped.join()
+    }
+    @Test fun cancelledCallerRetainsCancellationWhenTheManagerIsAlreadyStopped() = runTest {
+        val runner = ManagerRunner(backgroundScope)
+        var checked = false
+        val caller = launch {
+            kotlinx.coroutines.currentCoroutineContext().cancel()
+            assertFailsWith<kotlinx.coroutines.CancellationException> { runner.command { error("must not run") } }
+            checked = true
+        }
+        caller.join()
+        kotlin.test.assertTrue(checked)
     }
 }
