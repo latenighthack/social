@@ -11,15 +11,17 @@ import com.latenighthack.social.login.v1.Provider
  * this app's Google client id(s).
  */
 class GoogleLoginProviderFactory : LoginProviderFactory {
-    override fun create(context: LoginProviderContext): LoginHandler {
+    override fun create(context: LoginProviderContext): LoginHandler? {
         val audiences = context.env("LOGIN_GOOGLE_AUDIENCES")
             .orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        if (audiences.isEmpty()) return null
         return LoginHandler.SocialVerifier(
             Provider.PROVIDER_GOOGLE,
             OidcTokenVerifier(
                 issuers = setOf("https://accounts.google.com", "accounts.google.com"),
                 jwksUrl = "https://www.googleapis.com/oauth2/v3/certs",
                 audiences = audiences,
+                observeRefresh = { outcome, nanos -> context.observe("google", "jwks_refresh", outcome, nanos) },
             ),
         )
     }

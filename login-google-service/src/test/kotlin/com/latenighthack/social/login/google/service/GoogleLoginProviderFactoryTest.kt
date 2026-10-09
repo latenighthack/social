@@ -11,10 +11,14 @@ import kotlin.test.assertTrue
 
 class GoogleLoginProviderFactoryTest {
 
+    @Test fun `missing audience leaves provider disabled`() {
+        HttpClient(CIO).use { client -> kotlin.test.assertNull(GoogleLoginProviderFactory().create(LoginProviderContext({ null }, client))) }
+    }
+
     @Test
     fun `contributes a google social verifier`() {
         HttpClient(CIO).use { httpClient ->
-            val context = LoginProviderContext(env = { null }, httpClient = httpClient)
+            val context = LoginProviderContext(env = { if (it == "LOGIN_GOOGLE_AUDIENCES") "test-client" else null }, httpClient = httpClient)
             val handler = GoogleLoginProviderFactory().create(context)
             assertTrue(handler is LoginHandler.SocialVerifier)
             val googleProvider: Provider = Provider.PROVIDER_GOOGLE

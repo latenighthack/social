@@ -10,6 +10,7 @@ import com.latenighthack.social.login.v1.LoginServer
 import com.latenighthack.social.login.v1.Provider
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
 import io.micrometer.core.instrument.MeterRegistry
 import com.latenighthack.social.observability.*
 import com.latenighthack.social.observability.server.SocialServerTelemetry
@@ -29,8 +30,9 @@ class LoginServerExtension(
     private val emailSender: EmailSender?,
     private val smsSender: SmsSender?,
     linkBaseUrl: String,
-    nonces: NonceService = NonceService(),
+    nonces: NonceService = NonceService(store = DurableNonceStore(database)),
     requireNonce: Boolean = false,
+    private val onClose: () -> Unit = {},
 ) : ServerExtension, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
         set(value) {
@@ -71,6 +73,8 @@ class LoginServerExtension(
         challenges.prepare()
         database.open()
     }
+
+    override fun stop() = onClose()
 }
 
 /**
@@ -89,8 +93,11 @@ class LoginServerExtensionFactory : ServerExtensionFactory {
     override fun create(meterRegistry: MeterRegistry): ServerExtension = create(meterRegistry, LoginStorage.inMemory())
     override fun create(meterRegistry: MeterRegistry, database: Database): ServerExtension {
         val config = LoginConfig.fromEnv()
-        val httpClient = HttpClient(CIO)
-        val context = LoginProviderContext(System::getenv, httpClient)
+        val httpClient = HttpClient(CIO) {
+            install(HttpTimeout) { requestTimeoutMillis = 10_000; connectTimeoutMillis = 3_000; socketTimeoutMillis = 5_000 }
+        }
+        val measurements = DependencyMetrics(meterRegistry)
+        val context = LoginProviderContext(System::getenv, httpClient, measurements::record)
         val handlers = ServiceLoader.load(LoginProviderFactory::class.java).mapNotNull { it.create(context) }
 
         val social = handlers.filterIsInstance<LoginHandler.SocialVerifier>()
@@ -98,12 +105,13 @@ class LoginServerExtensionFactory : ServerExtensionFactory {
             database = database,
             custody = CustodyCrypto(config.masterKey),
             hasher = Pbkdf2Hasher(),
-            appleVerifier = social.firstOrNull { it.provider == Provider.PROVIDER_APPLE }?.verifier,
-            googleVerifier = social.firstOrNull { it.provider == Provider.PROVIDER_GOOGLE }?.verifier,
-            emailSender = handlers.filterIsInstance<LoginHandler.Email>().firstOrNull()?.sender,
-            smsSender = handlers.filterIsInstance<LoginHandler.Sms>().firstOrNull()?.sender,
+            appleVerifier = measurements.verifier("apple", social.firstOrNull { it.provider == Provider.PROVIDER_APPLE }?.verifier),
+            googleVerifier = measurements.verifier("google", social.firstOrNull { it.provider == Provider.PROVIDER_GOOGLE }?.verifier),
+            emailSender = measurements.email(handlers.filterIsInstance<LoginHandler.Email>().firstOrNull()?.sender),
+            smsSender = measurements.sms(handlers.filterIsInstance<LoginHandler.Sms>().firstOrNull()?.sender),
             linkBaseUrl = config.linkBaseUrl,
             requireNonce = config.requireNonce,
+            onClose = httpClient::close,
         ).observedBy(SocialServerTelemetry(meterRegistry))
     }
 }

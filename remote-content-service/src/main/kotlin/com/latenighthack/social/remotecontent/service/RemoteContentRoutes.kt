@@ -4,6 +4,10 @@ import com.latenighthack.social.observability.*
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
+import io.ktor.server.request.receiveChannel
+import io.ktor.utils.io.readRemaining
+import kotlinx.io.readByteArray
+import kotlinx.coroutines.withTimeout
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
 import io.ktor.server.routing.*
@@ -17,7 +21,10 @@ fun Routing.remoteContent(store: ContentStore, telemetry: SocialTelemetry) {
             telemetry.measure("remote_content", "upload") {
                 val id = call.parameters["id"]?.let(ContentUrls::decodeId)
                 if (id == null) { result("invalid"); call.respond(HttpStatusCode.BadRequest); return@measure }
-                val bytes = call.receive<ByteArray>()
+                val maximumBytes = 16 * 1024 * 1024
+                val bytes = try { withTimeout(30_000) { call.receiveChannel().readRemaining(maximumBytes.toLong() + 1).readByteArray() } }
+                catch (_: kotlinx.coroutines.TimeoutCancellationException) { result("invalid"); call.respond(HttpStatusCode.RequestTimeout); return@measure }
+                if (bytes.size > maximumBytes) { result("invalid"); call.respond(HttpStatusCode.PayloadTooLarge); return@measure }
                 telemetry.measure("remote_content", "storage") { store.put(id, bytes) }
                 telemetry.event("remote_content", "upload", kind = "bytes", value = bytes.size.toDouble())
                 call.respond(HttpStatusCode.OK)

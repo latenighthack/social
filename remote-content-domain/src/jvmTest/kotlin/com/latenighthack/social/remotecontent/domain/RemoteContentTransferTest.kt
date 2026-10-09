@@ -61,7 +61,11 @@ class RemoteContentTransferTest {
         }.start(wait = false)
         val port = server.engine.resolvedConnectors().first().port
         val http = HttpClient(ClientCIO)
-        val client = RemoteContentClientImpl(FakeRpc, http)
+        val observations = java.util.concurrent.CopyOnWriteArrayList<Triple<String, String, Double>>()
+        val client = RemoteContentClientImpl(FakeRpc, http, com.latenighthack.social.runtime.OperationsObserver { stage, outcome, seconds, _, _ ->
+            observations.add(Triple(stage, outcome, seconds))
+            if (stage == "content_first_byte") error("A failed observer must not break the content request")
+        })
         val url = "http://localhost:$port/content/abc"
         val bytes = ByteArray(64 * 1024) { it.toByte() }
 
@@ -82,6 +86,12 @@ class RemoteContentTransferTest {
         val downloadProgress = client.watchDownload(url).first()
         assertThat(downloadProgress).isNotNull()
         assertThat(downloadProgress!!.bytesTransferred).isEqualTo(downloadProgress.totalBytes)
+        val firstByte = observations.single { it.first == "content_first_byte" }
+        val completion = observations.single { it.first == "content_download" }
+        kotlin.test.assertTrue(firstByte.third <= completion.third)
+        kotlin.test.assertEquals("success", completion.second)
+        kotlin.test.assertFailsWith<IllegalStateException> { client.download("http://localhost:$port/content/missing") }
+        kotlin.test.assertEquals("failure", observations.last().second)
 
         http.close()
         server.stop()

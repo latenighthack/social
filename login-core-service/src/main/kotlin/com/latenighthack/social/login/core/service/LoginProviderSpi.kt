@@ -18,6 +18,7 @@ interface LoginProviderFactory {
 class LoginProviderContext(
     val env: (String) -> String?,
     val httpClient: HttpClient,
+    val observe: (String, String, String, Long) -> Unit = { _, _, _, _ -> },
 )
 
 /** A contributed handler, folded by the core into the matching [LoginServiceImpl] slot. */

@@ -72,11 +72,14 @@ class LoginServiceImpl(
     override suspend fun requestNonce(
         context: GrpcRequestContext,
         request: RequestNonceRequest,
-    ): RequestNonceResponse = socialTelemetry.measure("login", "requestNonce", "none") { RequestNonceResponse {
-        result = LoginResult.LOGIN_RESULT_OK
-        nonce = nonces.issue()
-        expiresInSeconds = nonces.expiresInSeconds
-    } }
+    ): RequestNonceResponse = socialTelemetry.measure("login", "requestNonce", "none") {
+        val issued = nonces.issue()
+        RequestNonceResponse {
+            result = LoginResult.LOGIN_RESULT_OK
+            nonce = issued
+            expiresInSeconds = nonces.expiresInSeconds
+        }
+    }
 
     override suspend fun authenticateSocial(
         context: GrpcRequestContext,

@@ -11,6 +11,8 @@ import com.nimbusds.jose.proc.JWSVerificationKeySelector
 import com.nimbusds.jose.proc.SecurityContext
 import com.nimbusds.jwt.proc.DefaultJWTProcessor
 import java.net.URL
+import com.nimbusds.jose.util.DefaultResourceRetriever
+import com.nimbusds.jose.util.ResourceRetriever
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -25,10 +27,19 @@ class OidcTokenVerifier(
     private val issuers: Set<String>,
     jwksUrl: String,
     private val audiences: Set<String>,
+    observeRefresh: (String, Long) -> Unit = { _, _ -> },
 ) : SocialTokenVerifier, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
     private val processor = DefaultJWTProcessor<SecurityContext>().apply {
-        val source: JWKSource<SecurityContext> = JWKSourceBuilder.create<SecurityContext>(URL(jwksUrl)).build()
+        val delegate = DefaultResourceRetriever(3_000, 5_000, 256 * 1024)
+        val retriever = ResourceRetriever { url ->
+            val start = System.nanoTime()
+            var outcome = "success"
+            try { delegate.retrieveResource(url) }
+            catch (failure: Exception) { outcome = "error"; throw failure }
+            finally { runCatching { observeRefresh(outcome, System.nanoTime() - start) } }
+        }
+        val source: JWKSource<SecurityContext> = JWKSourceBuilder.create<SecurityContext>(URL(jwksUrl), retriever).build()
         jwsKeySelector = JWSVerificationKeySelector(JWSAlgorithm.RS256, source)
     }
 

@@ -25,6 +25,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Clock
+import kotlin.time.TimeSource
+import com.latenighthack.social.runtime.OperationsObserver
+import com.latenighthack.social.runtime.record
 
 /**
  * Where an upload is in its lifecycle, from enqueued through the background transfer to done. This is
@@ -85,6 +88,7 @@ class RemoteContentUploaderImpl(
     private val database: Database,
     private val retryIntervalMillis: Long = DEFAULT_RETRY_INTERVAL_MILLIS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val observer: OperationsObserver = OperationsObserver.NONE,
 ) : RemoteContentUploader, DomainLifecycle, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
@@ -160,24 +164,37 @@ class RemoteContentUploaderImpl(
     }
 
     private suspend fun drainOnce() {
-        val queueEntries = store.getAllPending()
-        socialTelemetry.event("remote_content", "queue", kind = "queue_depth", value = queueEntries.size.toDouble())
-        socialTelemetry.event("remote_content", "queue", kind = "queue_age", value = queueEntries.maxOfOrNull { ((Clock.System.now().toEpochMilliseconds() - it.createdAtMillis).coerceAtLeast(0) / 1000.0) } ?: 0.0)
-        for (pending in queueEntries.sortedBy { it.createdAtMillis }) {
+        val pendingUploads = store.getAllPending().sortedBy { it.createdAtMillis }
+        val now = Clock.System.now().toEpochMilliseconds()
+        observer.record("content_queue", seconds = pendingUploads.firstOrNull { it.createdAtMillis > 0 }?.let { (now - it.createdAtMillis).coerceAtLeast(0) / 1000.0 } ?: 0.0, depth = pendingUploads.size)
+        observer.record("content_unknown_age", depth = pendingUploads.count { it.createdAtMillis <= 0 })
+        socialTelemetry.event("remote_content", "queue", kind = "queue_depth", value = pendingUploads.size.toDouble())
+        socialTelemetry.event("remote_content", "queue", kind = "queue_age", value = pendingUploads.firstOrNull { it.createdAtMillis > 0 }?.let { (now - it.createdAtMillis).coerceAtLeast(0) / 1000.0 } ?: 0.0)
+        for (pending in pendingUploads) {
             val contentId = pending.contentId ?: continue
             val key = contentId.rawValue.toList()
             setStatus(key, UploadStatus.Uploading)
+            val started = TimeSource.Monotonic.markNow()
+            if (pending.createdAtMillis > 0) observer.record("content_wait", seconds = (now - pending.createdAtMillis).coerceAtLeast(0) / 1000.0, depth = pendingUploads.size)
+            var outcome = "success"
             try {
                 // Byte-level progress is tracked by the transport and observed via watchUpload(uploadUrl).
                 client.upload(pending.uploadUrl, pending.bytes)
                 store.deletePending(contentId)
                 setStatus(key, UploadStatus.Completed)
+            } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                outcome = "failure"
+                setStatus(key, UploadStatus.Queued)
             } catch (e: CancellationException) {
+                outcome = "cancelled"
                 throw e
             } catch (_: Exception) {
                 socialTelemetry.event("remote_content", "retry", "retry")
+                outcome = "failure"
                 // Keep the entry for the next pass; a transient network/server error must not drop it.
                 setStatus(key, UploadStatus.Queued)
+            } finally {
+                observer.record("content_processing", outcome, started.elapsedNow().inWholeNanoseconds / 1e9, bytes = pending.bytes.size.toLong())
             }
         }
     }

@@ -11,15 +11,17 @@ import com.latenighthack.social.login.v1.Provider
  * this app's Apple client id(s).
  */
 class AppleLoginProviderFactory : LoginProviderFactory {
-    override fun create(context: LoginProviderContext): LoginHandler {
+    override fun create(context: LoginProviderContext): LoginHandler? {
         val audiences = context.env("LOGIN_APPLE_AUDIENCES")
             .orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        if (audiences.isEmpty()) return null
         return LoginHandler.SocialVerifier(
             Provider.PROVIDER_APPLE,
             OidcTokenVerifier(
                 issuers = setOf("https://appleid.apple.com"),
                 jwksUrl = "https://appleid.apple.com/auth/keys",
                 audiences = audiences,
+                observeRefresh = { outcome, nanos -> context.observe("apple", "jwks_refresh", outcome, nanos) },
             ),
         )
     }

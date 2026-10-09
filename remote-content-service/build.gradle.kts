@@ -4,6 +4,7 @@ plugins {
 
 dependencies {
     api(projects.socialObservabilityServer)
+    implementation("software.amazon.awssdk:s3:2.31.68")
     implementation(projects.remoteContentApi)
     // The extension seam (ServerExtension / GrpcRouteProvider) lives in the lockers server.
     implementation(libs.lockers.server)
