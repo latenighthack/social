@@ -3,6 +3,7 @@ package com.latenighthack.social.runtime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.NonCancellable
@@ -21,9 +22,10 @@ class ManagerRunner(private val scope: CoroutineScope) {
     private val generation = MutableStateFlow<Generation?>(null)
 
     fun start(token: Any? = null, block: suspend CoroutineScope.() -> Unit) {
+        scope.coroutineContext.ensureActive()
         while (true) {
             val previous = generation.value
-            if (previous?.job?.isActive == true) {
+            if (previous != null && !previous.job.isCompleted && !previous.job.isCancelled) {
                 check(previous.token === token) { "stopAndJoin before replacing the active client" }
                 return
             }
@@ -36,6 +38,7 @@ class ManagerRunner(private val scope: CoroutineScope) {
                     awaitCancellation()
                 } finally { ready.cancel() }
             }
+            job.invokeOnCompletion { ready.cancel() }
             if (generation.compareAndSet(previous, Generation(token, job, ready))) {
                 job.start()
                 return

@@ -2,6 +2,7 @@ package com.latenighthack.social.runtime
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
@@ -13,6 +14,24 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 
 class ManagerRunnerTest {
+    @Test fun stoppingBeforeDispatchReleasesCommandsWaitingForReadiness() = runTest {
+        val queued = ArrayDeque<Runnable>()
+        val dispatcher = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { queued.add(block) }
+        }
+        val parent = kotlinx.coroutines.SupervisorJob()
+        val runner = ManagerRunner(kotlinx.coroutines.CoroutineScope(parent + dispatcher))
+        try {
+            runner.start { awaitCancellation() }
+            val command = launch { runner.command { error("stopped command must not execute") } }
+            runCurrent()
+            runner.stop()
+            while (queued.isNotEmpty()) queued.removeFirst().run()
+            runCurrent()
+            kotlin.test.assertTrue(command.isCompleted)
+        } finally { parent.cancel() }
+    }
+
     @Test fun commandsWaitForPriorCleanupAndStopJoinsTheirChildren() = runTest {
         val runner = ManagerRunner(backgroundScope)
         val release = CompletableDeferred<Unit>()
