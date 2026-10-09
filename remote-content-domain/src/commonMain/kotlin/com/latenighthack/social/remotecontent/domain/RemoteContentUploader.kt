@@ -147,7 +147,7 @@ class RemoteContentUploaderImpl(
             this.bytes = bytes
             createdAtMillis = Clock.System.now().toEpochMilliseconds()
         })
-        uploads.update { it + (created.contentId.rawValue.toList() to upload) }
+        uploads.update { (it + (created.contentId.rawValue.toList() to upload)).entries.toList().takeLast(1024).associate { it.toPair() } }
         }
         wake.trySend(Unit)
         return upload
@@ -164,10 +164,15 @@ class RemoteContentUploaderImpl(
             stateMutex.withLock {
                 if (loadedOwner != owner) uploads.value = emptyMap()
                 loadedOwner = owner
-                if (owner != null && session != null) for (row in store.getAllPending()) {
-                    if (row.ownerAccountId.isNotEmpty()) continue
-                    if (session.owns("")) store.savePending(row.copy(ownerAccountId = owner))
-                    else row.contentId?.let { store.deletePending(it) }
+            }
+            if (owner != null && session != null) store.pages().collect { page ->
+                stateMutex.withLock {
+                    check(session.currentOwner() == owner)
+                    for (row in page) {
+                        if (row.ownerAccountId.isNotEmpty()) continue
+                        if (session.owns("")) store.savePending(row.copy(ownerAccountId = owner))
+                        else row.contentId?.let { store.deletePending(it) }
+                    }
                 }
             }
             if (owner != null) runForOwner()

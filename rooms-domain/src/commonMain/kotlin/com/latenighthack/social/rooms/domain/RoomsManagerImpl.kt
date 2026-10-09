@@ -101,8 +101,7 @@ class RoomsManagerImpl(
     private val _rooms = MutableStateFlow<List<RoomId>>(emptyList())
     private val stateMutex = Mutex()
 
-    private val watchedInboxes = mutableSetOf<ProfileId>()
-    private val processedInvites = mutableSetOf<LockerId>()
+    private val processedInvites = linkedSetOf<LockerId>()
     private var leftRooms: Set<RoomId> = emptySet()
     private val loadedOwner = MutableStateFlow<String?>(null)
     private fun ownsKeys() = account.owner.value != null && account.owner.value == loadedOwner.value
@@ -130,7 +129,6 @@ class RoomsManagerImpl(
     private suspend fun run(lockers: LockersClient) {
         // A prior stop() cancelled the inbox collectors, so forget which inboxes were being watched
         // and re-establish them below (the processedInvites dedup cache is deliberately retained).
-        watchedInboxes.clear()
 
         // Watch each of the user's profile inboxes for sealed invites, as profiles appear. The
         // per-inbox collectors are launched as children of this coroutine (not the retained scope)
@@ -169,13 +167,10 @@ class RoomsManagerImpl(
                     }
             }
 
-            myProfiles.getProfileList().collect { profileIds ->
-                for (profileId in profileIds) {
-                    if (watchedInboxes.add(profileId)) {
-                        launch { watchInbox(lockers, profileId) }
-                    }
-                }
-            }
+            com.latenighthack.social.runtime.keyedFlows(myProfiles.getProfileList(), { Unit }) { profileId ->
+                kotlinx.coroutines.flow.flow<Unit> { watchInbox(lockers, profileId) }
+            }.collect { }
+
         }
     }
 
@@ -471,8 +466,14 @@ class RoomsManagerImpl(
                 // transiently-failing invite (e.g. a write lost to shutdown) tear down this collector —
                 // leaving it unprocessed lets a later emission retry it. processInvite is idempotent.
                 try {
-                    account.withAccount { processInvite(lockers, profileId, envelope) }
-                    stateMutex.withLock { processedInvites.add(lockerId) }
+                    account.withAccount {
+                        processInvite(lockers, profileId, envelope)
+                        inboxClient(lockers).deleteLocker(inboxRoom, lockerId)
+                    }
+                    stateMutex.withLock {
+                        processedInvites.add(lockerId)
+                        if (processedInvites.size > 1024) processedInvites.remove(processedInvites.first())
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
@@ -481,7 +482,11 @@ class RoomsManagerImpl(
         }
     }
 
+    private fun withinInviteBounds(envelope: SealedEnvelope): Boolean =
+        envelope.ciphertext.size <= 70_000 && envelope.wrappedKey.size <= 128 && envelope.ephemeralPublicKey.size == 33
+
     private suspend fun processInvite(lockers: LockersClient, profileId: ProfileId, envelope: SealedEnvelope) {
+        if (!withinInviteBounds(envelope)) return
         val secret = myProfiles.deriveSharedSecret(profileId, envelope.ephemeralPublicKey) ?: return
         val payload = Sealing.unsealWith(secret, envelope) ?: return
         // The plaintext is attacker-chosen (anyone can seal to our inbox), so a malformed invite must

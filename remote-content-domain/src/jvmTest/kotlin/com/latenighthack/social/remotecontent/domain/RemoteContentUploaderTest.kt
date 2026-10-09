@@ -20,6 +20,56 @@ import kotlin.test.assertContentEquals
 
 class RemoteContentUploaderTest {
 
+    @Test fun legacyQueuesAdoptOrDiscardThroughPagesWithoutLoadingEveryPayload() = runBlocking {
+        for (adopt in listOf(false, true)) {
+            val base = com.latenighthack.ktstore.InMemoryStoreDelegate()
+            val delegate = object : com.latenighthack.ktstore.LifecycleStoreDelegate by base,
+                com.latenighthack.ktstore.IndexedQueryDelegate, com.latenighthack.ktstore.ScopedStoreDelegate {
+                override suspend fun <T> transaction(stores: Set<String>, mode: com.latenighthack.ktstore.TransactionMode, block: suspend () -> T): T = base.transaction(stores, mode, block)
+                override suspend fun <T> transaction(block: suspend () -> T): T = base.transaction(block)
+                override suspend fun <T> transaction(lockKey: String, block: suspend () -> T): T = base.transaction(lockKey, block)
+                override suspend fun query(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.query(tableName, query, identity, version)
+                override suspend fun count(tableName: String, query: com.latenighthack.ktstore.IndexedQuery) = base.count(tableName, query)
+                override suspend fun deleteBatch(tableName: String, query: com.latenighthack.ktstore.IndexedQuery, identity: String, version: Int) = base.deleteBatch(tableName, query, identity, version)
+                override suspend fun getAll(tableName: String, relation: com.latenighthack.ktstore.StoreRelation?): List<Any> = error("unbounded upload payload read")
+            }
+            val database = Database(RemoteContentStorage.configuration("legacy-pages-$adopt"), delegate)
+            database.open()
+            val store = PendingUploadStore(database)
+            repeat(20) { index -> store.savePending(com.latenighthack.social.remotecontent.v1.PendingUpload {
+                contentId = ContentId { rawValue = byteArrayOf(index.toByte()) }
+                uploadUrl = "legacy/$index"; downloadUrl = "download/$index"; bytes = byteArrayOf(1)
+            }) }
+            val session = object : com.latenighthack.social.runtime.AccountSession {
+                override val owner = kotlinx.coroutines.flow.MutableStateFlow<String?>("committed-account")
+                override val mayAdoptLegacyStorage = adopt
+            }
+            val fake = FakeRemoteContentClient()
+            val uploader = RemoteContentUploaderImpl(fake, database, retryIntervalMillis = 10, session = session)
+            try {
+                uploader.prepare(); uploader.start()
+                awaitUntil {
+                    var remaining = 0
+                    store.pages().collect { remaining += it.size }
+                    remaining == 0
+                }
+                kotlin.test.assertEquals(if (adopt) 20 else 0, fake.uploaded.size)
+            } finally { uploader.stopAndJoin(); database.close() }
+        }
+    }
+
+    @Test fun pausedUploaderKeepsABoundedProjectionWithoutDroppingDurableWork() = runBlocking {
+        val database = RemoteContentStorage.inMemory("paused-upload-projection")
+        database.open()
+        val uploader = RemoteContentUploaderImpl(FakeRemoteContentClient(), database)
+        try {
+            uploader.prepare()
+            repeat(1100) { uploader.enqueue(byteArrayOf(1), "image/png") }
+            kotlin.test.assertEquals(1024, uploader.watchUploads().first().size)
+            kotlin.test.assertEquals(1100, PendingUploadStore(database).getAllPending().size)
+        } finally { uploader.stopAndJoin(); database.close() }
+    }
+
     /**
      * A [RemoteContentClient] that mints deterministic ids/URLs and records each PUT, optionally
      * failing the first [failuresBeforeSuccess] attempts per URL to exercise retry.
@@ -34,7 +84,7 @@ class RemoteContentUploaderTest {
         override suspend fun createContent(mimeType: String?): CreatedContent {
             val n = counter++
             return CreatedContent(
-                contentId = ContentId { rawValue = byteArrayOf(n.toByte()) },
+                contentId = ContentId { rawValue = byteArrayOf((n ushr 24).toByte(), (n ushr 16).toByte(), (n ushr 8).toByte(), n.toByte()) },
                 uploadUrl = "upload/$n",
                 downloadUrl = "download/$n",
             )

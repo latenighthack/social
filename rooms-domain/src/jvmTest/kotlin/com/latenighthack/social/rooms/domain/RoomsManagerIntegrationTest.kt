@@ -338,6 +338,13 @@ class RoomsManagerIntegrationTest {
 
             // Bob's manager unseals the invite from his profile inbox and joins without any action.
             assertTrue(bob.rooms.watchRooms().first { it.contains(roomId) }.isNotEmpty())
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                kotlinx.coroutines.withTimeout(5000) {
+                    bob.lockers.typed(RoomsKeyspaces.INBOX, SealedEnvelope::toByteArray,
+                        SealedEnvelope.Companion::fromByteArray)
+                        .watchAll(RoomKeying.publicKeyed(bobProfile.rawValue)).first { it.isEmpty() }
+                }
+            }
             assertEquals(RoomKind.ROOM_KIND_GROUP, bob.rooms.roomKind(roomId))
 
             // Both sides converge on a two-member roster; Bob holds the key and can write.
@@ -414,6 +421,7 @@ class RoomsManagerIntegrationTest {
             val outsider = newParty(server.rpcClient)
             val bobProfileRoom = RoomKeying.publicKeyed(bobProfile.rawValue)
 
+            bob.rooms.stopAndJoin() // Verify server authority without the consumer immediately draining the inbox.
             // An outsider can drop a sealed envelope into Bob's open inbox keyspace (4).
             val envelope = Sealing.seal(bobProfile.rawValue, byteArrayOf(1, 2, 3))
             val inbox = outsider.lockers.typed(

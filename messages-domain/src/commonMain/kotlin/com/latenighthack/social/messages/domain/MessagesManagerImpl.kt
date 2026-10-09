@@ -144,21 +144,36 @@ class MessagesManagerImpl(
 
     private suspend fun migrateOwnership(owner: String) {
         if (session == null) return
-        database.transaction("social.messages") {
-            for (row in store.getAllMessages()) if (row.ownerAccountId.isEmpty()) {
-                val id = row.messageId ?: continue
-                if (session.owns("")) store.saveMessage(row.copy(ownerAccountId = owner))
-                else store.deleteMessage(RoomId(rawValue = row.roomId), id)
+        com.latenighthack.social.runtime.storePages(database, MessageStoreDefinitionV1,
+            MessageStoreDefinitionV1.roomIdKey).collect { page ->
+            database.transaction("social.messages") {
+                check(session.currentOwner() == owner)
+                for (row in page) if (row.ownerAccountId.isEmpty()) {
+                    val id = row.messageId ?: continue
+                    if (session.owns("")) store.saveMessage(row.copy(ownerAccountId = owner))
+                    else store.deleteMessage(RoomId(rawValue = row.roomId), id)
+                }
             }
-            for (row in pending.getAllPending()) if (row.ownerAccountId.isEmpty()) {
-                val id = row.messageId ?: continue
-                if (session.owns("")) pending.savePending(row.copy(ownerAccountId = owner))
-                else pending.deletePending(RoomId(rawValue = row.roomId), id)
+        }
+        pending.pages().collect { page ->
+            database.transaction("social.messages") {
+                check(session.currentOwner() == owner)
+                for (row in page) if (row.ownerAccountId.isEmpty()) {
+                    val id = row.messageId ?: continue
+                    if (session.owns("")) pending.savePending(row.copy(ownerAccountId = owner))
+                    else pending.deletePending(RoomId(rawValue = row.roomId), id)
+                }
             }
-            for (row in deadLetters.getAllDeadLetters()) if (row.ownerAccountId.isEmpty()) {
-                val id = row.messageId ?: continue
-                if (session.owns("")) deadLetters.saveDeadLettered(row.copy(ownerAccountId = owner))
-                else deadLetters.deleteDeadLettered(RoomId(rawValue = row.roomId), id)
+        }
+        com.latenighthack.social.runtime.storePages(database, DeadLetterStoreDefinitionV1,
+            DeadLetterStoreDefinitionV1.roomIdKey).collect { page ->
+            database.transaction("social.messages") {
+                check(session.currentOwner() == owner)
+                for (row in page) if (row.ownerAccountId.isEmpty()) {
+                    val id = row.messageId ?: continue
+                    if (session.owns("")) deadLetters.saveDeadLettered(row.copy(ownerAccountId = owner))
+                    else deadLetters.deleteDeadLettered(RoomId(rawValue = row.roomId), id)
+                }
             }
         }
     }

@@ -28,7 +28,7 @@ internal class MessageStore(private val handle: Database) : Store<LocalMessage>(
         com.latenighthack.social.runtime.storePages(handle, MessageStoreDefinitionV1, roomIdKey,
             roomId.rawValue, roomId.rawValue).collect { page ->
             val rows = page.filter(owned).mapNotNull { local -> local.message?.let { signed ->
-                val payload = com.latenighthack.social.messages.v1.MessagePayload.fromByteArray(signed.content)
+                val payload = com.latenighthack.social.messages.v1.BoundedMessagePayload.decode(signed.content) ?: return@let null
                 local to MessageEntry(payload, local.status)
             } }.filter { before == null || messageOrder.compare(it.second, before) < 0 }
             selected = (selected + rows).sortedWith { a, b -> messageOrder.compare(a.second, b.second) }.takeLast(limit)

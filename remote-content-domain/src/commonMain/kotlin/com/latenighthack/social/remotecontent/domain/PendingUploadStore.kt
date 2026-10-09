@@ -14,7 +14,7 @@ import com.latenighthack.social.remotecontent.v1.toByteArray
 internal class PendingUploadStore(private val handle: Database) : Store<PendingUpload>(handle, PendingUploadStoreDefinitionV1) {
     private val contentIdKey = PendingUploadStoreDefinitionV1.contentIdKey
 
-    fun pages() = com.latenighthack.social.runtime.storePages(handle, PendingUploadStoreDefinitionV1, contentIdKey, pageSize = 16)
+    fun pages() = com.latenighthack.social.runtime.storePages(handle, PendingUploadStoreDefinitionV1, contentIdKey, pageSize = 4)
 
     suspend fun getAllPending(): List<PendingUpload> = getAll()
 
