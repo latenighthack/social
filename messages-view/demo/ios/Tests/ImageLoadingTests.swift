@@ -49,4 +49,14 @@ final class ImageLoadingTests: XCTestCase {
         label.activate(offset: 0)
         XCTAssertEqual(calls, 1)
     }
+    @MainActor func testInlineHitTestingOnlyClaimsItsOwnRangeWithinVerticallyCenteredText() {
+        let label = MessageActionLabel(frame: CGRect(x: 0, y: 0, width: 200, height: 60))
+        label.numberOfLines = 1
+        label.attributedText = NSAttributedString(string: "abc def", attributes: [.font: UIFont.monospacedSystemFont(ofSize: 10, weight: .regular)])
+        label.actions = [(NSRange(location: 4, length: 3), MessageAction())]
+        XCTAssertNil(label.actionOffset(at: CGPoint(x: 1, y: 30)))
+        XCTAssertNotNil(label.actionOffset(at: CGPoint(x: 30, y: 30)))
+        XCTAssertNil(label.actionOffset(at: CGPoint(x: 30, y: 1)))
+        XCTAssertNil(label.actionOffset(at: CGPoint(x: 180, y: 30)))
+    }
 }

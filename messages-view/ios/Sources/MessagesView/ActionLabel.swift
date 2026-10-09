@@ -1,6 +1,6 @@
 import UIKit
 
-final class MessageActionLabel: UILabel {
+final class MessageActionLabel: UILabel, UIGestureRecognizerDelegate {
     var actions: [(NSRange, MessageAction)] = []
     var onAction: MessageActionHandler?
     var redactions: [NSRange] = []
@@ -9,7 +9,9 @@ final class MessageActionLabel: UILabel {
     private var loading: [Task<Void, Never>] = []
     override init(frame: CGRect) {
         super.init(frame: frame)
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(activate(_:))))
+        let tap = UITapGestureRecognizer(target: self, action: #selector(activate(_:)))
+        tap.delegate = self
+        addGestureRecognizer(tap)
         isUserInteractionEnabled = true
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -19,18 +21,30 @@ final class MessageActionLabel: UILabel {
         onAction?(action)
         return true
     }
-    @objc private func activate(_ gesture: UITapGestureRecognizer) {
-        guard let attributedText = attributedText else { return }
+    func actionOffset(at point: CGPoint) -> Int? {
+        guard let attributedText = attributedText else { return nil }
         let storage = NSTextStorage(attributedString: attributedText)
+        let paragraph = NSMutableParagraphStyle(); paragraph.alignment = textAlignment
+        storage.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: storage.length))
         let layout = NSLayoutManager()
         let container = NSTextContainer(size: bounds.size)
         container.lineFragmentPadding = 0; container.maximumNumberOfLines = numberOfLines
         container.lineBreakMode = lineBreakMode
         layout.addTextContainer(container); storage.addLayoutManager(layout)
-        let point = gesture.location(in: self)
-        guard layout.usedRect(for: container).contains(point) else { return }
-        let index = layout.characterIndex(for: point, in: container, fractionOfDistanceBetweenInsertionPoints: nil)
-        activate(offset: index)
+        let used = layout.usedRect(for: container)
+        let verticalOffset = (bounds.height - used.height) / 2 - used.minY
+        let local = CGPoint(x: point.x - bounds.minX, y: point.y - bounds.minY - verticalOffset)
+        guard used.contains(local) else { return nil }
+        let index = layout.characterIndex(for: local, in: container, fractionOfDistanceBetweenInsertionPoints: nil)
+        guard actions.contains(where: { NSLocationInRange(index, $0.0) }),
+              !redactions.contains(where: { NSLocationInRange(index, $0) }) else { return nil }
+        return index
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        actionOffset(at: touch.location(in: self)) != nil
+    }
+    @objc private func activate(_ gesture: UITapGestureRecognizer) {
+        if let offset = actionOffset(at: gesture.location(in: self)) { activate(offset: offset) }
     }
     override func didMoveToWindow() {
         super.didMoveToWindow()

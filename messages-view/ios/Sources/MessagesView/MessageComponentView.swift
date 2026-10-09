@@ -501,7 +501,7 @@ private final class ActionGesture: UITapGestureRecognizer, UIGestureRecognizerDe
         var view = touch.view
         while let child = view, child !== owner {
             if child is UIControl || child is AttachedActionView { return false }
-            if let label = child as? MessageActionLabel, !label.actions.isEmpty { return false }
+            if let label = child as? MessageActionLabel, label.actionOffset(at: touch.location(in: label)) != nil { return false }
             view = child.superview
         }
         return true
