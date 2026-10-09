@@ -87,6 +87,7 @@ class MessagesManagerIntegrationTest {
         maxAttempts: Int = 8,
         backoffBaseMillis: Long = 1L,
         databaseDelegate: com.latenighthack.ktstore.LifecycleStoreDelegate = com.latenighthack.ktstore.InMemoryStoreDelegate(),
+        messageRooms: (com.latenighthack.social.rooms.domain.RoomsManager) -> com.latenighthack.social.rooms.domain.RoomsManager = { it },
         lockKeySourceFactory: (LockKeySource) -> LockKeySource = { it },
     ): Party {
         val account = AccountManagerImpl(accountStore)
@@ -99,7 +100,7 @@ class MessagesManagerIntegrationTest {
         // prepared first, then LockersClient.create performs the single createStores() call.
         val database = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), databaseDelegate)
         val messages = MessagesManagerImpl(
-            rooms, myProfiles, database,
+            messageRooms(rooms), myProfiles, database,
             maxAttempts = maxAttempts, backoffBaseMillis = backoffBaseMillis, session = account,
         )
         val drafts = DraftsManagerImpl(database, session = account)
@@ -122,6 +123,30 @@ class MessagesManagerIntegrationTest {
         account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
         return Party(account, myProfiles, rooms, messages, drafts, lockers)
     }
+
+    @Test(timeout = 30000)
+    fun `offline room metadata cannot block durable message enqueue and stops with its owner`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+            var cleaned = false
+            val party = newParty(server.rpcClient, messageRooms = { delegate ->
+                object : com.latenighthack.social.rooms.domain.RoomsManager by delegate {
+                    override suspend fun markUpdated(roomId: RoomId) {
+                        entered.complete(Unit)
+                        try { kotlinx.coroutines.awaitCancellation() } finally { cleaned = true }
+                    }
+                }
+            })
+            try {
+                party.myProfiles.createProfile("offline writer")
+                val room = party.rooms.createGroup("offline bump")
+                kotlinx.coroutines.withTimeout(5000) { party.messages.send(room, Draft(text = "queued locally")) }
+                entered.await()
+                kotlin.test.assertEquals(1, party.messages.watchMessages(room).first { it.isNotEmpty() }.size)
+                party.messages.stopAndJoin()
+                kotlin.test.assertTrue(cleaned)
+            } finally { party.close() }
+        }
 
     @Test(timeout = 30000)
     fun `sign out cancels an admitted join before its grant can install old membership`() =

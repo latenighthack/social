@@ -108,6 +108,8 @@ class MessagesManagerImpl(
 
     // Nudges the drain loop to attempt immediately when a new message is enqueued.
     private val wake = Channel<Unit>(Channel.CONFLATED)
+    private data class RoomBump(val room: RoomId, val owner: String, val generation: Long)
+    private val bumps = Channel<RoomBump>(64, kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
 
     override val taskHealth = kotlinx.coroutines.flow.MutableStateFlow<TaskHealth>(TaskHealth.Idle)
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
@@ -190,6 +192,13 @@ class MessagesManagerImpl(
 
         coroutineScope {
             launch { drainLoop(lockers) }
+            launch {
+                for (bump in bumps) {
+                    if (bump.owner == session.currentOwner() && bump.generation == (session?.generation?.value ?: 0L)) {
+                        performBump(bump.room)
+                    }
+                }
+            }
             launch { messageClient(lockers).notifications.collect { onNotification(it) } }
 
             val observers = mutableMapOf<RoomId, Job>()
@@ -273,9 +282,15 @@ class MessagesManagerImpl(
 
     // Bump the room's updated_at to the front. Best-effort: a lost bump (network error, shutdown) must
     // never fail a send or tear down a collector — the send/receive itself is what matters.
-    private suspend fun bestEffortBump(roomId: RoomId) {
+    private fun bestEffortBump(roomId: RoomId) {
+        bumps.trySend(RoomBump(roomId, session.currentOwner(), session?.generation?.value ?: 0L))
+    }
+
+    private suspend fun performBump(roomId: RoomId) {
         try {
-            rooms.markUpdated(roomId)
+            kotlinx.coroutines.withTimeout(5000) { rooms.markUpdated(roomId) }
+        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -315,7 +330,7 @@ class MessagesManagerImpl(
         list.addOwn(prepared)
         wake.trySend(Unit)
         // Bump the room to the front the moment the user sends, reflecting their intent — not when the
-        // message eventually lands. Launched (not awaited) and best-effort: markUpdated reorders the
+        // message eventually lands. Queued to the owned metadata worker and best-effort: markUpdated reorders the
         // room list locally first, so the send neither blocks on nor fails from the synced write.
         bestEffortBump(roomId)
     }
