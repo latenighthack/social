@@ -9,10 +9,15 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.onDownload
 import io.ktor.client.plugins.onUpload
-import io.ktor.client.request.get
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
-import io.ktor.client.statement.HttpResponse
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.readRemaining
+import kotlinx.io.readByteArray
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import io.ktor.http.contentType
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -88,7 +93,11 @@ class RemoteContentClientImpl(
         )
     }
 
+    private val transfers = Semaphore(4)
+
     override suspend fun upload(uploadUrl: String, bytes: ByteArray) {
+        require(bytes.size <= MAX_TRANSFER_BYTES) { "upload exceeds 16 MiB" }
+        withTimeout(30_000) { transfers.withPermit {
         httpClient.put(uploadUrl) {
             expectSuccess = true
             setBody(bytes)
@@ -96,19 +105,22 @@ class RemoteContentClientImpl(
                 uploads.update { (it + (uploadUrl to TransferProgress(sent, total ?: bytes.size.toLong()))).entries.toList().takeLast(256).associate { it.toPair() } }
             }
         }
+        } }
     }
 
-    override suspend fun download(downloadUrl: String): DownloadedContent {
-        val response: HttpResponse = httpClient.get(downloadUrl) {
-            expectSuccess = true
-            onDownload { received, total ->
-                downloads.update { (it + (downloadUrl to TransferProgress(received, total ?: 0L))).entries.toList().takeLast(256).associate { it.toPair() } }
+    override suspend fun download(downloadUrl: String): DownloadedContent = withTimeout(30_000) {
+        transfers.withPermit {
+            httpClient.prepareGet(downloadUrl) {
+                expectSuccess = true
+                onDownload { received, total ->
+                    downloads.update { (it + (downloadUrl to TransferProgress(received, total ?: 0L))).entries.toList().takeLast(256).associate { it.toPair() } }
+                }
+            }.execute { response ->
+                val bytes = response.body<ByteReadChannel>().readRemaining(MAX_TRANSFER_BYTES + 1L).readByteArray()
+                require(bytes.size <= MAX_TRANSFER_BYTES) { "download exceeds 16 MiB" }
+                DownloadedContent(bytes, response.contentType()?.toString())
             }
         }
-        return DownloadedContent(
-            bytes = response.body(),
-            mimeType = response.contentType()?.toString(),
-        )
     }
 
     override suspend fun upload(bytes: ByteArray, mimeType: String?): CreatedContent {
@@ -123,3 +135,5 @@ class RemoteContentClientImpl(
     override fun watchDownload(downloadUrl: String): Flow<TransferProgress?> =
         downloads.map { it[downloadUrl] }.distinctUntilChanged()
 }
+
+private const val MAX_TRANSFER_BYTES = 16 * 1024 * 1024
