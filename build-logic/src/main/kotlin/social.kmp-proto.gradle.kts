@@ -15,7 +15,7 @@ val libs = the<LibrariesForLibs>()
 // plugin (which binds to java/android source sets instead of a shared commonMain output).
 // protoc is resolved as a pinned artifact; protoc-gen-kt (the ktbuf Kotlin codegen plugin,
 // a Go binary) is discovered on PATH (~/go/bin fallback). Install the pinned version:
-//   go install latenighthack.com/protoc-gen-kt@v0.0.0-20251214023608-0fa742406fbf
+//   go install latenighthack.com/protoc-gen-kt@v0.1.1-0.20261009005400-088118bc634c
 val protocVersion = "4.33.0"
 
 val protocClassifier: String = run {

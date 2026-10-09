@@ -40,7 +40,7 @@ jobs:
         env:
           # Keep in sync with the version the checked-in generated code was produced with
           # (mirrors kitkit's CI pin). Bump deliberately and regenerate.
-          PROTOC_GEN_KT_VERSION: v0.0.0-20251214023608-0fa742406fbf
+          PROTOC_GEN_KT_VERSION: v0.1.1-0.20261009005400-088118bc634c
         run: |
           # The :*-api proto codegen shells out to `protoc-gen-kt` on PATH.
           go install "latenighthack.com/protoc-gen-kt@${PROTOC_GEN_KT_VERSION}"

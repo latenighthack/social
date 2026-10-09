@@ -28,7 +28,7 @@ jobs:
           version: '9'
       - name: Install generators
         run: |
-          go install latenighthack.com/protoc-gen-kt@v0.0.0-20251214023608-0fa742406fbf
+          go install latenighthack.com/protoc-gen-kt@v0.1.1-0.20261009005400-088118bc634c
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           brew install bufbuild/buf/buf xcodegen
       - name: Verify the failure gate
