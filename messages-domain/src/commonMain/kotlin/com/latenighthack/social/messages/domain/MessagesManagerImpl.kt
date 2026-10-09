@@ -437,6 +437,9 @@ class MessagesManagerImpl(
             }
     }
 
+    override suspend fun compareMessageOrder(roomId: RoomId, first: MessageId, second: MessageId): Int? =
+        store.compareMessageOrder(roomId, first, second, session.currentOwner())
+
     override fun watchMessageIds(roomId: RoomId): Flow<List<MessageId>> =
         watchMessages(roomId).map { entries -> entries.map { MessageId(rawValue = it.payload.messageId) } }.distinctUntilChanged()
 

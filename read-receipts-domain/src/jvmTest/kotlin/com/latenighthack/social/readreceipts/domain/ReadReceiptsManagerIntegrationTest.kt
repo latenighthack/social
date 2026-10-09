@@ -37,6 +37,7 @@ import com.latenighthack.social.rooms.v1.RoomKind
 import com.latenighthack.social.rooms.v1.toByteArray
 import io.ktor.server.application.Application
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -138,7 +139,14 @@ class ReadReceiptsManagerIntegrationTest {
 
             alice.messages.send(roomId, Draft { text = "two" })
             bob.messages.watchMessages(roomId).first { it.size == 2 }
-            bob.readReceipts.markRead(roomId)
+            // Simulate eviction of the prior pointer from the live window, while its durable row remains.
+            val window = object : com.latenighthack.social.messages.domain.MessagesManager by bob.messages {
+                override fun watchMessageIds(roomId: com.latenighthack.lockers.common.v1.RoomId) =
+                    bob.messages.watchMessageIds(roomId).map { it.takeLast(1) }
+            }
+            val archived = ReadReceiptsManagerImpl(bob.rooms, window, bob.myProfiles)
+            archived.start(bob.lockers)
+            try { archived.markRead(roomId) } finally { archived.stop() }
             val secondId = bob.messages.watchMessageIds(roomId).first { it.size == 2 }.last()
             alice.readReceipts.watchReadReceipts(roomId)
                 .first { it[bobProfile]?.rawValue?.contentEquals(secondId.rawValue) == true }

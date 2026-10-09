@@ -47,6 +47,14 @@ internal class MessageStore(private val handle: Database) : Store<LocalMessage>(
         ),
     )
 
+    suspend fun compareMessageOrder(roomId: RoomId, first: MessageId, second: MessageId, owner: String): Int? {
+        fun payload(row: LocalMessage?) = row?.message?.let { com.latenighthack.social.messages.v1.BoundedMessagePayload.decode(it.content) }
+        val a = payload(getMessage(roomId, first, owner)) ?: return null
+        val b = payload(getMessage(roomId, second, owner)) ?: return null
+        return messageOrder.compare(MessageEntry(a, com.latenighthack.social.messages.v1.MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT),
+            MessageEntry(b, com.latenighthack.social.messages.v1.MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT))
+    }
+
     suspend fun getAllMessages(): List<LocalMessage> = getAll()
     suspend fun deleteMessage(roomId: RoomId, messageId: MessageId, owner: String = "") = delete(roomIdMessageIdKey.eq(listOf(
                 BoundStoreKey.SerializedKey("ownerAccountIdUtf8", owner.encodeToByteArray()),

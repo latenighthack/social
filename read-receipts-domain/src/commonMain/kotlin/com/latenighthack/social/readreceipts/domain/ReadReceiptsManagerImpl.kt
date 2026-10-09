@@ -62,9 +62,9 @@ class ReadReceiptsManagerImpl(
             prepare = { current ->
                 val verified = com.latenighthack.social.common.domain.verifyProfileClaim(me.rawValue, roomId.rawValue,
                     current.profileId, current.roomId, current.proof, 4, current.copy(proof = null).toByteArray())
-                val index = ordered.indexOfFirst { it.rawValue.contentEquals(current.messageId) }
+                val comparison = if (verified) messages.compareMessageOrder(roomId, MessageId(rawValue = current.messageId), latest) else null
                 // A verified pointer unknown to this device may be ahead; preserve it until sync.
-                if (verified && (index < 0 || index >= ordered.lastIndex)) current else claim.copy(proof = proof)
+                if (verified && (comparison == null || comparison >= 0)) current else claim.copy(proof = proof)
             },
             commit = { transform -> client.updateLocker(roomId, lockerId, builder = transform) },
         )

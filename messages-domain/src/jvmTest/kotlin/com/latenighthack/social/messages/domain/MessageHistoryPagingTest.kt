@@ -29,5 +29,8 @@ class MessageHistoryPagingTest {
         val earlier = store.getRecentMessages(room, { true }, 10, before)
         assertEquals((1185L..1194L).toList(), earlier.map { MessagePayload.fromByteArray(it.message!!.content).orderingCounter })
         assertEquals(1205, store.getMessagesForRoom(room).size)
+        assertEquals(-1, store.compareMessageOrder(room, MessageId(rawValue = byteArrayOf(0, 0) + ByteArray(30)),
+            recent.last().messageId!!, "alice"))
+        assertEquals(null, store.compareMessageOrder(room, recent.first().messageId!!, recent.last().messageId!!, "bob"))
     }
 }
