@@ -401,6 +401,34 @@ class RoomsManagerIntegrationTest {
         }
 
     @Test(timeout = 60_000)
+    fun `rendezvous peer identity survives remote leave and local rehydration`() =
+        runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
+            val alice = newParty(server.rpcClient)
+            val bob = newParty(server.rpcClient)
+            try {
+                val aliceProfile = alice.myProfiles.createProfile("Alice")
+                val bobProfile = bob.myProfiles.createProfile("Bob")
+                val room = alice.rooms.openRendezvous(bobProfile)
+                bob.rooms.watchRooms().first { room in it }
+                assertEquals(bobProfile, alice.rooms.peerProfile(room))
+                assertEquals(aliceProfile, bob.rooms.peerProfile(room))
+                alice.rooms.watchMembers(room).first { it.size == 2 }
+                bob.rooms.leave(room)
+                alice.rooms.watchMembers(room).first { it == listOf(aliceProfile) }
+                assertEquals(bobProfile, alice.rooms.peerProfile(room))
+                alice.rooms.stopAndJoin()
+                val restored = RoomsManagerImpl(alice.account, alice.myProfiles, FakeJoinClient())
+                try {
+                    restored.start(alice.lockers)
+                    restored.watchRooms().first { room in it }
+                    assertEquals(bobProfile, restored.peerProfile(room))
+                    alice.account.signOut()
+                    assertNull(restored.peerProfile(room))
+                } finally { restored.stopAndJoin() }
+            } finally { bob.close(); alice.close() }
+        }
+
+    @Test(timeout = 60_000)
     fun `rendezvous rooms converge on the same id and both profiles can write`() =
         runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             val alice = newParty(server.rpcClient)

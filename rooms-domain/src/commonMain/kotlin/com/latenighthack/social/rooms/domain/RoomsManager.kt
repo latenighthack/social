@@ -101,4 +101,7 @@ interface RoomsManager {
 
     /** The kind (rendezvous or group) of a room the user belongs to, or null if not a member. */
     fun roomKind(roomId: RoomId): RoomKind?
+
+    /** The authenticated rendezvous peer, even after they leave; null for groups or legacy records. */
+    fun peerProfile(roomId: RoomId): ProfileId? = null
 }

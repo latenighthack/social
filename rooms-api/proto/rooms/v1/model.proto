@@ -94,4 +94,6 @@ message RoomRecord {
   bool membership_pending = 8;
   bytes initial_info = 9;
   bool leaving = 10;
+  // Stable rendezvous identity; independent of the peer's current membership.
+  bytes peer_profile_id = 11;
 }

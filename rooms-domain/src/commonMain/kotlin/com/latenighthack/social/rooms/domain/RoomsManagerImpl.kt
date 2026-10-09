@@ -229,6 +229,7 @@ class RoomsManagerImpl(
             kind = RoomKind.ROOM_KIND_RENDEZVOUS,
             sharedPrivateKey = lockKey.privateKey.encode(),
             localProfileId = me.rawValue,
+            peerProfileId = peerProfileId.rawValue,
         ))
 
         // Opaque room: establish a TOFU root lock with the derived shared key (a no-op if the peer
@@ -450,6 +451,11 @@ class RoomsManagerImpl(
 
     override fun roomKind(roomId: RoomId): RoomKind? = if (ownsKeys()) records[roomId]?.kind else null
 
+    override fun peerProfile(roomId: RoomId): ProfileId? = if (ownsKeys()) {
+        records[roomId]?.takeIf { it.kind == RoomKind.ROOM_KIND_RENDEZVOUS && it.peerProfileId.isNotEmpty() }
+            ?.let { ProfileId(rawValue = it.peerProfileId) }
+    } else null
+
     // --- invite delivery + inbox ---
 
     private suspend fun sendInvite(lockers: LockersClient, recipient: ProfileId, invite: Invite) {
@@ -515,6 +521,7 @@ class RoomsManagerImpl(
                     kind = RoomKind.ROOM_KIND_RENDEZVOUS,
                     sharedPrivateKey = lockKey.privateKey.encode(),
                     localProfileId = profileId.rawValue,
+                    peerProfileId = invite.inviterProfileId,
                 ))
                 infoClient(lockers).lockLocker(
                     roomId,
