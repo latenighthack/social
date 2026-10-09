@@ -30,7 +30,7 @@ jobs:
         run: |
           go install latenighthack.com/protoc-gen-kt@v0.1.1-0.20261009005400-088118bc634c
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          brew install bufbuild/buf/buf xcodegen
+          brew install bufbuild/buf/buf xcodegen swift-protobuf
       - name: Verify the failure gate
         run: scripts/tests/verify-gate.sh
       - name: Generate renderer bindings and fixtures
