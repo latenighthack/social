@@ -53,7 +53,7 @@ class FileContentStore(private val baseDir: File,
                 channel.lock().use {
                     if (!MessageDigest.isEqual(capability.readBytes(), hash(uploadToken))) throw UploadRejected()
                     if (file.exists()) {
-                        if (!file.readBytes().contentEquals(bytes)) throw UploadRejected(conflict = true)
+                        if (file.length() != bytes.size.toLong() || !file.readBytes().contentEquals(bytes)) throw UploadRejected(conflict = true)
                     } else {
                         val temporary = java.nio.file.Files.createTempFile(file.parentFile.toPath(), file.name + ".", ".tmp")
                         try {
@@ -75,21 +75,29 @@ class FileContentStore(private val baseDir: File,
         StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { channel -> channel.lock().use { block() } }
 
     private fun ensureCapacity() {
-        var used = 0L
-        var count = 0
-        var scanned = 0
-        for (capability in baseDir.walkTopDown().filter { it.isFile }) {
-            check(++scanned <= maxContentCount * 6) { "content directory exceeds configured quota" }
-            if (!capability.name.endsWith(".upload")) continue
-            val file = File(capability.path.removeSuffix(".upload"))
+        var scanned = 0L
+        for (entry in baseDir.walkTopDown().filter { it.isFile }) {
+            check(++scanned <= maxContentCount.toLong() * 7 + 1) { "content directory exceeds configured quota" }
+            // No writer can hold a temporary file while the shared quota lock is held here.
+            if (entry.name.matches(Regex("[0-9a-f]+\\.[0-9]+\\.tmp"))) { entry.delete(); continue }
+            if (!entry.name.endsWith(".upload")) continue
+            val file = File(entry.path.removeSuffix(".upload"))
             val expiry = File(file.path + ".expires")
             if (!file.exists() && expiry.takeIf { it.exists() }?.readText()?.toLongOrNull()?.let { it <= clock() } == true) {
-                capability.delete(); expiry.delete(); File(file.path + ".mime").delete(); File(file.path + ".lock").delete()
-                continue
+                entry.delete(); expiry.delete(); File(file.path + ".mime").delete(); File(file.path + ".lock").delete()
             }
-            count++
-            used += if (file.exists()) file.length() else MAX_CONTENT_BYTES.toLong()
-            check(count < maxContentCount && used <= maxStoredBytes - MAX_CONTENT_BYTES) { "content storage quota exhausted" }
+        }
+        var used = 0L
+        var count = 0
+        for (entry in baseDir.walkTopDown().filter { it.isFile }) {
+            val bytes = when {
+                entry.name.matches(Regex("[0-9a-f]+")) -> entry.length() // Includes capability-free legacy publications.
+                entry.name.endsWith(".upload") && !File(entry.path.removeSuffix(".upload")).exists() -> MAX_CONTENT_BYTES.toLong()
+                else -> continue
+            }
+            check(bytes <= maxStoredBytes - used) { "content storage quota exhausted" }
+            used += bytes
+            check(++count < maxContentCount && used <= maxStoredBytes - MAX_CONTENT_BYTES) { "content storage quota exhausted" }
         }
     }
 

@@ -6,6 +6,20 @@ import kotlin.test.Test
 import kotlin.test.assertFailsWith
 
 class ContentQuotaTest {
+    @Test fun legacyPublicationsCountAndInterruptedPublicationFilesAreReclaimed() = runTest {
+        val directory = Files.createTempDirectory("legacy-content-quota").toFile()
+        try {
+            val shard = java.io.File(directory, "01").also { it.mkdirs() }
+            val legacy = java.io.File(shard, "01").also { it.writeBytes(byteArrayOf(1, 2, 3)) }
+            val store = FileContentStore(directory, maxStoredBytes = 16L * 1024 * 1024)
+            assertFailsWith<IllegalStateException> { store.create(byteArrayOf(2), null, byteArrayOf(3)) }
+            legacy.delete()
+            val interrupted = java.io.File(shard, "01.12345.tmp").also { it.writeBytes(byteArrayOf(1)) }
+            store.create(byteArrayOf(2), null, byteArrayOf(3))
+            kotlin.test.assertFalse(interrupted.exists())
+        } finally { directory.deleteRecursively() }
+    }
+
     @Test fun instancesShareDiskBudgetAndExpiredReservationsReleaseIt() = runTest {
         val directory = Files.createTempDirectory("content-quota").toFile()
         var now = 1L
