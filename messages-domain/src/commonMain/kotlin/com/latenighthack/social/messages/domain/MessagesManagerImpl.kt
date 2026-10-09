@@ -276,19 +276,19 @@ class MessagesManagerImpl(
         }
     }
 
-    private suspend fun tryIngest(roomId: RoomId, signed: SignedContent) {
-        val payload = BoundedMessagePayload.decode(signed.content) ?: return
-        if (!payload.roomId.contentEquals(roomId.rawValue) || payload.orderingCounter < 0 || payload.orderingCounter == Long.MAX_VALUE) return
+    private suspend fun tryIngest(roomId: RoomId, signed: SignedContent): Unit = socialTelemetry.measure("messages", "ingest") {
+        val payload = BoundedMessagePayload.decode(signed.content) ?: return@measure
+        if (!payload.roomId.contentEquals(roomId.rawValue) || payload.orderingCounter < 0 || payload.orderingCounter == Long.MAX_VALUE) return@measure
         val senderId = ProfileId { rawValue = payload.senderProfileId }
 
-        if (signed.content.size > 65_536 || payload.messageId.size != 32) return
+        if (signed.content.size > 65_536 || payload.messageId.size != 32) return@measure
         val senderKey = try { Secp256r1PublicKey.decode(payload.senderProfileId) }
             catch (failure: CancellationException) {
                 throw failure
             } catch (_: Exception) {
-                return
+                return@measure
             }
-        if (!MessageSigning.verify(signed, senderKey)) return
+        if (!MessageSigning.verify(signed, senderKey)) return@measure
         val isMember = mutex.withLock {
             if (roomId !in subscribedRooms) return@withLock false
             if (senderId in members[roomId].orEmpty()) true else {
@@ -298,7 +298,7 @@ class MessagesManagerImpl(
                 false
             }
         }
-        if (!isMember) return
+        if (!isMember) return@measure
 
         if (roomList(roomId).ingest(payload, signed)) bestEffortBump(roomId)
     }

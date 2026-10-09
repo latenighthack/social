@@ -147,6 +147,7 @@ class RemoteContentUploaderImpl(
 
     /** Launches the background drain loop. Idempotent; resumes a queue left by a prior [stop]. */
     fun start() {
+        socialTelemetry.event("remote_content", "start")
         runner.start { recoverTask(mutableTaskHealth) { run() } }
     }
 

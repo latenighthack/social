@@ -25,7 +25,12 @@ class S3ContentStore(private val client: S3Client, private val bucket: String, p
                 "expires" to (System.currentTimeMillis() + 15 * 60_000).toString())).build(), RequestBody.fromString(mimeType.orEmpty()))
     } }
     private fun read(key: String): software.amazon.awssdk.core.ResponseBytes<GetObjectResponse>? = try {
-        client.getObjectAsBytes(GetObjectRequest.builder().bucket(bucket).key(key).build())
+        client.getObject(GetObjectRequest.builder().bucket(bucket).key(key).build()).use { stream ->
+            check((stream.response().contentLength() ?: 0L) <= 16 * 1024 * 1024) { "Content exceeds transfer limit" }
+            val bytes = stream.readNBytes(16 * 1024 * 1024 + 1)
+            check(bytes.size <= 16 * 1024 * 1024) { "Content exceeds transfer limit" }
+            software.amazon.awssdk.core.ResponseBytes.fromByteArray(stream.response(), bytes)
+        }
     } catch (missing: S3Exception) { if (missing.statusCode() == 404) null else throw missing }
     override suspend fun put(id: ByteArray, bytes: ByteArray, uploadToken: ByteArray) { withContext(Dispatchers.IO) {
         require(bytes.size <= 16 * 1024 * 1024)

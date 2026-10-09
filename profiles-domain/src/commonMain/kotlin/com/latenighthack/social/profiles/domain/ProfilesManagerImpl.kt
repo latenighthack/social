@@ -140,10 +140,11 @@ class ProfilesManagerImpl(
     }
 
     /** Keep only disclosures carrying a valid signature by the profile's own key (its id). */
-    private suspend fun verifyDisclosures(profileId: ProfileId, profile: Profile): Profile {
+    private suspend fun verifyDisclosures(profileId: ProfileId, profile: Profile): Profile = socialTelemetry.measure("profiles", "verifyDisclosures") {
         val key = Secp256r1PublicKey.decode(profileId.rawValue)
         val kept = profile.disclosures.filter { Disclosures.verify(it, key) }
-        return profile.copy { disclosures = kept }
+        if (kept.size != profile.disclosures.size) result("invalid_signature")
+        profile.copy { disclosures = kept }
     }
 
     private fun profileClient(lockers: LockersClient): TypedLockerClient<Profile> =

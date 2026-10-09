@@ -95,7 +95,9 @@ class LoginServiceImpl(
             Provider.PROVIDER_GOOGLE -> googleVerifier
             else -> null
         } ?: return@observedOperation authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
-        val claims = verifier.verify(request.idToken)
+        val claims = socialTelemetry.measure("login", "verify", socialProvider(request.provider.value)) {
+            verifier.verify(request.idToken).also { if (it == null) result("unauthorized") }
+        }
             ?: return@observedOperation authResult(LoginResult.LOGIN_RESULT_UNAUTHORIZED)
         // Replay defense: under enforcement, a nonce must be present, issued here, and match the
         // token's claim (verbatim or SHA-256 hex). Outside enforcement the check is best-effort — the
@@ -124,7 +126,7 @@ class LoginServiceImpl(
             return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_RATE_LIMITED }
         val token = randomToken()
         storeChallenge(providerNumber(Provider.PROVIDER_EMAIL), subjectBytes(email), token)
-        sender.sendMagicLink(email, buildLink(email, token))
+        socialTelemetry.measure("login", "send", "email") { sender.sendMagicLink(email, buildLink(email, token)) }
         return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_OK }
 
         }).also { result(socialResult(it.result.toString())) } }
@@ -148,7 +150,7 @@ class LoginServiceImpl(
             return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_RATE_LIMITED }
         val code = randomCode()
         storeChallenge(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(phone), code)
-        sender.sendCode(phone, code)
+        socialTelemetry.measure("login", "send", "phone") { sender.sendCode(phone, code) }
         return@observedOperation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_OK }
 
         }).also { result(socialResult(it.result.toString())) } }

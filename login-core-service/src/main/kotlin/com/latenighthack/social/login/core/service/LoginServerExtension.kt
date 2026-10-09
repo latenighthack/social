@@ -73,7 +73,7 @@ class LoginServerExtension(
 
     override fun stop() = releaseResources()
 
-    override suspend fun start() {
+    override suspend fun start(): Unit = socialTelemetry.measure("login", "start") {
         if (ownsDatabase) database.open()
         credentials.prepare()
         challenges.prepare()
