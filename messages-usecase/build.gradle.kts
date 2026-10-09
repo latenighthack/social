@@ -4,6 +4,9 @@ plugins {
 
 kotlin {
     sourceSets {
+        val jvmTest by getting {
+            dependencies { implementation(kotlin("test")); implementation(libs.coroutines.test) }
+        }
         val commonMain by getting {
             dependencies {
                 api(projects.messagesDomain)
