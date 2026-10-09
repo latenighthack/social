@@ -8,6 +8,7 @@ kotlin {
             dependencies {
                 // LockersClient appears in DomainLifecycle's public API, so `api`.
                 api(libs.lockers.connector)
+                api(projects.socialObservabilityCore)
             }
         }
     }

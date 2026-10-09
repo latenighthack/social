@@ -5,8 +5,7 @@ import assertk.assertions.isEmpty
 import assertk.assertions.isEqualTo
 import assertk.assertions.isNotNull
 import assertk.assertions.hasSize
-import com.latenighthack.ktstore.InMemoryStoreDelegate
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.social.remotecontent.v1.ContentId
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.delay
@@ -58,12 +57,12 @@ class RemoteContentUploaderTest {
     @Test
     fun `enqueue returns the download URL immediately and durably queues the bytes before transfer`() =
         runBlocking {
-            val delegate: StoreDelegate = InMemoryStoreDelegate()
+            val delegate: Database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.remotecontent.domain.RemoteContentStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
             val fake = FakeRemoteContentClient()
             // Not started: no drain loop runs, so the bytes stay queued and are never PUT.
             val uploader = RemoteContentUploaderImpl(fake, delegate)
             uploader.prepare()
-            delegate.createStores()
+            delegate.open()
 
             val upload = uploader.enqueue(byteArrayOf(1, 2, 3), "image/png")
 
@@ -80,11 +79,11 @@ class RemoteContentUploaderTest {
 
     @Test
     fun `a started uploader transfers the bytes, drains the queue, and reports completion`() = runBlocking {
-        val delegate = InMemoryStoreDelegate()
+        val delegate = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.remotecontent.domain.RemoteContentStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
         val fake = FakeRemoteContentClient()
         val uploader = RemoteContentUploaderImpl(fake, delegate)
         uploader.prepare()
-        delegate.createStores()
+        delegate.open()
         uploader.start()
 
         val upload = uploader.enqueue(byteArrayOf(9, 8, 7), "image/jpeg")
@@ -100,12 +99,12 @@ class RemoteContentUploaderTest {
 
     @Test
     fun `a transient PUT failure is retried until it succeeds`() = runBlocking {
-        val delegate = InMemoryStoreDelegate()
+        val delegate = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.remotecontent.domain.RemoteContentStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
         val fake = FakeRemoteContentClient(failuresBeforeSuccess = 2)
         // Short retry interval so the two failed attempts are re-driven quickly.
         val uploader = RemoteContentUploaderImpl(fake, delegate, retryIntervalMillis = 50)
         uploader.prepare()
-        delegate.createStores()
+        delegate.open()
         uploader.start()
 
         val upload = uploader.enqueue(byteArrayOf(4, 2), "image/png")
@@ -120,11 +119,11 @@ class RemoteContentUploaderTest {
 
     @Test
     fun `a persistently failing upload stays durably queued and observable as not completed`() = runBlocking {
-        val delegate = InMemoryStoreDelegate()
+        val delegate = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.remotecontent.domain.RemoteContentStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
         val fake = FakeRemoteContentClient(failuresBeforeSuccess = Int.MAX_VALUE)
         val uploader = RemoteContentUploaderImpl(fake, delegate, retryIntervalMillis = 50)
         uploader.prepare()
-        delegate.createStores()
+        delegate.open()
         uploader.start()
 
         val upload = uploader.enqueue(byteArrayOf(5, 5, 5), "image/png")

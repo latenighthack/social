@@ -3,6 +3,7 @@ plugins {
 }
 
 dependencies {
+    api(projects.socialObservabilityServer)
     // JoinServer / JoinServiceRpc + the Invite proto (SealedEnvelope comes transitively via
     // social-common-api).
     implementation(projects.roomsApi)

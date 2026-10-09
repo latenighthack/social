@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "metricContract": 1,
+  "reportVersion": 1,
+  "grafana": "11.4.0",
+  "features": [
+    "runtime",
+    "account",
+    "profiles",
+    "login",
+    "rooms",
+    "messages",
+    "remote_content",
+    "contacts",
+    "typing",
+    "read_receipts",
+    "avatars",
+    "debug"
+  ],
+  "metrics": [
+    "social_operations_total",
+    "social_operation_duration_seconds",
+    "social_events_total",
+    "social_transfer_bytes",
+    "social_queue_depth_items",
+    "social_queue_age_seconds",
+    "social_feature_enabled",
+    "social_client_feature_reports_total",
+    "social_client_last_report_timestamp_seconds",
+    "social_login_provider_enabled",
+    "social_telemetry_exports_total",
+    "social_telemetry_dropped_total"
+  ],
+  "dashboards": [
+    "social-account.json",
+    "social-avatars.json",
+    "social-contacts.json",
+    "social-debug.json",
+    "social-login.json",
+    "social-messages.json",
+    "social-overview.json",
+    "social-profiles.json",
+    "social-read-receipts.json",
+    "social-remote-content.json",
+    "social-rooms.json",
+    "social-runtime.json",
+    "social-typing.json"
+  ],
+  "requiredDatasources": [
+    "prometheus",
+    "loki",
+    "tempo"
+  ],
+  "clientDelivery": "bounded, memory-only, best effort",
+  "traceSampling": "all operations",
+  "packs": [
+    "packs/overview",
+    "packs/runtime",
+    "packs/account",
+    "packs/profiles",
+    "packs/login",
+    "packs/rooms",
+    "packs/messages",
+    "packs/remote-content",
+    "packs/contacts",
+    "packs/typing",
+    "packs/read-receipts",
+    "packs/avatars",
+    "packs/debug"
+  ]
+}

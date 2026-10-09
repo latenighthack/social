@@ -7,6 +7,8 @@ import com.latenighthack.lockers.server.tools.GrpcRouteProvider
 import com.latenighthack.social.remotecontent.v1.RemoteContentServer
 import io.ktor.server.routing.Routing
 import io.micrometer.core.instrument.MeterRegistry
+import com.latenighthack.social.observability.*
+import com.latenighthack.social.observability.server.SocialServerTelemetry
 import java.io.File
 
 /**
@@ -17,7 +19,13 @@ import java.io.File
 class RemoteContentExtension(
     private val store: ContentStore,
     urls: ContentUrls,
-) : ServerExtension {
+) : ServerExtension, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+        set(value) {
+            field = value
+            serviceImpl.socialTelemetry = value
+            value.feature("remote_content")
+        }
     private val serviceImpl = RemoteContentServiceImpl(store, urls)
 
     override val services: List<GrpcRouteProvider<*>> = listOf(
@@ -28,7 +36,7 @@ class RemoteContentExtension(
     )
 
     override fun install(routing: Routing) {
-        routing.remoteContent(store)
+        routing.remoteContent(store, socialTelemetry)
     }
 }
 
@@ -41,13 +49,16 @@ class RemoteContentExtension(
  *   REMOTE_CONTENT_PATH        directory the bytes are stored under (default ./content)
  */
 class RemoteContentExtensionFactory : ServerExtensionFactory {
-    override fun create(meterRegistry: MeterRegistry): ServerExtension {
+    override fun create(meterRegistry: MeterRegistry): ServerExtension =
+        create(meterRegistry, SocialServerTelemetry(meterRegistry))
+
+    fun create(meterRegistry: MeterRegistry, telemetry: SocialTelemetry): RemoteContentExtension {
         val publicBaseUrl = System.getenv(ENV_PUBLIC_URL).orEmpty()
         val storagePath = System.getenv(ENV_PATH)?.takeIf { it.isNotBlank() } ?: DEFAULT_PATH
         return RemoteContentExtension(
             store = FileContentStore(File(storagePath)),
             urls = ContentUrls(publicBaseUrl),
-        )
+        ).observedBy(telemetry)
     }
 
     private companion object {

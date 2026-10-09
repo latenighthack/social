@@ -1,8 +1,6 @@
 package com.latenighthack.social.messages.domain
 
-import com.latenighthack.ktstore.BoundStoreKey
-import com.latenighthack.ktstore.Store
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.*
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.social.messages.v1.LocalMessage
 import com.latenighthack.social.messages.v1.MessageId
@@ -17,15 +15,10 @@ import com.latenighthack.social.messages.v1.toByteArray
  * are loaded a room at a time via [getMessagesForRoom]; the manager never loads every room's history
  * up front.
  */
-internal class MessageStore(delegate: StoreDelegate) : Store<LocalMessage>(
-    delegate,
-    "messages",
-    LocalMessage::toByteArray,
-    LocalMessage.Companion::fromByteArray,
-) {
-    private val roomIdKey = bytesIndex(LocalMessage::roomId)
-    private val messageIdKey = serializedIndex(LocalMessage::messageId, MessageId::toByteArray)
-    private val roomIdMessageIdKey = compositeIndex(roomIdKey, messageIdKey).also { primaryKey(it) }
+internal class MessageStore(database: Database) : Store<LocalMessage>(database, MessageStoreDefinitionV1) {
+    private val roomIdKey = MessageStoreDefinitionV1.roomIdKey
+    private val messageIdKey = MessageStoreDefinitionV1.messageIdKey
+    private val roomIdMessageIdKey = MessageStoreDefinitionV1.roomIdMessageIdKey
 
     suspend fun getMessagesForRoom(roomId: RoomId): List<LocalMessage> = getAll(roomIdKey.eq(roomId.rawValue))
 
@@ -33,8 +26,8 @@ internal class MessageStore(delegate: StoreDelegate) : Store<LocalMessage>(
     suspend fun getMessage(roomId: RoomId, messageId: MessageId): LocalMessage? = get(
         roomIdMessageIdKey.eq(
             listOf(
-                BoundStoreKey.SerializedKey(roomIdKey.name, roomId.rawValue),
-                BoundStoreKey.SerializedKey(messageIdKey.name, messageId.toByteArray()),
+                BoundStoreKey.SerializedKey(roomIdKey.name.value, roomId.rawValue),
+                BoundStoreKey.SerializedKey(messageIdKey.name.value, messageId.toByteArray()),
             ),
         ),
     )

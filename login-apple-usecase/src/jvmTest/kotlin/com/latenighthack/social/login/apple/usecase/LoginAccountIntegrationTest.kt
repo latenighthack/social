@@ -1,10 +1,11 @@
 package com.latenighthack.social.login.apple.usecase
 
+import com.latenighthack.social.observability.*
 import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.ktbuf.server.serveAll
 import com.latenighthack.ktbuf.test.server.runTestWithServer
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
-import com.latenighthack.ktstore.InMemoryStoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.ktstore.KeyValueStore
 import com.latenighthack.lockers.common.v1.Version
 import com.latenighthack.lockers.connector.LockersClient
@@ -47,12 +48,12 @@ private val fakeApple = object : AppleSignInClient {
 // the Apple verifier enabled — on one in-process server, so a single rpcClient drives both.
 private suspend fun Application.attachLoginAndLockers() {
     attachTestServices()
-    val delegate = InMemoryStoreDelegate()
+    val delegate = com.latenighthack.social.login.core.service.LoginStorage.inMemory()
     val credentials = CredentialStore(delegate)
     val challenges = ChallengeStore(delegate)
     credentials.prepare()
     challenges.prepare()
-    delegate.createStores()
+    delegate.open()
     val service = LoginServiceImpl(
         credentials = credentials,
         challenges = challenges,
@@ -73,7 +74,7 @@ private suspend fun bootAccount(rpcClient: RpcClient): Pair<AccountManagerImpl, 
     val keySource = AccountKeySource(manager)
     val lockers = LockersClient.create(
         rpcClient = rpcClient,
-        storeDelegate = InMemoryStoreDelegate(),
+        database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
         keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
         keySource = keySource,
         appVersion = Version(0, 0, 1),
@@ -88,7 +89,9 @@ class LoginAccountIntegrationTest {
     @Test(timeout = 30_000)
     fun `sign up binds the account, then a new device recovers it via the login method`() =
         runTestWithServer({ attachLoginAndLockers() }) { server, _ ->
-            val loginClient = LoginClientImpl(server.rpcClient)
+            val records = java.util.concurrent.ConcurrentLinkedQueue<SocialObservation>()
+            val sink = object : SocialTelemetry { override fun record(observation: SocialObservation) { observation.validate(); records.add(observation) } }
+            val loginClient = LoginClientImpl(server.rpcClient).observedBy(sink)
 
             // Device A: create an account, then sign up with Apple → needs binding → bind it.
             val (deviceA, lockersA) = bootAccount(server.rpcClient)
@@ -100,7 +103,7 @@ class LoginAccountIntegrationTest {
                 delay(50)
             }
 
-            val signUp = AuthenticateWithAppleUseCase(loginClient, fakeApple, deviceA).authenticate()
+            val signUp = AuthenticateWithAppleUseCase(loginClient, fakeApple, deviceA).observedBy(sink).authenticate()
             assertTrue(signUp is SignInResult.NeedsBinding, "a first-time method should need binding")
 
             val bound = BindCurrentAccountUseCase(loginClient, deviceA).bind(signUp.bindTicket)
@@ -110,13 +113,16 @@ class LoginAccountIntegrationTest {
             val (deviceB, _) = bootAccount(server.rpcClient)
             assertTrue(deviceB.lifecycle.first() is Lifecycle.NoAccount)
 
-            val signIn = AuthenticateWithAppleUseCase(loginClient, fakeApple, deviceB).authenticate()
+            val signIn = AuthenticateWithAppleUseCase(loginClient, fakeApple, deviceB).observedBy(sink).authenticate()
             assertTrue(signIn is SignInResult.Recovered, "a bound method should recover the account")
             assertTrue(signIn.accountId.contentEquals(accountId), "the recovered account id must match")
 
             val ready = deviceB.lifecycle.first { it is Lifecycle.Ready } as Lifecycle.Ready
             assertTrue(ready.accountId.contentEquals(accountId))
 
+            kotlin.test.assertEquals(2, records.count { it.operation == "nativeSignIn" && it.provider == "apple" && it.result == "ok" })
+            assertTrue(records.any { it.operation == "authenticateSocial" && it.result == "needs_binding" })
+            assertTrue(records.none { it.toString().contains(APPLE_SUBJECT) })
             deviceA.stop()
             deviceB.stop()
         }

@@ -9,6 +9,7 @@ kotlin {
                 // The generated LoginServiceRpc stub + login.v1 request/response protos; the provider
                 // use-case modules speak these types, so `api`.
                 api(projects.loginCoreApi)
+                api(projects.socialObservabilityCore)
                 // RpcClient appears in the LoginClient provider signature; the generated stub extends
                 // GrpcService in ktbuf-library.
                 api(libs.ktbuf.rpc)

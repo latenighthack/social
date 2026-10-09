@@ -1,5 +1,7 @@
 package com.latenighthack.social.debug.domain
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.ktbuf.bytes.toBase64String
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.LockerKeyspace
@@ -16,19 +18,23 @@ import kotlinx.coroutines.flow.runningFold
 
 class DebugManagerImpl(
     private val codecs: LockerCodecs,
-) : DebugManager, DomainLifecycle {
+) : DebugManager, DomainLifecycle, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+
 
     private var lockers: LockersClient? = null
 
     override fun start(lockers: LockersClient) {
+        socialTelemetry.event("debug", "start")
         this.lockers = lockers
     }
 
     override fun stop() {
+        socialTelemetry.event("debug", "stop")
         lockers = null
     }
 
-    override fun watchLockers(): Flow<Map<String, Any?>> = flow {
+    override fun watchLockers(): Flow<Map<String, Any?>> = (flow {
         val client = lockers ?: error("debug requires start(lockers) first")
         // Seed with the current cache, then fold each change's payload onto it. Folding the delta
         // (rather than re-reading the cache on every change) avoids depending on the ordering
@@ -43,6 +49,8 @@ class DebugManagerImpl(
 
     // roomId + lockerId (which itself carries the keyspace) uniquely identify a locker; both have
     // content-based equals/hashCode, so they are safe as a map key.
+    ).socialObserved(socialTelemetry, "debug")
+
     private data class LockerKey(val roomId: RoomId, val lockerId: LockerId)
 
     private fun Map<LockerKey, LockerClient.LockerUpdate>.applyUpdate(

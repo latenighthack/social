@@ -1,5 +1,7 @@
 package com.latenighthack.social.rooms.domain
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.social.account.domain.AccountManager
 import com.latenighthack.social.profiles.domain.MyProfilesManager
@@ -16,7 +18,11 @@ import me.tatarka.inject.annotations.Provides
  * service. [RoomsKeySource] is the top of the lock-key chain; an app that includes rooms binds it as
  * the client's `LockKeySource`.
  */
-interface RoomsProviders {
+interface RoomsProviders : SocialTelemetryProviders {
+    @Provides
+    @IntoSet
+    fun roomsObservabilityFeature(): SocialFeatureDescriptor = SocialFeatureDescriptor("rooms")
+
     @Provides
     @SocialScope
     fun joinClient(rpcClient: RpcClient): JoinClient = JoinClientImpl(rpcClient)
@@ -27,7 +33,7 @@ interface RoomsProviders {
         account: AccountManager,
         myProfiles: MyProfilesManager,
         joinClient: JoinClient,
-    ): RoomsManagerImpl = RoomsManagerImpl(account, myProfiles, joinClient)
+    ): RoomsManagerImpl = RoomsManagerImpl(account, myProfiles, joinClient).observedBy(socialTelemetry())
 
     @Provides
     fun roomsManager(impl: RoomsManagerImpl): RoomsManager = impl

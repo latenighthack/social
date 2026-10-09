@@ -1,0 +1,16 @@
+groups:
+  - name: social.typing
+    rules:
+      - alert: SocialTypingUnexpectedErrors
+        expr: |
+          (sum by (application, environment, feature, side) (increase(social_operations_total{feature="typing",outcome="error"}[5m]))
+          / sum by (application, environment, feature, side) (increase(social_operations_total{feature="typing"}[5m])) > 0.05)
+          and on (application, environment, feature, side)
+          (sum by (application, environment, feature, side) (increase(social_operations_total{feature="typing"}[5m])) >= 100)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Social unexpected operation errors exceed 5%
+          description: Check telemetry freshness, outcome breakdowns and correlated logs. Expected denials are excluded from the numerator.
+          runbook_url: https://github.com/latenighthack/social/blob/main/observability/README.md#unexpected-errors

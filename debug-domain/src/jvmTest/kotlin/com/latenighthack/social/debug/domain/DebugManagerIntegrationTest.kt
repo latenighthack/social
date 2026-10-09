@@ -5,7 +5,7 @@ import com.latenighthack.ktbuf.test.server.runTestWithServer
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.ktcrypto.generate
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
-import com.latenighthack.ktstore.InMemoryStoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.ktstore.KeyValueStore
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.LockerKeyspace
@@ -43,7 +43,7 @@ class DebugManagerIntegrationTest {
         }
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
-            storeDelegate = InMemoryStoreDelegate(),
+            database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
             keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
             keySource = keySource,
             appVersion = Version(0, 0, 1),

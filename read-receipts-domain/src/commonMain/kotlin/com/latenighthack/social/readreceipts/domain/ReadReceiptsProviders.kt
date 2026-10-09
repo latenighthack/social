@@ -1,5 +1,7 @@
 package com.latenighthack.social.readreceipts.domain
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.social.messages.domain.MessagesManager
 import com.latenighthack.social.rooms.domain.RoomsManager
 import com.latenighthack.social.runtime.DomainLifecycle
@@ -11,11 +13,15 @@ import me.tatarka.inject.annotations.Provides
  * kotlin-inject bindings for the read-receipts feature. Requires RoomsProviders and MessagesProviders
  * in the component (the rooms and messages managers are dependencies).
  */
-interface ReadReceiptsProviders {
+interface ReadReceiptsProviders : SocialTelemetryProviders {
+    @Provides
+    @IntoSet
+    fun readreceiptsObservabilityFeature(): SocialFeatureDescriptor = SocialFeatureDescriptor("read_receipts")
+
     @Provides
     @SocialScope
     fun readReceiptsManagerImpl(rooms: RoomsManager, messages: MessagesManager): ReadReceiptsManagerImpl =
-        ReadReceiptsManagerImpl(rooms, messages)
+        ReadReceiptsManagerImpl(rooms, messages).observedBy(socialTelemetry())
 
     @Provides
     fun readReceiptsManager(impl: ReadReceiptsManagerImpl): ReadReceiptsManager = impl

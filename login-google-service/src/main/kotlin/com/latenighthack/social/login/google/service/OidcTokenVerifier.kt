@@ -1,5 +1,7 @@
 package com.latenighthack.social.login.google.service
 
+import com.latenighthack.social.observability.*
+import com.nimbusds.jose.KeySourceException
 import com.latenighthack.social.login.core.service.SocialTokenVerifier
 import com.latenighthack.social.login.core.service.VerifiedClaims
 import com.nimbusds.jose.JWSAlgorithm
@@ -23,7 +25,8 @@ class OidcTokenVerifier(
     private val issuers: Set<String>,
     jwksUrl: String,
     private val audiences: Set<String>,
-) : SocialTokenVerifier {
+) : SocialTokenVerifier, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
     private val processor = DefaultJWTProcessor<SecurityContext>().apply {
         val source: JWKSource<SecurityContext> = JWKSourceBuilder.create<SecurityContext>(URL(jwksUrl)).build()
         jwsKeySelector = JWSVerificationKeySelector(JWSAlgorithm.RS256, source)
@@ -33,6 +36,8 @@ class OidcTokenVerifier(
         val claims = try {
             processor.process(idToken, null)
         } catch (e: Exception) {
+            // JWKS dependency failure is operationally distinct from an invalid token.
+            if (e is KeySourceException) socialTelemetry.event("login", "verify", "error", provider = "google")
             return@withContext null
         }
         if (claims.issuer !in issuers) return@withContext null

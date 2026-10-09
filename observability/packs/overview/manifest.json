@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "feature": "overview",
+  "metricContract": 1,
+  "reportVersion": 1,
+  "grafana": "11.4.0",
+  "dashboardUid": "social-overview-v1",
+  "datasources": [
+    "prometheus",
+    "loki",
+    "tempo"
+  ]
+}

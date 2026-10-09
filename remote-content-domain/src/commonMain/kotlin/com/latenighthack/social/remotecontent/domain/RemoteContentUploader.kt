@@ -4,7 +4,9 @@
 
 package com.latenighthack.social.remotecontent.domain
 
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.social.observability.*
+
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.remotecontent.v1.ContentId
 import com.latenighthack.social.remotecontent.v1.PendingUpload
@@ -80,12 +82,14 @@ interface RemoteContentUploader {
  */
 class RemoteContentUploaderImpl(
     private val client: RemoteContentClient,
-    private val delegate: StoreDelegate,
+    private val database: Database,
     private val retryIntervalMillis: Long = DEFAULT_RETRY_INTERVAL_MILLIS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-) : RemoteContentUploader, DomainLifecycle {
+) : RemoteContentUploader, DomainLifecycle, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
-    private val store = PendingUploadStore(delegate)
+
+    private val store = PendingUploadStore(database)
 
     // Observable status per upload, keyed by content id bytes. Completed entries are retained (bytes
     // already dropped from the durable store, so this is metadata only) so observers see completion.
@@ -97,25 +101,26 @@ class RemoteContentUploaderImpl(
 
     private var job: Job? = null
 
-    override suspend fun prepare() {
+    override suspend fun prepare(): Unit = socialTelemetry.measure("remote_content", "prepare") {
         store.prepare()
     }
 
     /** Launches the background drain loop. Idempotent; resumes a queue left by a prior [stop]. */
     fun start() {
         if (job?.isActive == true) return
-        job = scope.launch { run() }
+        job = scope.launch { socialTelemetry.measure("remote_content", "start") { run() } }
     }
 
     /** [DomainLifecycle] entry point; the [lockers] client is unused (see the class doc). */
     override fun start(lockers: LockersClient) = start()
 
     override fun stop() {
+        socialTelemetry.event("remote_content", "stop")
         job?.cancel()
         job = null
     }
 
-    override suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload {
+    override suspend fun enqueue(bytes: ByteArray, mimeType: String?): Upload = socialTelemetry.measure("remote_content", "enqueue") {
         // Mint the id + URLs up front; this is the only step that needs the server to be reachable,
         // and it hands back the download URL before the bytes are transferred.
         val created = client.createContent(mimeType)
@@ -129,7 +134,7 @@ class RemoteContentUploaderImpl(
         val upload = Upload(created.contentId, created.downloadUrl, UploadStatus.Queued)
         uploads.update { it + (created.contentId.rawValue.toList() to upload) }
         wake.trySend(Unit)
-        return upload
+        return@measure upload
     }
 
     override fun watchUploads(): Flow<List<Upload>> =
@@ -155,7 +160,10 @@ class RemoteContentUploaderImpl(
     }
 
     private suspend fun drainOnce() {
-        for (pending in store.getAllPending().sortedBy { it.createdAtMillis }) {
+        val queueEntries = store.getAllPending()
+        socialTelemetry.event("remote_content", "queue", kind = "queue_depth", value = queueEntries.size.toDouble())
+        socialTelemetry.event("remote_content", "queue", kind = "queue_age", value = queueEntries.maxOfOrNull { ((Clock.System.now().toEpochMilliseconds() - it.createdAtMillis).coerceAtLeast(0) / 1000.0) } ?: 0.0)
+        for (pending in queueEntries.sortedBy { it.createdAtMillis }) {
             val contentId = pending.contentId ?: continue
             val key = contentId.rawValue.toList()
             setStatus(key, UploadStatus.Uploading)
@@ -167,6 +175,7 @@ class RemoteContentUploaderImpl(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
+                socialTelemetry.event("remote_content", "retry", "retry")
                 // Keep the entry for the next pass; a transient network/server error must not drop it.
                 setStatus(key, UploadStatus.Queued)
             }

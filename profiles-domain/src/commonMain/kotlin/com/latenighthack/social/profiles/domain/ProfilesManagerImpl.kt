@@ -1,8 +1,10 @@
 package com.latenighthack.social.profiles.domain
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
 import com.latenighthack.ktcrypto.decode
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.common.RoomKeying
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
@@ -31,11 +33,13 @@ import kotlinx.coroutines.launch
  * stored verbatim (verification deferred).
  */
 class ProfilesManagerImpl(
-    private val delegate: StoreDelegate,
+    private val database: Database,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-) : ProfilesManager, DomainLifecycle {
+) : ProfilesManager, DomainLifecycle, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
-    private val store = ProfileStore(delegate)
+
+    private val store = ProfileStore(database)
 
     private val _profiles = MutableStateFlow<Map<ProfileId, Profile>>(emptyMap())
 
@@ -44,11 +48,12 @@ class ProfilesManagerImpl(
     // Completes once the cache has been loaded — gates all store access.
     private val ready = CompletableDeferred<Unit>()
 
-    override suspend fun prepare() {
+    override suspend fun prepare(): Unit = socialTelemetry.measure("profiles", "prepare") {
         store.prepare()
     }
 
     override fun start(lockers: LockersClient) {
+        socialTelemetry.event("profiles", "start")
         this.lockers = lockers
         if (job?.isActive == true) return
         job = scope.launch {
@@ -69,11 +74,12 @@ class ProfilesManagerImpl(
     }
 
     override fun stop() {
+        socialTelemetry.event("profiles", "stop")
         job?.cancel()
         job = null
     }
 
-    override suspend fun observe(profileId: ProfileId) {
+    override suspend fun observe(profileId: ProfileId): Unit = socialTelemetry.measure("profiles", "observe") {
         val lockers = lockers ?: error("observe requires start(lockers) first")
         val client = profileClient(lockers)
         client.subscribeToRoom(profileId.toRoomId())
@@ -81,16 +87,20 @@ class ProfilesManagerImpl(
         client.getLocker(profileId.toRoomId(), profileId.toProfileLockerId(), revalidate = false)?.let { ingest(profileId, it) }
     }
 
-    override fun getProfile(id: ProfileId): Profile? = _profiles.value[id]
+    override fun getProfile(id: ProfileId): Profile? = _profiles.value[id].also {
+        socialTelemetry.event("profiles", "cache", if (it == null) "noop" else "ok")
+    }
 
     override fun watchProfile(id: ProfileId): Flow<Profile?> =
-        _profiles.map { it[id] }.distinctUntilChanged()
+        (_profiles.map { it[id] }.distinctUntilChanged()
+    ).socialObserved(socialTelemetry, "profiles")
 
     override fun getProfiles(ids: List<ProfileId>): List<Profile?> =
         _profiles.value.let { current -> ids.map { current[it] } }
 
     override fun watchProfiles(ids: List<ProfileId>): Flow<List<Profile?>> =
-        _profiles.map { current -> ids.map { current[it] } }.distinctUntilChanged()
+        (_profiles.map { current -> ids.map { current[it] } }.distinctUntilChanged()
+    ).socialObserved(socialTelemetry, "profiles")
 
     private suspend fun onUpdate(update: TypedLockerUpdate<Profile>) {
         val authority = RoomKeying.authorityKey(update.roomId) ?: return
@@ -116,10 +126,11 @@ class ProfilesManagerImpl(
     }
 
     /** Keep only disclosures carrying a valid signature by the profile's own key (its id). */
-    private suspend fun verifyDisclosures(profileId: ProfileId, profile: Profile): Profile {
+    private suspend fun verifyDisclosures(profileId: ProfileId, profile: Profile): Profile = socialTelemetry.measure("profiles", "verifyDisclosures") {
         val key = Secp256r1PublicKey.decode(profileId.rawValue)
         val kept = profile.disclosures.filter { Disclosures.verify(it, key) }
-        return profile.copy { disclosures = kept }
+        if (kept.size != profile.disclosures.size) result("invalid_signature")
+        return@measure profile.copy { disclosures = kept }
     }
 
     private fun profileClient(lockers: LockersClient): TypedLockerClient<Profile> =

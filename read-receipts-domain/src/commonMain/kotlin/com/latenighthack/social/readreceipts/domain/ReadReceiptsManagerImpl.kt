@@ -1,5 +1,7 @@
 package com.latenighthack.social.readreceipts.domain
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
@@ -32,30 +34,34 @@ import kotlinx.coroutines.flow.map
 class ReadReceiptsManagerImpl(
     private val rooms: RoomsManager,
     private val messages: MessagesManager,
-) : ReadReceiptsManager, DomainLifecycle {
+) : ReadReceiptsManager, DomainLifecycle, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+
 
     private var lockers: LockersClient? = null
 
     override fun start(lockers: LockersClient) {
+        socialTelemetry.event("read_receipts", "start")
         this.lockers = lockers
     }
 
     override fun stop() {
+        socialTelemetry.event("read_receipts", "stop")
         lockers = null
     }
 
-    override suspend fun markRead(roomId: RoomId) {
-        val me = rooms.localProfile(roomId) ?: return
-        val latest = messages.watchMessageIds(roomId).first().lastOrNull() ?: return
+    override suspend fun markRead(roomId: RoomId): Unit = socialTelemetry.measure("read_receipts", "markRead") {
+        val me = rooms.localProfile(roomId) ?: run { result("no_profile"); return@measure }
+        val latest = messages.watchMessageIds(roomId).first().lastOrNull() ?: run { result("no_message"); return@measure }
         val client = readReceiptClient(requireLockers())
         val lockerId = LockerId(me.rawValue, ReadReceiptsKeyspaces.READ_RECEIPTS)
         // Skip a redundant write when the pointer already sits at the latest message — markRead is
         // called often (e.g. whenever the room is viewed) and each write is a network round-trip.
-        if (client.getLocker(roomId, lockerId)?.messageId?.contentEquals(latest.rawValue) == true) return
+        if (client.getLocker(roomId, lockerId)?.messageId?.contentEquals(latest.rawValue) == true) { result("redundant"); return@measure }
         client.updateLocker(roomId, lockerId) { ReadReceipt { messageId = latest.rawValue } }
     }
 
-    override fun watchReadReceipts(roomId: RoomId): Flow<Map<ProfileId, MessageId>> = flow {
+    override fun watchReadReceipts(roomId: RoomId): Flow<Map<ProfileId, MessageId>> = (flow {
         val client = readReceiptClient(requireLockers())
         emitAll(
             client.watchAll(roomId, ReadReceiptsKeyspaces.READ_RECEIPTS).map { receipts ->
@@ -65,6 +71,7 @@ class ReadReceiptsManagerImpl(
             },
         )
     }.distinctUntilChanged()
+    ).socialObserved(socialTelemetry, "read_receipts")
 
     private fun requireLockers(): LockersClient = lockers ?: error("read receipts requires start(lockers) first")
 

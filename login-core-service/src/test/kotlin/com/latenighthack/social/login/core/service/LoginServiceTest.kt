@@ -2,7 +2,7 @@ package com.latenighthack.social.login.core.service
 
 import com.latenighthack.ktbuf.server.serveAll
 import com.latenighthack.ktbuf.test.server.runTestWithServer
-import com.latenighthack.ktstore.InMemoryStoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.server.rpcClient
 import com.latenighthack.social.login.v1.AuthenticateSocialRequest
 import com.latenighthack.social.login.v1.BindRequest
@@ -57,12 +57,12 @@ private suspend fun Application.attachLogin(
     clock: () -> Long = System::currentTimeMillis,
     maxAttempts: Int = 5,
 ) {
-    val delegate = InMemoryStoreDelegate()
+    val delegate = com.latenighthack.social.login.core.service.LoginStorage.inMemory()
     val credentials = CredentialStore(delegate)
     val challenges = ChallengeStore(delegate)
     credentials.prepare()
     challenges.prepare()
-    delegate.createStores()
+    delegate.open()
     val service = LoginServiceImpl(
         credentials = credentials,
         challenges = challenges,
@@ -242,12 +242,12 @@ class LoginServiceTest {
 
     @Test
     fun `the account key is stored encrypted, not in the clear`() = runTest {
-        val delegate = InMemoryStoreDelegate()
+        val delegate = com.latenighthack.social.login.core.service.LoginStorage.inMemory()
         val credentials = CredentialStore(delegate)
         val challenges = ChallengeStore(delegate)
         credentials.prepare()
         challenges.prepare()
-        delegate.createStores()
+        delegate.open()
         val service = LoginServiceImpl(
             credentials = credentials,
             challenges = challenges,

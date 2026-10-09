@@ -1,0 +1,108 @@
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+tests:
+  - name: absent optional modules never alert
+    interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SocialUnexpectedErrors
+        exp_alerts: []
+  - name: idle and expected authentication denials never alert
+    interval: 1m
+    input_series:
+      - series: social_operations_total{application="demo",environment="test",feature="login",side="server",outcome="rejected"}
+        values: 0+100x30
+      - series: social_operations_total{application="demo",environment="test",feature="login",side="server",outcome="error"}
+        values: 0+0x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SocialUnexpectedErrors
+        exp_alerts: []
+  - name: low traffic errors do not satisfy the volume guard
+    interval: 1m
+    input_series:
+      - series: social_operations_total{application="demo",environment="test",feature="rooms",side="server",outcome="error"}
+        values: 0+1x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SocialUnexpectedErrors
+        exp_alerts: []
+  - name: sustained unexpected errors alert after ten minutes
+    interval: 1m
+    input_series:
+      - series: social_operations_total{application="demo",environment="test",feature="messages",side="client",outcome="success"}
+        values: 0+100x30
+      - series: social_operations_total{application="demo",environment="test",feature="messages",side="client",outcome="error"}
+        values: 0+10x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SocialUnexpectedErrors
+        exp_alerts:
+          - exp_labels: {application: demo, environment: test, feature: messages, side: client, severity: warning}
+            exp_annotations:
+              summary: Social unexpected operation errors exceed 5%
+              description: Check telemetry freshness, outcome breakdowns and correlated logs. Expected denials are excluded from the numerator.
+              runbook_url: https://github.com/latenighthack/social/blob/main/observability/README.md#unexpected-errors
+  - name: a counter reset with no errors does not alert
+    interval: 1m
+    input_series:
+      - series: social_operations_total{application="demo",environment="test",feature="messages",side="client",outcome="success"}
+        values: 1000 1100 1200 0 100 200 300 400 500 600 700 800 900 1000 1100 1200
+      - series: social_operations_total{application="demo",environment="test",feature="messages",side="client",outcome="error"}
+        values: 0+0x30
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SocialUnexpectedErrors
+        exp_alerts: []
+  - name: new dead letters warn
+    interval: 1m
+    input_series:
+      - series: social_events_total{application="demo",environment="test",feature="messages",side="client",operation="dead_letter"}
+        values: 0+1x30
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SocialNewDeadLetters
+        exp_alerts:
+          - exp_labels: {application: demo, environment: test, side: client, severity: warning}
+            exp_annotations:
+              summary: Social messages newly entered the dead-letter store
+              description: Inspect send failures and retries before asking the application to retry. Server acceptance does not establish recipient delivery.
+              runbook_url: https://github.com/latenighthack/social/blob/main/observability/README.md#dead-letters
+  - name: telemetry drops warn
+    interval: 1m
+    input_series:
+      - series: social_telemetry_dropped_total{application="demo",environment="test",side="client"}
+        values: 0+1x30
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SocialTelemetryDrops
+        exp_alerts:
+          - exp_labels: {application: demo, environment: test, side: client, severity: warning}
+            exp_annotations:
+              summary: Social client telemetry was dropped
+              description: Rates are incomplete. Check client freshness, network failures and exporter capacity; telemetry is memory-only.
+              runbook_url: https://github.com/latenighthack/social/blob/main/observability/README.md#telemetry-delivery
+  - name: export errors warn after five minutes
+    interval: 1m
+    input_series:
+      - series: social_telemetry_exports_total{application="demo",environment="test",side="client",result="error"}
+        values: 0+1x30
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SocialDiagnosticExportFailures
+        exp_alerts:
+          - exp_labels: {application: demo, environment: test, severity: warning}
+            exp_annotations:
+              summary: Social telemetry exports are failing
+              description: Check client transport failures and collector reachability, credentials and capacity. Accepted client metrics are independent of diagnostic forwarding.
+              runbook_url: https://github.com/latenighthack/social/blob/main/observability/README.md#telemetry-delivery
+  - name: expected export rejections do not become infrastructure alerts
+    interval: 1m
+    input_series:
+      - series: social_telemetry_exports_total{application="demo",environment="test",side="client",result="rejected"}
+        values: 0+100x30
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SocialDiagnosticExportFailures
+        exp_alerts: []

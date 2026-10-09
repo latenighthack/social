@@ -1,5 +1,7 @@
 package com.latenighthack.social.avatars.usecase
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.social.remotecontent.domain.RemoteContentUploader
 import com.latenighthack.social.remotecontent.domain.Upload
@@ -16,10 +18,11 @@ import com.latenighthack.social.rooms.domain.replaceDisclosure
 class SetRoomAvatarUseCase(
     private val uploader: RemoteContentUploader,
     private val rooms: RoomsManager,
-) {
-    suspend fun set(roomId: RoomId, bytes: ByteArray, mimeType: String?): Upload {
+) : SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+    suspend fun set(roomId: RoomId, bytes: ByteArray, mimeType: String?): Upload = socialTelemetry.measure("avatars", "setRoomAvatar") {
         val upload = uploader.enqueue(bytes, mimeType)
         rooms.updateInfo(roomId) { replaceDisclosure { avatar { downloadUrl = upload.downloadUrl } } }
-        return upload
+        return@measure upload
     }
 }

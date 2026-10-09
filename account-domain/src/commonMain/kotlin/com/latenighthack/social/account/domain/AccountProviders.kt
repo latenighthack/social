@@ -1,5 +1,7 @@
 package com.latenighthack.social.account.domain
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.ktstore.KeyValueStore
 import com.latenighthack.lockers.connector.AuthenticationKeySource
 import com.latenighthack.social.runtime.DomainLifecycle
@@ -12,11 +14,15 @@ import me.tatarka.inject.annotations.Provides
  * to obtain the account manager, its key source, and its lifecycle contribution. The app must
  * provide the [KeyValueStore] the manager persists its device-local identity in.
  */
-interface AccountProviders {
+interface AccountProviders : SocialTelemetryProviders {
+    @Provides
+    @IntoSet
+    fun accountObservabilityFeature(): SocialFeatureDescriptor = SocialFeatureDescriptor("account")
+
     @Provides
     @SocialScope
     fun accountManagerImpl(keyValueStore: KeyValueStore): AccountManagerImpl =
-        AccountManagerImpl(keyValueStore)
+        AccountManagerImpl(keyValueStore).observedBy(socialTelemetry())
 
     @Provides
     fun accountManager(impl: AccountManagerImpl): AccountManager = impl

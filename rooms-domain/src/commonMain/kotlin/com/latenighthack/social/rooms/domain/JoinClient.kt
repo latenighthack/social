@@ -1,5 +1,7 @@
 package com.latenighthack.social.rooms.domain
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.social.rooms.v1.CreateInviteCodeRequest
 import com.latenighthack.social.rooms.v1.CreateInviteCodeResponse
@@ -22,7 +24,9 @@ interface JoinClient {
     suspend fun revokeInviteCode(request: RevokeInviteCodeRequest): RevokeInviteCodeResponse
 }
 
-class JoinClientImpl(rpcClient: RpcClient) : JoinClient {
+class JoinClientImpl(rpcClient: RpcClient) : JoinClient, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+
     private val rpc = JoinServiceRpc(rpcClient)
 
     override suspend fun createInviteCode(request: CreateInviteCodeRequest): CreateInviteCodeResponse =

@@ -1,5 +1,7 @@
 package com.latenighthack.social.login.core.service
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.ktbuf.net.GrpcRequestContext
 import com.latenighthack.social.login.v1.AuthenticateResponse
 import com.latenighthack.social.login.v1.AuthenticateSocialRequest
@@ -58,28 +60,38 @@ class LoginServiceImpl(
     private val maxAttempts: Int = 5,
     private val otpDigits: Int = 6,
     private val tokenBytes: Int = 32,
-) : LoginServer {
+) : LoginServer, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+        set(value) {
+            field = value
+            (appleVerifier as? SocialTelemetryOwner)?.socialTelemetry = value
+            (googleVerifier as? SocialTelemetryOwner)?.socialTelemetry = value
+        }
+
 
     override suspend fun requestNonce(
         context: GrpcRequestContext,
         request: RequestNonceRequest,
-    ): RequestNonceResponse = RequestNonceResponse {
+    ): RequestNonceResponse = socialTelemetry.measure("login", "requestNonce", "none") { RequestNonceResponse {
         result = LoginResult.LOGIN_RESULT_OK
         nonce = nonces.issue()
         expiresInSeconds = nonces.expiresInSeconds
-    }
+    } }
 
     override suspend fun authenticateSocial(
         context: GrpcRequestContext,
         request: AuthenticateSocialRequest,
-    ): AuthenticateResponse {
+    ): AuthenticateResponse = socialTelemetry.measure("login", "authenticateSocial", socialProvider(request.provider.value)) {
+        run operation@ {
         val verifier = when (request.provider) {
             Provider.PROVIDER_APPLE -> appleVerifier
             Provider.PROVIDER_GOOGLE -> googleVerifier
             else -> null
-        } ?: return authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
-        val claims = verifier.verify(request.idToken)
-            ?: return authResult(LoginResult.LOGIN_RESULT_UNAUTHORIZED)
+        } ?: return@operation authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
+        val claims = socialTelemetry.measure("login", "verify", socialProvider(request.provider.value)) {
+            verifier.verify(request.idToken).also { if (it == null) result("unauthorized") }
+        }
+            ?: return@operation authResult(LoginResult.LOGIN_RESULT_UNAUTHORIZED)
         // Replay defense: under enforcement, a nonce must be present, issued here, and match the
         // token's claim (verbatim or SHA-256 hex). Outside enforcement the check is best-effort — the
         // nonce is still spent, but a mismatch is non-fatal (a non-enforcing server already accepts
@@ -87,70 +99,85 @@ class LoginServiceImpl(
         // claim, e.g. the dev verifier, without adding protection).
         if (requireNonce) {
             if (request.nonce.isEmpty() || !nonces.consume(request.nonce, claims.nonce)) {
-                return authResult(LoginResult.LOGIN_RESULT_UNAUTHORIZED)
+                return@operation authResult(LoginResult.LOGIN_RESULT_UNAUTHORIZED)
             }
         } else if (request.nonce.isNotEmpty()) {
             nonces.consume(request.nonce, claims.nonce)
         }
-        return recoverOrIssueTicket(request.provider.value, subjectBytes(claims.subject), claims)
+        return@operation recoverOrIssueTicket(request.provider.value, subjectBytes(claims.subject), claims)
+
+        }.also { response -> result(socialResult(response.result.toString())) }
     }
 
     override suspend fun startEmailLink(
         context: GrpcRequestContext,
         request: StartEmailLinkRequest,
-    ): StartChallengeResponse {
-        val sender = emailSender ?: return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE }
+    ): StartChallengeResponse = socialTelemetry.measure("login", "startEmailLink", "email") {
+        run operation@ {
+        val sender = emailSender ?: return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE }
         val email = request.email.trim()
-        if (email.isEmpty()) return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (email.isEmpty()) return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
         val token = randomToken()
         storeChallenge(providerNumber(Provider.PROVIDER_EMAIL), subjectBytes(email), token)
-        sender.sendMagicLink(email, buildLink(email, token))
-        return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_OK }
+        socialTelemetry.measure("login", "send", "email") { sender.sendMagicLink(email, buildLink(email, token)) }
+        return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_OK }
+
+        }.also { response -> result(socialResult(response.result.toString())) }
     }
 
     override suspend fun completeEmailLink(
         context: GrpcRequestContext,
         request: CompleteEmailLinkRequest,
-    ): AuthenticateResponse {
-        if (emailSender == null) return authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
-        return verifyChallenge(providerNumber(Provider.PROVIDER_EMAIL), subjectBytes(request.email.trim()), request.token)
+    ): AuthenticateResponse = socialTelemetry.measure("login", "completeEmailLink", "email") {
+        run operation@ {
+        if (emailSender == null) return@operation authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
+        return@operation verifyChallenge(providerNumber(Provider.PROVIDER_EMAIL), subjectBytes(request.email.trim()), request.token)
+
+        }.also { response -> result(socialResult(response.result.toString())) }
     }
 
     override suspend fun startPhoneCode(
         context: GrpcRequestContext,
         request: StartPhoneCodeRequest,
-    ): StartChallengeResponse {
-        val sender = smsSender ?: return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE }
+    ): StartChallengeResponse = socialTelemetry.measure("login", "startPhoneCode", "phone") {
+        run operation@ {
+        val sender = smsSender ?: return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE }
         val phone = request.phoneNumber.trim()
-        if (phone.isEmpty()) return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+        if (phone.isEmpty()) return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_INVALID }
         val code = randomCode()
         storeChallenge(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(phone), code)
-        sender.sendCode(phone, code)
-        return StartChallengeResponse { result = LoginResult.LOGIN_RESULT_OK }
+        socialTelemetry.measure("login", "send", "phone") { sender.sendCode(phone, code) }
+        return@operation StartChallengeResponse { result = LoginResult.LOGIN_RESULT_OK }
+
+        }.also { response -> result(socialResult(response.result.toString())) }
     }
 
     override suspend fun verifyPhoneCode(
         context: GrpcRequestContext,
         request: VerifyPhoneCodeRequest,
-    ): AuthenticateResponse {
-        if (smsSender == null) return authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
-        return verifyChallenge(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(request.phoneNumber.trim()), request.code)
+    ): AuthenticateResponse = socialTelemetry.measure("login", "verifyPhoneCode", "phone") {
+        run operation@ {
+        if (smsSender == null) return@operation authResult(LoginResult.LOGIN_RESULT_PROVIDER_UNAVAILABLE)
+        return@operation verifyChallenge(providerNumber(Provider.PROVIDER_PHONE), subjectBytes(request.phoneNumber.trim()), request.code)
+
+        }.also { response -> result(socialResult(response.result.toString())) }
     }
 
-    override suspend fun bind(context: GrpcRequestContext, request: BindRequest): BindResponse {
+    override suspend fun bind(context: GrpcRequestContext, request: BindRequest): BindResponse = socialTelemetry.measure("login", "bind", "none") {
+        run operation@ {
         val ticketLookup = ticketKey(request.bindTicket)
         val ticket = challenges.getByLookup(ticketLookup)
-            ?: return BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
+            ?: return@operation BindResponse { result = LoginResult.LOGIN_RESULT_INVALID }
         // Single-use: a ticket is spent whether or not the bind succeeds.
         challenges.deleteByLookup(ticketLookup)
         if (ticket.expiryMillis != 0L && clock() >= ticket.expiryMillis) {
-            return BindResponse { result = LoginResult.LOGIN_RESULT_EXPIRED }
+            return@operation BindResponse { result = LoginResult.LOGIN_RESULT_EXPIRED }
         }
 
         val credentialLookup = credentialKey(ticket.provider, ticket.subject)
         val existing = credentials.getByLookup(credentialLookup)
         if (existing != null && !existing.accountId.contentEquals(request.accountId)) {
-            return BindResponse { result = LoginResult.LOGIN_RESULT_ALREADY_BOUND }
+            return@operation BindResponse { result = LoginResult.LOGIN_RESULT_ALREADY_BOUND }
         }
 
         val sealed = custody.encrypt(request.accountPrivateKey, CustodyCrypto.Binding(ticket.provider, ticket.subject))
@@ -169,7 +196,9 @@ class LoginServiceImpl(
                 updatedAtMillis = now
             },
         )
-        return BindResponse { result = LoginResult.LOGIN_RESULT_OK }
+        return@operation BindResponse { result = LoginResult.LOGIN_RESULT_OK }
+
+        }.also { response -> result(socialResult(response.result.toString())) }
     }
 
     /** After a method is proven, recover its bound key or, if none, issue a single-use bind ticket. */

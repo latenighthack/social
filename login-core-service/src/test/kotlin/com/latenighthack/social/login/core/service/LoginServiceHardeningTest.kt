@@ -1,6 +1,6 @@
 package com.latenighthack.social.login.core.service
 
-import com.latenighthack.ktstore.InMemoryStoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.social.login.v1.AuthenticateSocialRequest
 import com.latenighthack.social.login.v1.BindRequest
 import com.latenighthack.social.login.v1.CredentialRecord
@@ -41,7 +41,7 @@ private class Harness(
     requireNonce: Boolean = false,
     val custody: CustodyCrypto = CustodyCrypto(MASTER_KEY),
 ) {
-    val delegate = InMemoryStoreDelegate()
+    val delegate = com.latenighthack.social.login.core.service.LoginStorage.inMemory()
     val credentials = CredentialStore(delegate)
     val challenges = ChallengeStore(delegate)
     val nonces = NonceService()
@@ -63,7 +63,7 @@ private class Harness(
     suspend fun prepare(): Harness {
         credentials.prepare()
         challenges.prepare()
-        delegate.createStores()
+        delegate.open()
         return this
     }
 }

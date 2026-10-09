@@ -4,6 +4,8 @@
 
 package com.latenighthack.social.account.domain
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.fromPrivateKey
@@ -45,7 +47,9 @@ import kotlin.time.Clock
 class AccountManagerImpl(
     private val keyValueStore: KeyValueStore,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-) : AccountManager, DomainLifecycle {
+) : AccountManager, DomainLifecycle, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+
 
     // --- key material (owned here; AccountKeySource forwards to these) ---
 
@@ -116,17 +120,17 @@ class AccountManagerImpl(
     private var roomInitialized = false
     private var lockers: LockersClient? = null
 
-    override suspend fun createAccount(): ByteArray {
+    override suspend fun createAccount(): ByteArray = socialTelemetry.measure("account", "createAccount") {
         if (!hasSessionKey()) {
             generateKey()
         }
-        return accountId()
+        return@measure accountId()
     }
 
     override suspend fun localAccountRoom(): RoomId? =
         if (hasSessionKey()) privateRoomId() else null
 
-    override suspend fun restoreAccount(privateKeyBytes: ByteArray): ByteArray {
+    override suspend fun restoreAccount(privateKeyBytes: ByteArray): ByteArray = socialTelemetry.measure("account", "restoreAccount") {
         if (hasSessionKey()) throw IllegalStateException("an account already exists on this device")
         val keyPair = Secp256r1KeyPair.fromPrivateKey(privateKeyBytes)
             ?: throw IllegalArgumentException("invalid private key")
@@ -162,10 +166,10 @@ class AccountManagerImpl(
             AccountRecord::toByteArray,
         )
         hasKey.value = true
-        return keyPair.publicKey.encode()
+        return@measure keyPair.publicKey.encode()
     }
 
-    override suspend fun signOut() = revokeSession()
+    override suspend fun signOut() = socialTelemetry.measure("account", "signOut") { revokeSession() }
 
     override suspend fun exportIdentity(): AccountManager.Identity {
         if (!hasSessionKey()) throw IllegalStateException("no account to export")
@@ -174,13 +178,15 @@ class AccountManagerImpl(
     }
 
     override fun start(lockers: LockersClient) {
+        socialTelemetry.event("account", "start")
         this.lockers = lockers
         if (job?.isActive == true) return
         roomInitialized = false
-        job = scope.launch { run(lockers) }
+        job = scope.launch { socialTelemetry.measure("account", "start") { run(lockers) } }
     }
 
     override fun stop() {
+        socialTelemetry.event("account", "stop")
         job?.cancel()
         job = null
     }

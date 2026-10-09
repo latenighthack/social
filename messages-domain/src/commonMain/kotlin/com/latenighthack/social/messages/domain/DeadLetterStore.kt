@@ -1,8 +1,6 @@
 package com.latenighthack.social.messages.domain
 
-import com.latenighthack.ktstore.BoundStoreKey
-import com.latenighthack.ktstore.Store
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.*
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.social.messages.v1.MessageId
 import com.latenighthack.social.messages.v1.PendingMessage
@@ -15,15 +13,10 @@ import com.latenighthack.social.messages.v1.toByteArray
  * dead-lettered message can be looked up and removed directly on [retry] without scanning. A
  * dead-lettered message is terminal until an explicit retry moves it back into the outbox.
  */
-internal class DeadLetterStore(delegate: StoreDelegate) : Store<PendingMessage>(
-    delegate,
-    "dead_letter_messages",
-    PendingMessage::toByteArray,
-    PendingMessage.Companion::fromByteArray,
-) {
-    private val roomIdKey = bytesIndex(PendingMessage::roomId)
-    private val messageIdKey = serializedIndex(PendingMessage::messageId, MessageId::toByteArray)
-    private val roomIdMessageIdKey = compositeIndex(roomIdKey, messageIdKey).also { primaryKey(it) }
+internal class DeadLetterStore(database: Database) : Store<PendingMessage>(database, DeadLetterStoreDefinitionV1) {
+    private val roomIdKey = DeadLetterStoreDefinitionV1.roomIdKey
+    private val messageIdKey = DeadLetterStoreDefinitionV1.messageIdKey
+    private val roomIdMessageIdKey = DeadLetterStoreDefinitionV1.roomIdMessageIdKey
 
     suspend fun saveDeadLettered(dead: PendingMessage) = save(dead)
 
@@ -34,7 +27,7 @@ internal class DeadLetterStore(delegate: StoreDelegate) : Store<PendingMessage>(
         delete(roomIdMessageIdKey.eq(key(roomId, messageId)))
 
     private fun key(roomId: RoomId, messageId: MessageId) = listOf(
-        BoundStoreKey.SerializedKey(roomIdKey.name, roomId.rawValue),
-        BoundStoreKey.SerializedKey(messageIdKey.name, messageId.toByteArray()),
+        BoundStoreKey.SerializedKey(roomIdKey.name.value, roomId.rawValue),
+        BoundStoreKey.SerializedKey(messageIdKey.name.value, messageId.toByteArray()),
     )
 }

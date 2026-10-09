@@ -1,5 +1,7 @@
 package com.latenighthack.social.avatars.usecase
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.social.profiles.domain.MyProfilesManager
 import com.latenighthack.social.profiles.domain.replaceDisclosure
 import com.latenighthack.social.remotecontent.domain.RemoteContentUploader
@@ -16,12 +18,13 @@ import kotlinx.coroutines.flow.first
 class SetMyAvatarUseCase(
     private val uploader: RemoteContentUploader,
     private val myProfiles: MyProfilesManager,
-) {
-    suspend fun set(bytes: ByteArray, mimeType: String?): Upload {
+) : SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+    suspend fun set(bytes: ByteArray, mimeType: String?): Upload = socialTelemetry.measure("avatars", "setMyAvatar") {
         val profileId = myProfiles.getProfileList().first().firstOrNull()
             ?: error("a profile must exist before setting an avatar")
         val upload = uploader.enqueue(bytes, mimeType)
         myProfiles.updateProfile(profileId) { replaceDisclosure { avatar { downloadUrl = upload.downloadUrl } } }
-        return upload
+        return@measure upload
     }
 }

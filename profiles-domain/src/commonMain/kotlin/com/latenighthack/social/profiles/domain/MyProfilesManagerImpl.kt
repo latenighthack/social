@@ -1,5 +1,7 @@
 package com.latenighthack.social.profiles.domain
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.ktcrypto.ECDH
 import com.latenighthack.ktcrypto.Secp256r1
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
@@ -46,7 +48,9 @@ import kotlinx.coroutines.launch
 class MyProfilesManagerImpl(
     private val account: AccountManager,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-) : MyProfilesManager, DomainLifecycle {
+) : MyProfilesManager, DomainLifecycle, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+
 
     // In-memory profile keys (immutable-swap for consistent reads from writeKey).
     private var keyPairs: Map<ProfileId, Secp256r1KeyPair> = emptyMap()
@@ -60,13 +64,15 @@ class MyProfilesManagerImpl(
     override val isLoaded: StateFlow<Boolean> get() = _isLoaded
 
     override fun start(lockers: LockersClient) {
+        socialTelemetry.event("profiles", "start")
         this.lockers = lockers
         if (job?.isActive == true) return
         _isLoaded.value = false
-        job = scope.launch { run() }
+        job = scope.launch { socialTelemetry.measure("profiles", "start") { run() } }
     }
 
     override fun stop() {
+        socialTelemetry.event("profiles", "stop")
         job?.cancel()
         job = null
         _isLoaded.value = false
@@ -82,7 +88,8 @@ class MyProfilesManagerImpl(
         keyPairs[profileId]?.let { signContent(it, label, content) }
 
     override fun getProfileList(): Flow<List<ProfileId>> =
-        _profiles.map { it.keys.toList() }.distinctUntilChanged()
+        (_profiles.map { it.keys.toList() }.distinctUntilChanged()
+    ).socialObserved(socialTelemetry, "profiles")
 
     override suspend fun hasProfileCached(): Boolean {
         val lockers = lockers ?: return false
@@ -96,13 +103,16 @@ class MyProfilesManagerImpl(
     override fun getProfile(id: ProfileId): Profile? = _profiles.value[id]
 
     override fun watchProfile(id: ProfileId): Flow<Profile?> =
-        _profiles.map { it[id] }.distinctUntilChanged()
+        (_profiles.map { it[id] }.distinctUntilChanged()
+    ).socialObserved(socialTelemetry, "profiles")
 
     override fun getProfiles(ids: List<ProfileId>): List<Profile?> =
         _profiles.value.let { current -> ids.map { current[it] } }
 
     override fun watchProfiles(ids: List<ProfileId>): Flow<List<Profile?>> =
-        _profiles.map { current -> ids.map { current[it] } }.distinctUntilChanged()
+        (_profiles.map { current -> ids.map { current[it] } }.distinctUntilChanged()
+    ).socialObserved(socialTelemetry, "profiles")
+
 
     /** The write key for a profile room whose authority matches one of our profiles. */
     internal fun writeKey(roomId: RoomId, lockerId: LockerId): Secp256r1KeyPair? {
@@ -147,7 +157,7 @@ class MyProfilesManagerImpl(
         }
     }
 
-    override suspend fun createProfile(displayName: String): ProfileId {
+    override suspend fun createProfile(displayName: String): ProfileId = socialTelemetry.measure("profiles", "createProfile") {
         val lockers = lockers ?: error("createProfile requires start(lockers) first")
         val accountRoom = (account.lifecycle.value as? AccountManager.Lifecycle.Ready)?.privateRoom
             ?: error("account must be Ready to create a profile")
@@ -177,10 +187,10 @@ class MyProfilesManagerImpl(
         } ?: Profile { disclosures = listOf(disclosure) }
         _profiles.value = _profiles.value + (profileId to profile)
 
-        return profileId
+        return@measure profileId
     }
 
-    override suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit) {
+    override suspend fun updateProfile(profileId: ProfileId, builder: ProfileBuilder.() -> Unit): Unit = socialTelemetry.measure("profiles", "updateProfile") {
         val lockers = lockers ?: error("updateProfile requires start(lockers) first")
         val keyPair = keyPairs[profileId] ?: error("unknown profile")
 

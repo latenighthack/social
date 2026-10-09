@@ -1,0 +1,20 @@
+groups:
+  - name: social.telemetry
+    rules:
+      - alert: SocialTelemetryDrops
+        expr: sum by (application, environment, side) (increase(social_telemetry_dropped_total[5m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Social client telemetry was dropped
+          description: Rates are incomplete. Check client freshness, network failures and exporter capacity; telemetry is memory-only.
+          runbook_url: https://github.com/latenighthack/social/blob/main/observability/README.md#telemetry-delivery
+      - alert: SocialDiagnosticExportFailures
+        expr: sum by (application, environment) (increase(social_telemetry_exports_total{result=~"error|dropped"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Social telemetry exports are failing
+          description: Check client transport failures and collector reachability, credentials and capacity. Accepted client metrics are independent of diagnostic forwarding.
+          runbook_url: https://github.com/latenighthack/social/blob/main/observability/README.md#telemetry-delivery

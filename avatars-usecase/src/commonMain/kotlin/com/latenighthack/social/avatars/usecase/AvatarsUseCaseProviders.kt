@@ -3,18 +3,22 @@ package com.latenighthack.social.avatars.usecase
 import com.latenighthack.social.profiles.domain.MyProfilesManager
 import com.latenighthack.social.remotecontent.domain.RemoteContentUploader
 import com.latenighthack.social.rooms.domain.RoomsManager
+import com.latenighthack.social.observability.*
+import me.tatarka.inject.annotations.IntoSet
 import me.tatarka.inject.annotations.Provides
 
 /**
  * kotlin-inject bindings for the avatars use cases. Requires RemoteContentProviders, ProfilesProviders,
  * and RoomsProviders in the component (the uploader, profiles, and rooms managers are dependencies).
  */
-interface AvatarsUseCaseProviders {
+interface AvatarsUseCaseProviders : SocialTelemetryProviders {
+    @Provides @IntoSet
+    fun avatarsObservabilityFeature(): SocialFeatureDescriptor = SocialFeatureDescriptor("avatars")
     @Provides
     fun setMyAvatarUseCase(uploader: RemoteContentUploader, myProfiles: MyProfilesManager): SetMyAvatarUseCase =
-        SetMyAvatarUseCase(uploader, myProfiles)
+        SetMyAvatarUseCase(uploader, myProfiles).observedBy(socialTelemetry())
 
     @Provides
     fun setRoomAvatarUseCase(uploader: RemoteContentUploader, rooms: RoomsManager): SetRoomAvatarUseCase =
-        SetRoomAvatarUseCase(uploader, rooms)
+        SetRoomAvatarUseCase(uploader, rooms).observedBy(socialTelemetry())
 }

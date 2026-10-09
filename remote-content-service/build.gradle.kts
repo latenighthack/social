@@ -3,6 +3,7 @@ plugins {
 }
 
 dependencies {
+    api(projects.socialObservabilityServer)
     implementation(projects.remoteContentApi)
     // The extension seam (ServerExtension / GrpcRouteProvider) lives in the lockers server.
     implementation(libs.lockers.server)

@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "feature": "avatars",
+  "metricContract": 1,
+  "reportVersion": 1,
+  "grafana": "11.4.0",
+  "dashboardUid": "social-avatars-v1",
+  "datasources": [
+    "prometheus",
+    "loki",
+    "tempo"
+  ]
+}

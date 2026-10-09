@@ -1,5 +1,7 @@
 package com.latenighthack.social.remotecontent.service
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.ktbuf.net.GrpcRequestContext
 import com.latenighthack.social.remotecontent.v1.ContentId
 import com.latenighthack.social.remotecontent.v1.CreateContentRequest
@@ -15,20 +17,25 @@ import java.security.SecureRandom
 class RemoteContentServiceImpl(
     private val contentStore: ContentStore,
     private val urls: ContentUrls,
-) : RemoteContentServer {
+) : RemoteContentServer, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+
     private val random = SecureRandom()
 
     override suspend fun createContent(
         context: GrpcRequestContext,
         request: CreateContentRequest,
-    ): CreateContentResponse {
+    ): CreateContentResponse = socialTelemetry.measure("remote_content", "createContent", "none") {
+        run operation@ {
         val id = ByteArray(CONTENT_ID_BYTES).also(random::nextBytes)
         contentStore.create(id, request.mimeType.takeIf { it.isNotBlank() })
         val url = urls.forContent(id)
-        return CreateContentResponse {
+        return@operation CreateContentResponse {
             contentId = ContentId { rawValue = id }
             uploadUrl = url
             downloadUrl = url
+        }
+
         }
     }
 

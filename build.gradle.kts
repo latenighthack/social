@@ -35,3 +35,13 @@ subprojects {
         basePath = rootProject.projectDir.path
     }
 }
+
+// Portable dashboards and optional rules share the library version but have no runtime feature dependencies.
+tasks.register<Zip>("observabilityBundle") {
+    group = "distribution"
+    description = "Packages modular Grafana dashboards, Prometheus rules and operating notes."
+    archiveBaseName.set("social-observability")
+    archiveVersion.set(project.version.toString())
+    destinationDirectory.set(layout.buildDirectory.dir("distributions"))
+    from("observability") { into("observability") }
+}

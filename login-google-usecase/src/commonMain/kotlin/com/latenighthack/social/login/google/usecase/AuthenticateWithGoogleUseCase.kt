@@ -1,5 +1,6 @@
 package com.latenighthack.social.login.google.usecase
 
+import com.latenighthack.social.observability.*
 import com.latenighthack.social.account.domain.AccountManager
 import com.latenighthack.social.login.core.domain.LoginClient
 import com.latenighthack.social.login.core.usecase.SignInResult
@@ -17,7 +18,8 @@ class AuthenticateWithGoogleUseCase(
     private val loginClient: LoginClient,
     private val googleSignIn: GoogleSignInClient,
     private val account: AccountManager,
-) {
+) : SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
     suspend fun authenticate(): SignInResult {
         // Replay defense: bind a server-issued single-use nonce into the native request. Best-effort —
         // enforcement (and thus failure) is server-side.
@@ -27,7 +29,10 @@ class AuthenticateWithGoogleUseCase(
             null
         }
         val idToken = try {
-            googleSignIn.signIn(nonce)
+            socialTelemetry.measure("login", "nativeSignIn", "google") {
+                try { googleSignIn.signIn(nonce) }
+                catch (unavailable: UnsupportedOperationException) { result("provider_unavailable"); throw unavailable }
+            }
         } catch (e: Exception) {
             return SignInResult.Failed(e.message ?: "Google sign-in failed")
         }

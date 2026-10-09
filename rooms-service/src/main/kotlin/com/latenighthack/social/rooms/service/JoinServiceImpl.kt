@@ -1,5 +1,7 @@
 package com.latenighthack.social.rooms.service
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.ktbuf.net.GrpcRequestContext
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
 import com.latenighthack.ktcrypto.encode
@@ -34,14 +36,17 @@ class JoinServiceImpl(
     private val store: InviteCodeStore,
     private val clock: () -> Long = System::currentTimeMillis,
     private val random: SecureRandom = SecureRandom(),
-) : JoinServer {
+) : JoinServer, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+
 
     override suspend fun createInviteCode(
         context: GrpcRequestContext,
         request: CreateInviteCodeRequest,
-    ): CreateInviteCodeResponse {
+    ): CreateInviteCodeResponse = socialTelemetry.measure("rooms", "createInviteCode", "none") {
+        run operation@ {
         if (!keyMatchesRoom(request.groupPrivateKey, request.roomId)) {
-            return CreateInviteCodeResponse { result = JoinResult.JOIN_RESULT_UNAUTHORIZED }
+            return@operation CreateInviteCodeResponse { result = JoinResult.JOIN_RESULT_UNAUTHORIZED }
         }
         val policy = request.policy
         val code = ByteArray(CODE_BYTES).also(random::nextBytes)
@@ -55,21 +60,24 @@ class JoinServiceImpl(
                 allowedProfileId = policy?.allowedProfileId ?: ByteArray(0),
             ),
         )
-        return CreateInviteCodeResponse {
+        return@operation CreateInviteCodeResponse {
             result = JoinResult.JOIN_RESULT_OK
             this.code = InviteCode { value = code }
         }
+
+        }.also { response -> result(socialResult(response.result.toString())) }
     }
 
-    override suspend fun join(context: GrpcRequestContext, request: JoinRequest): JoinResponse {
-        val code = request.code?.value ?: return JoinResponse { result = JoinResult.JOIN_RESULT_INVALID_CODE }
-        val record = store.get(code) ?: return JoinResponse { result = JoinResult.JOIN_RESULT_INVALID_CODE }
+    override suspend fun join(context: GrpcRequestContext, request: JoinRequest): JoinResponse = socialTelemetry.measure("rooms", "join", "none") {
+        run operation@ {
+        val code = request.code?.value ?: return@operation JoinResponse { result = JoinResult.JOIN_RESULT_INVALID_CODE }
+        val record = store.get(code) ?: return@operation JoinResponse { result = JoinResult.JOIN_RESULT_INVALID_CODE }
 
         if (record.expiryMillis != 0L && clock() >= record.expiryMillis) {
-            return JoinResponse { result = JoinResult.JOIN_RESULT_EXPIRED }
+            return@operation JoinResponse { result = JoinResult.JOIN_RESULT_EXPIRED }
         }
         if (record.allowedProfileId.isNotEmpty() && !record.allowedProfileId.contentEquals(request.inviteeProfileId)) {
-            return JoinResponse { result = JoinResult.JOIN_RESULT_NOT_ALLOWED }
+            return@operation JoinResponse { result = JoinResult.JOIN_RESULT_NOT_ALLOWED }
         }
 
         // Seal before consuming a use: a malformed profile key must not burn a use, and sealing an
@@ -82,31 +90,36 @@ class JoinServiceImpl(
         val sealed = try {
             Sealing.seal(request.inviteeProfileId, invite.toByteArray())
         } catch (e: Exception) {
-            return JoinResponse { result = JoinResult.JOIN_RESULT_NOT_ALLOWED }
+            return@operation JoinResponse { result = JoinResult.JOIN_RESULT_NOT_ALLOWED }
         }
 
         if (record.maxUses != 0L && !store.consumeUse(code)) {
-            return JoinResponse { result = JoinResult.JOIN_RESULT_EXHAUSTED }
+            return@operation JoinResponse { result = JoinResult.JOIN_RESULT_EXHAUSTED }
         }
-        return JoinResponse {
+        return@operation JoinResponse {
             result = JoinResult.JOIN_RESULT_OK
             sealedInvite = sealed
         }
+
+        }.also { response -> result(socialResult(response.result.toString())) }
     }
 
     override suspend fun revokeInviteCode(
         context: GrpcRequestContext,
         request: RevokeInviteCodeRequest,
-    ): RevokeInviteCodeResponse {
+    ): RevokeInviteCodeResponse = socialTelemetry.measure("rooms", "revokeInviteCode", "none") {
+        run operation@ {
         val code = request.code?.value
-            ?: return RevokeInviteCodeResponse { result = JoinResult.JOIN_RESULT_INVALID_CODE }
+            ?: return@operation RevokeInviteCodeResponse { result = JoinResult.JOIN_RESULT_INVALID_CODE }
         val record = store.get(code)
-            ?: return RevokeInviteCodeResponse { result = JoinResult.JOIN_RESULT_INVALID_CODE }
+            ?: return@operation RevokeInviteCodeResponse { result = JoinResult.JOIN_RESULT_INVALID_CODE }
         if (!keyMatchesRoom(request.groupPrivateKey, record.roomId)) {
-            return RevokeInviteCodeResponse { result = JoinResult.JOIN_RESULT_UNAUTHORIZED }
+            return@operation RevokeInviteCodeResponse { result = JoinResult.JOIN_RESULT_UNAUTHORIZED }
         }
         store.delete(code)
-        return RevokeInviteCodeResponse { result = JoinResult.JOIN_RESULT_OK }
+        return@operation RevokeInviteCodeResponse { result = JoinResult.JOIN_RESULT_OK }
+
+        }.also { response -> result(socialResult(response.result.toString())) }
     }
 
     /** Whether [privateKey] is the shared key of the public-keyed room [roomId] (i.e. a member's key). */

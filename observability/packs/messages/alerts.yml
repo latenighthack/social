@@ -1,0 +1,24 @@
+groups:
+  - name: social.messages
+    rules:
+      - alert: SocialMessagesUnexpectedErrors
+        expr: |
+          (sum by (application, environment, feature, side) (increase(social_operations_total{feature="messages",outcome="error"}[5m]))
+          / sum by (application, environment, feature, side) (increase(social_operations_total{feature="messages"}[5m])) > 0.05)
+          and on (application, environment, feature, side)
+          (sum by (application, environment, feature, side) (increase(social_operations_total{feature="messages"}[5m])) >= 100)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Social unexpected operation errors exceed 5%
+          description: Check telemetry freshness, outcome breakdowns and correlated logs. Expected denials are excluded from the numerator.
+          runbook_url: https://github.com/latenighthack/social/blob/main/observability/README.md#unexpected-errors
+      - alert: SocialNewDeadLetters
+        expr: sum by (application, environment, side) (increase(social_events_total{feature="messages",operation="dead_letter"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Social messages newly entered the dead-letter store
+          description: Inspect send failures and retries before asking the application to retry. Server acceptance does not establish recipient delivery.
+          runbook_url: https://github.com/latenighthack/social/blob/main/observability/README.md#dead-letters

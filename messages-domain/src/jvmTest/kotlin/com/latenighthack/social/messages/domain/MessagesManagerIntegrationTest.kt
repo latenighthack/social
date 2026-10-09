@@ -8,7 +8,7 @@ import com.latenighthack.ktcrypto.fromPrivateKey
 import com.latenighthack.ktcrypto.generate
 import com.latenighthack.lockers.common.RoomKeying
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
-import com.latenighthack.ktstore.InMemoryStoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.ktstore.KeyValueStore
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
@@ -93,17 +93,17 @@ class MessagesManagerIntegrationTest {
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         // One delegate for the managers and the lockers client, as in production: every store is
         // prepared first, then LockersClient.create performs the single createStores() call.
-        val storeDelegate = InMemoryStoreDelegate()
+        val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.messages.domain.MessagesStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
         val messages = MessagesManagerImpl(
-            rooms, myProfiles, storeDelegate,
+            rooms, myProfiles, database,
             maxAttempts = maxAttempts, backoffBaseMillis = backoffBaseMillis,
         )
-        val drafts = DraftsManagerImpl(storeDelegate)
+        val drafts = DraftsManagerImpl(database)
         messages.prepare()
         drafts.prepare()
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
-            storeDelegate = storeDelegate,
+            database = database,
             keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
             keySource = accountKeySource,
             appVersion = Version(0, 0, 1),

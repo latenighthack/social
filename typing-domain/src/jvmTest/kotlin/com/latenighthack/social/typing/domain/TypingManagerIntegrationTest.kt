@@ -1,5 +1,6 @@
 package com.latenighthack.social.typing.domain
 
+import com.latenighthack.social.observability.observedBy
 import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.ktbuf.test.server.runTestWithServer
 import com.latenighthack.ktcrypto.Secp256r1KeyPair
@@ -7,7 +8,7 @@ import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.fromPrivateKey
 import com.latenighthack.lockers.common.RoomKeying
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
-import com.latenighthack.ktstore.InMemoryStoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.ktstore.KeyValueStore
 import com.latenighthack.lockers.common.v1.Version
 import com.latenighthack.lockers.connector.LockersClient
@@ -74,7 +75,7 @@ class TypingManagerIntegrationTest {
         val typing = TypingManagerImpl(rooms, debounceMillis, timeoutMillis, tickMillis)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
-            storeDelegate = InMemoryStoreDelegate(),
+            database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
             keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
             keySource = accountKeySource,
             appVersion = Version(0, 0, 1),
@@ -162,6 +163,11 @@ class TypingManagerIntegrationTest {
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val alice = newParty(server.rpcClient, timeoutMillis = 300)
             val bob = newParty(server.rpcClient, timeoutMillis = 300)
+            val records = java.util.concurrent.ConcurrentLinkedQueue<com.latenighthack.social.observability.SocialObservation>()
+            val sameManager = bob.typing.observedBy(object : com.latenighthack.social.observability.SocialTelemetry {
+                override fun record(observation: com.latenighthack.social.observability.SocialObservation) { records.add(observation) }
+            })
+            kotlin.test.assertSame(bob.typing, sameManager)
             val aliceProfile = alice.myProfiles.createProfile("Alice")
             val bobProfile = bob.myProfiles.createProfile("Bob")
 
@@ -178,6 +184,7 @@ class TypingManagerIntegrationTest {
                 if (aliceProfile in typers) sawTyping = true
                 sawTyping && aliceProfile !in typers
             }
+            kotlin.test.assertEquals(1.0, records.filter { it.operation == "expired" }.sumOf { it.value })
 
             bob.close()
             alice.close()

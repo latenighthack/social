@@ -1,5 +1,6 @@
 package com.latenighthack.social.login.core.domain
 
+import com.latenighthack.social.observability.*
 import com.latenighthack.ktbuf.net.RpcClient
 import com.latenighthack.social.login.v1.AuthenticateResponse
 import com.latenighthack.social.login.v1.AuthenticateSocialRequest
@@ -35,25 +36,35 @@ interface LoginClient {
     suspend fun bind(request: BindRequest): BindResponse
 }
 
-class LoginClientImpl(rpcClient: RpcClient) : LoginClient {
+class LoginClientImpl(rpcClient: RpcClient) : LoginClient, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
     private val rpc = LoginServiceRpc(rpcClient)
 
-    override suspend fun requestNonce(): RequestNonceResponse = rpc.requestNonce(RequestNonceRequest {})
+    override suspend fun requestNonce(): RequestNonceResponse = socialTelemetry.measure("login", "requestNonce", "none") {
+        rpc.requestNonce(RequestNonceRequest {}).also { result(socialResult(it.result.toString())) }
+    }
 
-    override suspend fun authenticateSocial(request: AuthenticateSocialRequest): AuthenticateResponse =
-        rpc.authenticateSocial(request)
+    override suspend fun authenticateSocial(request: AuthenticateSocialRequest): AuthenticateResponse = socialTelemetry.measure("login", "authenticateSocial", socialProvider(request.provider.value)) {
+        rpc.authenticateSocial(request).also { result(socialResult(it.result.toString())) }
+    }
 
-    override suspend fun startEmailLink(request: StartEmailLinkRequest): StartChallengeResponse =
-        rpc.startEmailLink(request)
+    override suspend fun startEmailLink(request: StartEmailLinkRequest): StartChallengeResponse = socialTelemetry.measure("login", "startEmailLink", "email") {
+        rpc.startEmailLink(request).also { result(socialResult(it.result.toString())) }
+    }
 
-    override suspend fun completeEmailLink(request: CompleteEmailLinkRequest): AuthenticateResponse =
-        rpc.completeEmailLink(request)
+    override suspend fun completeEmailLink(request: CompleteEmailLinkRequest): AuthenticateResponse = socialTelemetry.measure("login", "completeEmailLink", "email") {
+        rpc.completeEmailLink(request).also { result(socialResult(it.result.toString())) }
+    }
 
-    override suspend fun startPhoneCode(request: StartPhoneCodeRequest): StartChallengeResponse =
-        rpc.startPhoneCode(request)
+    override suspend fun startPhoneCode(request: StartPhoneCodeRequest): StartChallengeResponse = socialTelemetry.measure("login", "startPhoneCode", "phone") {
+        rpc.startPhoneCode(request).also { result(socialResult(it.result.toString())) }
+    }
 
-    override suspend fun verifyPhoneCode(request: VerifyPhoneCodeRequest): AuthenticateResponse =
-        rpc.verifyPhoneCode(request)
+    override suspend fun verifyPhoneCode(request: VerifyPhoneCodeRequest): AuthenticateResponse = socialTelemetry.measure("login", "verifyPhoneCode", "phone") {
+        rpc.verifyPhoneCode(request).also { result(socialResult(it.result.toString())) }
+    }
 
-    override suspend fun bind(request: BindRequest): BindResponse = rpc.bind(request)
+    override suspend fun bind(request: BindRequest): BindResponse = socialTelemetry.measure("login", "bind", "none") {
+        rpc.bind(request).also { result(socialResult(it.result.toString())) }
+    }
 }

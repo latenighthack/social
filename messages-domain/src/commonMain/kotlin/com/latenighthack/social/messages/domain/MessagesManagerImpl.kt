@@ -4,9 +4,11 @@
 
 package com.latenighthack.social.messages.domain
 
+import com.latenighthack.social.observability.*
+
 import com.latenighthack.ktcrypto.Secp256r1PublicKey
 import com.latenighthack.ktcrypto.decode
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.IncomingNotification
 import com.latenighthack.lockers.connector.LockersClient
@@ -65,17 +67,19 @@ import kotlin.random.Random
 class MessagesManagerImpl(
     private val rooms: RoomsManager,
     private val myProfiles: MyProfilesManager,
-    private val delegate: StoreDelegate,
+    private val database: Database,
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
     private val backoffBaseMillis: Long = DEFAULT_BACKOFF_BASE_MILLIS,
     private val backoffCapMillis: Long = DEFAULT_BACKOFF_CAP_MILLIS,
     private val idleWaitMillis: Long = DEFAULT_IDLE_WAIT_MILLIS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-) : MessagesManager, DomainLifecycle {
+) : MessagesManager, DomainLifecycle, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
-    private val store = MessageStore(delegate)
-    private val pending = PendingMessageStore(delegate)
-    private val deadLetters = DeadLetterStore(delegate)
+
+    private val store = MessageStore(database)
+    private val pending = PendingMessageStore(database)
+    private val deadLetters = DeadLetterStore(database)
 
     // One lazily-loaded, cached list of messages per room the app has touched. Guarded by [roomsMutex].
     private val roomLists = mutableMapOf<RoomId, RoomMessageList>()
@@ -97,19 +101,21 @@ class MessagesManagerImpl(
     private var job: Job? = null
     private var lockers: LockersClient? = null
 
-    override suspend fun prepare() {
+    override suspend fun prepare(): Unit = socialTelemetry.measure("messages", "prepare") {
         store.prepare()
         pending.prepare()
         deadLetters.prepare()
     }
 
     override fun start(lockers: LockersClient) {
+        socialTelemetry.event("messages", "start")
         this.lockers = lockers
         if (job?.isActive == true) return
-        job = scope.launch { run(lockers) }
+        job = scope.launch { socialTelemetry.measure("messages", "start") { run(lockers) } }
     }
 
     override fun stop() {
+        socialTelemetry.event("messages", "stop")
         job?.cancel()
         job = null
     }
@@ -162,9 +168,9 @@ class MessagesManagerImpl(
         }
     }
 
-    private suspend fun tryIngest(roomId: RoomId, signed: SignedContent) {
-        val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull() ?: return
-        if (!payload.roomId.contentEquals(roomId.rawValue)) return
+    private suspend fun tryIngest(roomId: RoomId, signed: SignedContent): Unit = socialTelemetry.measure("messages", "ingest") {
+        val payload = runCatching { MessagePayload.fromByteArray(signed.content) }.getOrNull() ?: return@measure
+        if (!payload.roomId.contentEquals(roomId.rawValue)) return@measure
         val senderId = ProfileId { rawValue = payload.senderProfileId }
 
         val isMember = mutex.withLock {
@@ -176,12 +182,12 @@ class MessagesManagerImpl(
                 false
             }
         }
-        if (!isMember) return
+        if (!isMember) return@measure
 
         // The signature proves the author controls senderProfileId; the membership check above is what
         // stops a member posting under a profile that isn't in the room.
-        val senderKey = runCatching { Secp256r1PublicKey.decode(payload.senderProfileId) }.getOrNull() ?: return
-        if (!MessageSigning.verify(signed, senderKey)) return
+        val senderKey = runCatching { Secp256r1PublicKey.decode(payload.senderProfileId) }.getOrNull() ?: return@measure
+        if (!MessageSigning.verify(signed, senderKey)) { result("invalid_signature"); return@measure }
 
         if (roomList(roomId).ingest(payload, signed)) bestEffortBump(roomId)
     }
@@ -197,7 +203,7 @@ class MessagesManagerImpl(
         }
     }
 
-    override suspend fun send(roomId: RoomId, draft: Draft) {
+    override suspend fun send(roomId: RoomId, draft: Draft): Unit = socialTelemetry.measure("messages", "send") {
         val senderId = rooms.localProfile(roomId) ?: error("not a member of this room")
         val list = roomList(roomId)
 
@@ -239,10 +245,10 @@ class MessagesManagerImpl(
         scope.launch { bestEffortBump(roomId) }
     }
 
-    override suspend fun retry(roomId: RoomId, messageId: MessageId) {
+    override suspend fun retry(roomId: RoomId, messageId: MessageId): Unit = socialTelemetry.measure("messages", "retry") {
         ready.await()
-        val dead = deadLetters.getDeadLettered(roomId, messageId) ?: return
-        val signed = dead.message ?: return
+        val dead = deadLetters.getDeadLettered(roomId, messageId) ?: run { result("noop"); return@measure }
+        val signed = dead.message ?: run { result("noop"); return@measure }
         val now = Clock.System.now().toEpochMilliseconds()
         pending.savePending(dead.copy(attempts = 0L, nextAttemptMillis = now))
         deadLetters.deleteDeadLettered(roomId, messageId)
@@ -256,17 +262,20 @@ class MessagesManagerImpl(
             for (entry in pending.getAllPending().sortedBy { it.createdAtMillis }) {
                 if (entry.nextAttemptMillis <= now) attemptSend(lockers, entry)
             }
-            val soonest = pending.getAllPending().minOfOrNull { it.nextAttemptMillis }
+            val queueEntries = pending.getAllPending()
+            socialTelemetry.event("messages", "queue", kind = "queue_depth", value = queueEntries.size.toDouble())
+            socialTelemetry.event("messages", "queue", kind = "queue_age", value = queueEntries.maxOfOrNull { ((Clock.System.now().toEpochMilliseconds() - it.createdAtMillis).coerceAtLeast(0) / 1000.0) } ?: 0.0)
+            val soonest = queueEntries.minOfOrNull { it.nextAttemptMillis }
             val wait = if (soonest == null) idleWaitMillis
             else (soonest - Clock.System.now().toEpochMilliseconds()).coerceIn(1L, idleWaitMillis)
             withTimeoutOrNull(wait) { wake.receive() }
         }
     }
 
-    private suspend fun attemptSend(lockers: LockersClient, entry: PendingMessage) {
-        val messageId = entry.messageId ?: return
+    private suspend fun attemptSend(lockers: LockersClient, entry: PendingMessage): Unit = socialTelemetry.measure("messages", "attemptSend") {
+        val messageId = entry.messageId ?: return@measure
         val roomId = RoomId(rawValue = entry.roomId)
-        val signed = entry.message ?: run { pending.deletePending(roomId, messageId); return }
+        val signed = entry.message ?: run { pending.deletePending(roomId, messageId); return@measure }
         try {
             // Empty body ({ it } keeps it unchanged); the message rides as the notification payload.
             messageClient(lockers).updateLocker(
@@ -281,10 +290,13 @@ class MessagesManagerImpl(
         } catch (_: Exception) {
             val attempts = entry.attempts + 1
             if (attempts >= maxAttempts) {
+                result("dead_letter")
                 deadLetters.saveDeadLettered(entry.copy(attempts = attempts))
                 pending.deletePending(roomId, messageId)
+                socialTelemetry.event("messages", "dead_letter", "dead_letter")
                 roomList(roomId).setStatus(messageId, signed, MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_FAILED)
             } else {
+                result("retry")
                 pending.savePending(entry.copy(
                     attempts = attempts,
                     nextAttemptMillis = Clock.System.now().toEpochMilliseconds() + backoffMillis(attempts),
@@ -298,17 +310,19 @@ class MessagesManagerImpl(
         return (backoffBaseMillis shl shift).coerceAtMost(backoffCapMillis)
     }
 
-    override fun watchMessages(roomId: RoomId): Flow<List<MessageEntry>> = flow {
+    override fun watchMessages(roomId: RoomId): Flow<List<MessageEntry>> = (flow {
         val list = roomList(roomId)
         list.ensureLoaded()
         emitAll(list.entries)
     }.distinctUntilChanged()
+    ).socialObserved(socialTelemetry, "messages")
 
-    override fun watchMessageIds(roomId: RoomId): Flow<List<MessageId>> = flow {
+    override fun watchMessageIds(roomId: RoomId): Flow<List<MessageId>> = (flow {
         val list = roomList(roomId)
         list.ensureLoaded()
         emitAll(list.entries.map { room -> room.map { MessageId(rawValue = it.payload.messageId) } })
     }.distinctUntilChanged()
+    ).socialObserved(socialTelemetry, "messages")
 
     private suspend fun roomList(roomId: RoomId): RoomMessageList {
         ready.await()

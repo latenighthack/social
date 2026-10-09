@@ -1,5 +1,6 @@
 package com.latenighthack.social.login.apple.usecase
 
+import com.latenighthack.social.observability.*
 import com.latenighthack.social.account.domain.AccountManager
 import com.latenighthack.social.login.apple.domain.AppleSignInClient
 import com.latenighthack.social.login.core.domain.LoginClient
@@ -18,7 +19,8 @@ class AuthenticateWithAppleUseCase(
     private val loginClient: LoginClient,
     private val appleSignIn: AppleSignInClient,
     private val account: AccountManager,
-) {
+) : SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
     suspend fun authenticate(): SignInResult {
         // Replay defense: bind a server-issued single-use nonce into the native request. Best-effort —
         // an unreachable RequestNonce only matters when the server enforces nonces, and then the
@@ -29,7 +31,10 @@ class AuthenticateWithAppleUseCase(
             null
         }
         val native = try {
-            appleSignIn.signIn(nonce)
+            socialTelemetry.measure("login", "nativeSignIn", "apple") {
+                try { appleSignIn.signIn(nonce) }
+                catch (unavailable: UnsupportedOperationException) { result("provider_unavailable"); throw unavailable }
+            }
         } catch (e: Exception) {
             return SignInResult.Failed(e.message ?: "Apple sign-in failed")
         }

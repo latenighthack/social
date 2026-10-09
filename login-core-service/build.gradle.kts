@@ -3,6 +3,8 @@ plugins {
 }
 
 dependencies {
+    api(projects.socialObservabilityServer)
+    testImplementation("org.xerial:sqlite-jdbc:3.45.3.0")
     // Generated LoginServer / LoginServiceRpc + the login.v1 wire and storage record protos.
     implementation(projects.loginCoreApi)
     // The extension seam (ServerExtension / ServerExtensionFactory / GrpcRouteProvider).

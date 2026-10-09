@@ -6,6 +6,8 @@ import com.latenighthack.lockers.server.ServerExtensionFactory
 import com.latenighthack.lockers.server.tools.GrpcRouteProvider
 import com.latenighthack.social.rooms.v1.JoinServer
 import io.micrometer.core.instrument.MeterRegistry
+import com.latenighthack.social.observability.*
+import com.latenighthack.social.observability.server.SocialServerTelemetry
 
 /**
  * Attaches the [JoinServiceImpl] (group-room invite codes) to the locker server as a gRPC service,
@@ -13,7 +15,13 @@ import io.micrometer.core.instrument.MeterRegistry
  */
 class RoomsServerExtension(
     store: InviteCodeStore,
-) : ServerExtension {
+) : ServerExtension, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
+        set(value) {
+            field = value
+            serviceImpl.socialTelemetry = value
+            value.feature("rooms")
+        }
     private val serviceImpl = JoinServiceImpl(store)
 
     override val services: List<GrpcRouteProvider<*>> = listOf(
@@ -34,5 +42,5 @@ class RoomsServerExtension(
  */
 class RoomsServerExtensionFactory : ServerExtensionFactory {
     override fun create(meterRegistry: MeterRegistry): ServerExtension =
-        RoomsServerExtension(InMemoryInviteCodeStore())
+        RoomsServerExtension(InMemoryInviteCodeStore()).observedBy(SocialServerTelemetry(meterRegistry))
 }

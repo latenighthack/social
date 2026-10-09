@@ -1,0 +1,16 @@
+groups:
+  - name: social.avatars
+    rules:
+      - alert: SocialAvatarsUnexpectedErrors
+        expr: |
+          (sum by (application, environment, feature, side) (increase(social_operations_total{feature="avatars",outcome="error"}[5m]))
+          / sum by (application, environment, feature, side) (increase(social_operations_total{feature="avatars"}[5m])) > 0.05)
+          and on (application, environment, feature, side)
+          (sum by (application, environment, feature, side) (increase(social_operations_total{feature="avatars"}[5m])) >= 100)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Social unexpected operation errors exceed 5%
+          description: Check telemetry freshness, outcome breakdowns and correlated logs. Expected denials are excluded from the numerator.
+          runbook_url: https://github.com/latenighthack/social/blob/main/observability/README.md#unexpected-errors

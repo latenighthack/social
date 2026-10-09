@@ -1,6 +1,8 @@
 package com.latenighthack.social.messages.domain
 
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.social.observability.*
+
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.social.messages.v1.Draft
@@ -25,11 +27,13 @@ import kotlinx.coroutines.launch
  * leaves the manager reusable.
  */
 class DraftsManagerImpl(
-    private val delegate: StoreDelegate,
+    private val database: Database,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-) : DraftsManager, DomainLifecycle {
+) : DraftsManager, DomainLifecycle, SocialTelemetryOwner {
+    override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
-    private val store = DraftStore(delegate)
+
+    private val store = DraftStore(database)
 
     private val _drafts = MutableStateFlow<Map<RoomId, Draft>>(emptyMap())
 
@@ -37,11 +41,12 @@ class DraftsManagerImpl(
     // Completes once the store has been loaded — gates all store access.
     private val ready = CompletableDeferred<Unit>()
 
-    override suspend fun prepare() {
+    override suspend fun prepare(): Unit = socialTelemetry.measure("messages", "prepare") {
         store.prepare()
     }
 
     override fun start(lockers: LockersClient) {
+        socialTelemetry.event("messages", "start")
         if (job?.isActive == true) return
         job = scope.launch {
             _drafts.value = buildMap {
@@ -54,38 +59,41 @@ class DraftsManagerImpl(
     }
 
     override fun stop() {
+        socialTelemetry.event("messages", "stop")
         job?.cancel()
         job = null
     }
 
-    override suspend fun setText(roomId: RoomId, text: String) = mutate(roomId) { current ->
+    override suspend fun setText(roomId: RoomId, text: String) = mutate(roomId, "setText") { current ->
         Draft { this.text = text; attachments = current.attachments }
     }
 
-    override suspend fun addAttachment(roomId: RoomId, attachment: DraftAttachment) = mutate(roomId) { current ->
+    override suspend fun addAttachment(roomId: RoomId, attachment: DraftAttachment) = mutate(roomId, "addAttachment") { current ->
         Draft { text = current.text; attachments = current.attachments + attachment }
     }
 
-    override suspend fun removeAttachment(roomId: RoomId, contentId: ByteArray) = mutate(roomId) { current ->
+    override suspend fun removeAttachment(roomId: RoomId, contentId: ByteArray) = mutate(roomId, "removeAttachment") { current ->
         Draft { text = current.text; attachments = current.attachments.filterNot { it.contentId.contentEquals(contentId) } }
     }
 
     // Read-modify-write of [roomId]'s draft: applies [transform] to the current draft (or an empty one)
     // and mirrors the result into memory and the store, so each field can be edited without clobbering
     // the others.
-    private suspend fun mutate(roomId: RoomId, transform: (Draft) -> Draft) {
+    private suspend fun mutate(roomId: RoomId, operation: String, transform: (Draft) -> Draft): Unit = socialTelemetry.measure("messages", operation) {
         ready.await()
         val updated = transform(_drafts.value[roomId] ?: Draft { })
         _drafts.value = _drafts.value + (roomId to updated)
         store.saveDraft(LocalDraft(roomId = roomId.rawValue, draft = updated))
     }
 
-    override suspend fun clear(roomId: RoomId) {
+    override suspend fun clear(roomId: RoomId): Unit = socialTelemetry.measure("messages", "clear") {
         ready.await()
         _drafts.value = _drafts.value - roomId
         store.removeDraft(roomId)
     }
 
     override fun watchDraft(roomId: RoomId): Flow<Draft?> =
-        _drafts.map { it[roomId] }.distinctUntilChanged()
+        (_drafts.map { it[roomId] }.distinctUntilChanged()
+    ).socialObserved(socialTelemetry, "messages")
+
 }

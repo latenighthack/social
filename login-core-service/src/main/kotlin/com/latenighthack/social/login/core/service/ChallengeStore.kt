@@ -1,7 +1,6 @@
 package com.latenighthack.social.login.core.service
 
-import com.latenighthack.ktstore.Store
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.ktstore.*
 import com.latenighthack.social.login.v1.ChallengeRecord
 import com.latenighthack.social.login.v1.fromByteArray
 import com.latenighthack.social.login.v1.toByteArray
@@ -12,13 +11,8 @@ import com.latenighthack.social.login.v1.toByteArray
  * the prior one; a bind ticket is keyed by a hash of the high-entropy ticket. Challenge secrets are
  * stored only as PBKDF2 salted hashes (see [Pbkdf2Hasher]). Backed by ktstore, in-memory by default.
  */
-class ChallengeStore(delegate: StoreDelegate) : Store<ChallengeRecord>(
-    delegate,
-    "login_challenges",
-    ChallengeRecord::toByteArray,
-    ChallengeRecord.Companion::fromByteArray,
-) {
-    private val lookupKey = bytesIndex(ChallengeRecord::lookupKey).also { primaryKey(it) }
+class ChallengeStore(database: Database) : Store<ChallengeRecord>(database, ChallengeStoreDefinitionV1) {
+    private val lookupKey = ChallengeStoreDefinitionV1.lookupKey
 
     suspend fun getByLookup(lookup: ByteArray): ChallengeRecord? = get(lookupKey.eq(lookup))
 

@@ -4,6 +4,7 @@ enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 // Foundation for the client-side kotlin-inject wiring: the @SocialScope graph scope and the
 // DomainLifecycle interface every feature manager implements. Depended on by the -domain modules.
+include(":social-observability-core", ":social-observability-client", ":social-observability-server")
 include(":social-runtime") // plugins { id("social.kmp-library") }
 
 // Shared primitives reused across features. social-common-api owns the standard SignedContent

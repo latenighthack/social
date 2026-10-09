@@ -13,9 +13,8 @@ import com.latenighthack.ktcrypto.digest
 import com.latenighthack.ktcrypto.encode
 import com.latenighthack.ktcrypto.fromPrivateKey
 import com.latenighthack.ktstore.InMemoryKeyValueStoreDelegate
-import com.latenighthack.ktstore.InMemoryStoreDelegate
+import com.latenighthack.ktstore.Database
 import com.latenighthack.ktstore.KeyValueStore
-import com.latenighthack.ktstore.StoreDelegate
 import com.latenighthack.lockers.common.RoomKeying
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.LockerKeyspace
@@ -79,7 +78,7 @@ class RoomsManagerIntegrationTest {
         rpcClient: RpcClient,
         accountStore: KeyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
         joinClient: JoinClient = FakeJoinClient(),
-        storeDelegate: StoreDelegate = InMemoryStoreDelegate(),
+        database: Database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
         clientStore: KeyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
     ): Party {
         val account = AccountManagerImpl(accountStore)
@@ -90,7 +89,7 @@ class RoomsManagerIntegrationTest {
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
-            storeDelegate = storeDelegate,
+            database = database,
             keyValueStore = clientStore,
             keySource = accountKeySource,
             appVersion = Version(0, 0, 1),
@@ -117,19 +116,6 @@ class RoomsManagerIntegrationTest {
             block: suspend RpcServerStream.() -> Unit,
             readyCallback: () -> Unit,
         ): Unit = throw RpcResponseException(path = "test", verb = "POST", code = Codes.UNAVAILABLE, errorMessage = "offline")
-    }
-
-    // InMemoryStoreDelegate.createStores wipes table data on every call, so a second client
-    // sharing the delegate would lose the first's cache; make creation once-only instead.
-    private class SharedStoreDelegate(
-        private val inner: InMemoryStoreDelegate = InMemoryStoreDelegate(),
-    ) : StoreDelegate by inner {
-        private var created = false
-        override suspend fun createStores() {
-            if (created) return
-            created = true
-            inner.createStores()
-        }
     }
 
     @Test(timeout = 60_000)
@@ -361,9 +347,9 @@ class RoomsManagerIntegrationTest {
         runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             // Online session creates a room and lets its record land in the local cache.
             val accountStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
-            val storeDelegate = SharedStoreDelegate()
+            val database = com.latenighthack.lockers.connector.ConnectorStorage.inMemory()
             val clientStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
-            val online = newParty(server.rpcClient, accountStore, storeDelegate = storeDelegate, clientStore = clientStore)
+            val online = newParty(server.rpcClient, accountStore, database = database, clientStore = clientStore)
             online.myProfiles.createProfile("Alice")
             val roomId = online.rooms.createGroup("Team")
             online.rooms.watchRooms().first { it.contains(roomId) }
@@ -376,7 +362,7 @@ class RoomsManagerIntegrationTest {
             online.close()
 
             // A fresh app start on the same stores, fully offline: rooms come from the cache.
-            val offline = newParty(OfflineRpcClient(), accountStore, storeDelegate = storeDelegate, clientStore = clientStore)
+            val offline = newParty(OfflineRpcClient(), accountStore, database = database, clientStore = clientStore)
             assertTrue(offline.rooms.watchRooms().first { it.contains(roomId) }.isNotEmpty())
             assertFalse(offline.lockers.isConnected.first())
             offline.close()

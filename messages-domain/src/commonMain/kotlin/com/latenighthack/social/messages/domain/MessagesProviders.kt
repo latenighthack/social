@@ -1,6 +1,8 @@
 package com.latenighthack.social.messages.domain
 
-import com.latenighthack.ktstore.StoreDelegate
+import com.latenighthack.social.observability.*
+
+import com.latenighthack.ktstore.Database
 import com.latenighthack.social.profiles.domain.MyProfilesManager
 import com.latenighthack.social.rooms.domain.RoomsManager
 import com.latenighthack.social.runtime.DomainLifecycle
@@ -11,16 +13,20 @@ import me.tatarka.inject.annotations.Provides
 /**
  * kotlin-inject bindings for the messages feature. Requires RoomsProviders and ProfilesProviders in
  * the component (the rooms and profiles managers are dependencies). The app must provide the
- * [StoreDelegate] the observed-messages cache is created from.
+ * [Database] the observed-messages cache is created from.
  */
-interface MessagesProviders {
+interface MessagesProviders : SocialTelemetryProviders {
+    @Provides
+    @IntoSet
+    fun messagesObservabilityFeature(): SocialFeatureDescriptor = SocialFeatureDescriptor("messages")
+
     @Provides
     @SocialScope
     fun messagesManagerImpl(
         rooms: RoomsManager,
         myProfiles: MyProfilesManager,
-        delegate: StoreDelegate,
-    ): MessagesManagerImpl = MessagesManagerImpl(rooms, myProfiles, delegate)
+        database: Database,
+    ): MessagesManagerImpl = MessagesManagerImpl(rooms, myProfiles, database).observedBy(socialTelemetry())
 
     @Provides
     fun messagesManager(impl: MessagesManagerImpl): MessagesManager = impl
@@ -31,7 +37,7 @@ interface MessagesProviders {
 
     @Provides
     @SocialScope
-    fun draftsManagerImpl(delegate: StoreDelegate): DraftsManagerImpl = DraftsManagerImpl(delegate)
+    fun draftsManagerImpl(database: Database): DraftsManagerImpl = DraftsManagerImpl(database).observedBy(socialTelemetry())
 
     @Provides
     fun draftsManager(impl: DraftsManagerImpl): DraftsManager = impl
