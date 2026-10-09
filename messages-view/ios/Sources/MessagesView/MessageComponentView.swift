@@ -372,9 +372,9 @@ struct MessageRenderer {
             guard let rule = inline.rule.contents else { continue }
             switch rule {
             case .bold:
-                string.addAttribute(.font, value: bold(baseFont), range: range)
+                applyFontTrait(.traitBold, to: string, range: range, fallback: baseFont)
             case .italic:
-                string.addAttribute(.font, value: italic(baseFont), range: range)
+                applyFontTrait(.traitItalic, to: string, range: range, fallback: baseFont)
             case .strikethrough:
                 string.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range)
             case .tappable(let tappable):
@@ -383,7 +383,7 @@ struct MessageRenderer {
                 string.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
             case .userLink:
                 string.addAttribute(.foregroundColor, value: theme.linkColor, range: range)
-                string.addAttribute(.font, value: bold(baseFont), range: range)
+                applyFontTrait(.traitBold, to: string, range: range, fallback: baseFont)
             case .redaction:
                 label.redactions.append(range)
                 string.addAttribute(.backgroundColor, value: theme.redactionColor, range: range)
@@ -431,14 +431,15 @@ struct MessageRenderer {
         }
     }
 
-    private func bold(_ font: UIFont) -> UIFont {
-        let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitBold)) ?? font.fontDescriptor
-        return UIFont(descriptor: descriptor, size: font.pointSize)
-    }
-
-    private func italic(_ font: UIFont) -> UIFont {
-        let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.traitItalic)) ?? font.fontDescriptor
-        return UIFont(descriptor: descriptor, size: font.pointSize)
+    private func applyFontTrait(_ trait: UIFontDescriptor.SymbolicTraits, to string: NSMutableAttributedString,
+                                range: NSRange, fallback: UIFont) {
+        var spans: [(NSRange, UIFont)] = []
+        string.enumerateAttribute(.font, in: range) { value, span, _ in
+            let font = value as? UIFont ?? fallback
+            let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(trait)) ?? font.fontDescriptor
+            spans.append((span, UIFont(descriptor: descriptor, size: font.pointSize)))
+        }
+        for (span, font) in spans { string.addAttribute(.font, value: font, range: span) }
     }
 
     private func textAlignment(_ alignment: Com_Latenighthack_Social_Messages_V1_Container.HorizontalAlignment) -> NSTextAlignment {
