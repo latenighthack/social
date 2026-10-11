@@ -7,17 +7,17 @@ here before shipping a new feature.
 
 | # | Owner (repo/module) | Constant | Room | Contents |
 |---|---------------------|----------|------|----------|
-| 1 | social/account-domain | `AccountKeyspaces` | account | account state |
-| 2–3 | social/profiles-domain | `ProfilesKeyspaces` | account + profile | profile secrets, disclosures |
-| 4 | social/rooms-domain | `RoomsKeyspaces.INBOX` | profile | sealed invites (unlocked, open writes) |
-| 5 | social/rooms-domain | `RoomsKeyspaces.ROOM_INFO` | any | room info disclosures |
-| 6 | social/rooms-domain | `RoomsKeyspaces.MEMBERSHIP` | any | member roster entries |
-| 7 | social/rooms-domain | `RoomsKeyspaces.MEMBER_PROFILES` | any | member profile associations |
-| 8 | social/rooms-domain | `RoomsKeyspaces.ACCOUNT_ROOMS` | account | synced room records |
-| 9 | social/messages-domain | `MessagesKeyspaces.MESSAGING` | any | one immutable signed locker per message; notifications accelerate discovery |
-| 10 | social/contacts-domain | `ContactsKeyspaces` | account | contact records |
-| 11 | social/typing-domain | `TypingKeyspaces` | any | typing signals |
-| 12 | social/read-receipts-domain | `ReadReceiptsKeyspaces` | any | read pointers |
+| 1 | social/account/domain | `AccountKeyspaces` | account | account state |
+| 2–3 | social/profiles/domain | `ProfilesKeyspaces` | account + profile | profile secrets, disclosures |
+| 4 | social/rooms/domain | `RoomsKeyspaces.INBOX` | profile | sealed invites (unlocked, open writes) |
+| 5 | social/rooms/domain | `RoomsKeyspaces.ROOM_INFO` | any | room info disclosures |
+| 6 | social/rooms/domain | `RoomsKeyspaces.MEMBERSHIP` | any | member roster entries |
+| 7 | social/rooms/domain | `RoomsKeyspaces.MEMBER_PROFILES` | any | member profile associations |
+| 8 | social/rooms/domain | `RoomsKeyspaces.ACCOUNT_ROOMS` | account | synced room records |
+| 9 | social/messages/domain | `MessagesKeyspaces.MESSAGING` | any | one immutable signed locker per message; notifications accelerate discovery |
+| 10 | social/contacts/domain | `ContactsKeyspaces` | account | contact records |
+| 11 | social/typing/domain | `TypingKeyspaces` | any | typing signals |
+| 12 | social/read-receipts/domain | `ReadReceiptsKeyspaces` | any | read pointers |
 | 13 | gwb/widgets-domain | `WidgetsKeyspaces.WIDGET_REGISTRY` | parent chat room | one `WidgetRef` per widget (locker id = widget id) |
 | 14 | gwb/widgets-domain | `WidgetsKeyspaces.WIDGET_INFO` | widget child room | `WidgetInfo` (child→parent link; marks widget rooms) |
 | 15 | gwb/widgets-domain | `WidgetsKeyspaces.WIDGET_BUNDLE` | widget child room | rendered `WidgetBundleState` |

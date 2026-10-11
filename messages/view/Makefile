@@ -2,11 +2,11 @@
 # proto -> generated types (TS + Swift) -> shared binary fixtures -> renderers -> screenshots.
 #
 # Android reuses :messages-api's Kotlin types (no codegen here) and runs via Gradle.
-# Web (React) and iOS (UIKit) generate their types from ../buf.yaml + ../buf.gen.yaml.
+# Web (React) and iOS (UIKit) generate their types from ../../buf.yaml + ../../buf.gen.yaml.
 
 SHELL := /bin/bash
 CURDIR := $(shell pwd)
-REPO := $(patsubst %/,%,$(dir $(CURDIR)))
+REPO := $(abspath $(CURDIR)/../..)
 
 # protoc-gen-es lives in the web package; protoc-gen-swift comes from brew (PATH).
 WEB_BIN := $(CURDIR)/web/node_modules/.bin

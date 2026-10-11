@@ -3,8 +3,8 @@
 Preserve account/profile identity, manager lifecycles, shared-store ownership, and Fullhouse service wiring.
 
 Read the build scripts and relevant tests before editing. Source examples:
-- `read-receipts-domain/src/commonMain/kotlin/com/latenighthack/social/readreceipts/domain/ReadReceiptsManagerImpl.kt`
-- `read-receipts-domain/src/commonMain/kotlin/com/latenighthack/social/readreceipts/domain/ReadReceiptsKeyspaces.kt`
+- `read-receipts/domain/src/commonMain/kotlin/com/latenighthack/social/readreceipts/domain/ReadReceiptsManagerImpl.kt`
+- `read-receipts/domain/src/commonMain/kotlin/com/latenighthack/social/readreceipts/domain/ReadReceiptsKeyspaces.kt`
 
 ## Dependency development
 

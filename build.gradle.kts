@@ -48,7 +48,10 @@ tasks.register<Zip>("observabilityBundle") {
     archiveBaseName.set("social-observability")
     archiveVersion.set(project.version.toString())
     destinationDirectory.set(layout.buildDirectory.dir("distributions"))
-    from("observability") { into("observability") }
+    from("observability") {
+        into("observability")
+        exclude("core/**", "client/**", "server/**")
+    }
 }
 
 // CI and local validation use a separately installed, pinned Node runtime. Distribution

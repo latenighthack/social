@@ -2,7 +2,7 @@
 
 Pure, importable **message renderers** for the `messages.v1.Component` tree, one
 per client platform. Define a message once as protobuf (already done, in
-`messages-api/`), render it natively on **Android** (classic `View`s), **iOS**
+`messages/api/`), render it natively on **Android** (classic `View`s), **iOS**
 (UIKit `UIView`), and **web** (React).
 
 Each library exposes the same contract: give it a `Component` plus a
@@ -17,7 +17,7 @@ authoritative renderer; iOS/web are brought up to the same coverage here.
 ## Layout
 
 ```
-messages-view/
+messages/view/
   android/                 :messages-view-android — classic Android Views (reuses :messages-api)
   ios/                     MessagesView — UIKit Swift package (SwiftProtobuf)
   web/                     @social/messages-view — React renderer (protobuf-es)
@@ -31,7 +31,7 @@ messages-view/
   Makefile
 ```
 
-`messages-api/proto` is the single source of truth. `../buf.yaml` + `../buf.gen.yaml`
+`messages/api/proto` is the single source of truth. `../../buf.yaml` + `../../buf.gen.yaml`
 generate the web (TypeScript) and iOS (Swift) types; Android reads the Kotlin
 types straight from `:messages-api`.
 
@@ -57,7 +57,7 @@ Individual pieces: `make proto`, `make fixtures`, `make web-dev`, `make android`
 
 ## How it fits together
 
-1. `messages-api/proto/messages/v1/components.proto` defines the schema.
+1. `messages/api/proto/messages/v1/components.proto` defines the schema.
 2. `make proto` generates TypeScript (`web/src/gen`) + Swift
    (`ios/Sources/MessagesView/Generated`); Android uses `:messages-api` directly.
 3. `demo/gen-fixtures` builds sample `Component`s and serialises them to
