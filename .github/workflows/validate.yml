@@ -6,7 +6,7 @@ on:
   workflow_call:
 jobs:
   validation:
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4

@@ -17,7 +17,7 @@ jobs:
     name: Publish to Maven Central
     # macOS is required so the KMP iOS targets compile — an ubuntu run would silently skip them
     # and publish an incomplete artifact set.
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
