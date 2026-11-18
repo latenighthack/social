@@ -44,11 +44,13 @@ class DerivedRoomsIntegrationTest {
         val accountKeySource = AccountKeySource(account)
         val myProfiles = MyProfilesManagerImpl(account)
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
-        val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
+        val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", RoomsStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
+        val rooms = RoomsManagerImpl(account, myProfiles, joinClient, database)
+        rooms.prepare()
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
-            database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
+            database = database,
             keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
             keySource = accountKeySource,
             appVersion = Version(0, 0, 1),

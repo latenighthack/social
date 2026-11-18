@@ -54,6 +54,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -214,7 +216,11 @@ class MessagesManagerImpl(
         if (!ready.isCompleted) ready.complete(Unit)
 
         coroutineScope {
-            launch { drainLoop(lockers) }
+            // Rooms the server hasn't acknowledged yet (a just-created group): their queued messages
+            // stay held, without spending attempts, and the queue is re-drained once they're ready.
+            val unacknowledged = rooms.watchUnacknowledgedRooms().stateIn(this)
+            launch { unacknowledged.collect { wake.trySend(Unit) } }
+            launch { drainLoop(lockers, unacknowledged) }
             launch {
                 for (bump in bumps) {
                     if (bump.owner == session.currentOwner() && bump.generation == (session?.generation?.value ?: 0L)) {
@@ -377,7 +383,7 @@ class MessagesManagerImpl(
         wake.trySend(Unit)
     }
 
-    private suspend fun drainLoop(lockers: LockersClient) {
+    private suspend fun drainLoop(lockers: LockersClient, unacknowledged: StateFlow<Set<RoomId>>) {
         while (true) {
             val now = Clock.System.now().toEpochMilliseconds()
             var soonest: Long? = null
@@ -389,8 +395,10 @@ class MessagesManagerImpl(
                 queueDepth += own.size
                 unknownAge += own.count { it.createdAtMillis <= 0 }
                 oldestAge = maxOf(oldestAge, own.filter { it.createdAtMillis > 0 }.maxOfOrNull { (now - it.createdAtMillis).coerceAtLeast(0) / 1000.0 } ?: 0.0)
-                own.minOfOrNull { it.nextAttemptMillis }?.let { soonest = minOf(soonest ?: it, it) }
-                for (batch in own.filter { it.nextAttemptMillis <= now }.chunked(4)) coroutineScope {
+                val held = unacknowledged.value
+                val sendable = own.filter { RoomId(rawValue = it.roomId) !in held }
+                sendable.minOfOrNull { it.nextAttemptMillis }?.let { soonest = minOf(soonest ?: it, it) }
+                for (batch in sendable.filter { it.nextAttemptMillis <= now }.chunked(4)) coroutineScope {
                     batch.map { entry -> launch { attemptSend(lockers, entry) } }.forEach { it.join() }
                 }
             }

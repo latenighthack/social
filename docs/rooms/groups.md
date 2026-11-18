@@ -39,14 +39,23 @@ member writes both for itself on join. (This split is a deliberate modeling choi
 ## Create
 
 ```
-RoomsManager.createGroup(name):
+RoomsManager.createGroup(name):                           # returns before any network call
   G       = Secp256r1KeyPair.generate()
   roomId  = RoomKeying.publicKeyed(G.public)
-  record RoomRecord(GROUP, G.private, myProfile) in the account room (keyspace 8, signed by account key)
-  lockLocker(roomId, ROOM scope, G, parent = G)            # public-keyed root lock
-  write RoomInfo with a signed 'name' disclosure           # signed by G
-  write Member + MemberProfile for myProfile               # signed by G
+  save a pending RoomRecord(GROUP, G.private, myProfile, signed initial info) to the local
+    pending-rooms store (key protected by the account), list the room, return roomId
+
+background setup (resumed from the local row after a restart):
+  one PostLockerChanges: root lock (ROOM scope, self-signed by G)  # public-keyed root lock
+                         + RoomInfo with a signed 'name' disclosure + Member + MemberProfile
+  record the completed RoomRecord in the account room (keyspace 8, signed by account key)
+  drop the local row
 ```
+
+Until the batch commits the room is *unacknowledged* (`watchUnacknowledgedRooms`): it is listed,
+`watchInfo` serves the local initial info, and the messages outbox holds its queued sends. Commands
+that need the server copy (`createInviteCode`, `inviteToRoom`, `updateInfo`, `openDerivedRoom` on it)
+wait for the setup; `leave` cancels it. The account room only ever sees completed creates.
 
 ## Invite codes & join
 

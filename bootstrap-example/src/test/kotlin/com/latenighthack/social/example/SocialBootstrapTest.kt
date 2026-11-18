@@ -21,7 +21,8 @@ class SocialBootstrapTest {
         runTestWithServer(Application::attachTestServices) { server, _ ->
             withContext(Dispatchers.Default) {
                 val database = Database(MessagesStorage.configuration("compiled-example",
-                    ConnectorStorage.definitions + ProfilesStorage.definitions + RemoteContentStorage.definitions),
+                    ConnectorStorage.definitions + ProfilesStorage.definitions + RemoteContentStorage.definitions +
+                    com.latenighthack.social.rooms.domain.RoomsStorage.definitions),
                     InMemoryStoreDelegate())
                 val http = HttpClient()
                 database.open()

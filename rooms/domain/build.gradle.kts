@@ -38,6 +38,8 @@ kotlin {
                 implementation(libs.ktor.server.websockets)
                 implementation(libs.lockers.server)
                 implementation(libs.lockers.server.test)
+                // File-backed SQLite to prove RoomsStorage.upgrade opens an existing host database.
+                implementation(libs.sqlite.jdbc)
             }
         }
     }

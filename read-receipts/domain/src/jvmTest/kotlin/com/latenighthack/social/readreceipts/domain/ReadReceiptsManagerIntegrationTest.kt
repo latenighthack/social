@@ -69,10 +69,11 @@ class ReadReceiptsManagerIntegrationTest {
         val accountKeySource = AccountKeySource(account)
         val myProfiles = MyProfilesManagerImpl(account)
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
-        val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
+        val database = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions + com.latenighthack.social.rooms.domain.RoomsStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
+        val rooms = RoomsManagerImpl(account, myProfiles, joinClient, database)
+        rooms.prepare()
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         // Declare messages and lockers together before opening their shared database.
-        val database = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
         val messages = MessagesManagerImpl(rooms, myProfiles, database)
         messages.prepare()
         val readReceipts = ReadReceiptsManagerImpl(rooms, messages, myProfiles)
@@ -120,6 +121,36 @@ class ReadReceiptsManagerIntegrationTest {
                     kotlin.test.assertTrue(cleaned)
                 } finally { receipts.stopAndJoin(); party.close() }
             }
+        }
+
+    @Test(timeout = 60_000)
+    fun `markRead in a room the server has not acknowledged yet does not fail`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            // Hold the new room's setup batch (its lock + membership + info) so the room only
+            // exists locally while the receipt is written.
+            val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val alice = newParty(object : RpcClient by server.rpcClient {
+                override suspend fun unaryCall(
+                    method: com.latenighthack.ktbuf.net.RpcMethodSpecifier,
+                    headers: Map<String, String>,
+                    request: ByteArray,
+                ): com.latenighthack.ktbuf.net.RpcResponse {
+                    if (method.methodName == "PostLockerChanges") gate.await()
+                    return server.rpcClient.unaryCall(method, headers, request)
+                }
+            })
+            try {
+                alice.myProfiles.createProfile("Alice")
+                val roomId = alice.rooms.createGroup("Team")
+                alice.messages.send(roomId, Draft { text = "queued" })
+                assertTrue(roomId in alice.rooms.watchUnacknowledgedRooms().first())
+                alice.readReceipts.markRead(roomId)
+                gate.complete(Unit)
+                alice.messages.watchMessages(roomId).first { list ->
+                    list.any { it.status == com.latenighthack.social.messages.v1.MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT }
+                }
+                alice.readReceipts.markRead(roomId)
+            } finally { gate.complete(Unit); alice.close() }
         }
 
     @Test(timeout = 60_000)

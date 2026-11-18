@@ -3,6 +3,7 @@
   <ManuallySuppressedIssues></ManuallySuppressedIssues>
   <CurrentIssues>
     <ID>TooManyFunctions:RoomsManager.kt$RoomsManager</ID>
+    <ID>LargeClass:RoomsManagerImpl.kt$RoomsManagerImpl : RoomsManagerDomainLifecycleSocialTelemetryOwner</ID>
     <ID>TooManyFunctions:RoomsManagerImpl.kt$RoomsManagerImpl : RoomsManagerDomainLifecycleSocialTelemetryOwner</ID>
   </CurrentIssues>
 </SmellBaseline>

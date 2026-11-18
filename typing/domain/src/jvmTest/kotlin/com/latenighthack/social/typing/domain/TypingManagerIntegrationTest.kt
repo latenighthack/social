@@ -70,12 +70,14 @@ class TypingManagerIntegrationTest {
         val accountKeySource = AccountKeySource(account)
         val myProfiles = MyProfilesManagerImpl(account)
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
-        val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
+        val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.social.rooms.domain.RoomsStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
+        val rooms = RoomsManagerImpl(account, myProfiles, joinClient, database)
+        rooms.prepare()
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         val typing = TypingManagerImpl(rooms, myProfiles, debounceMillis, timeoutMillis, tickMillis)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
-            database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
+            database = database,
             keyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
             keySource = accountKeySource,
             appVersion = Version(0, 0, 1),
@@ -89,6 +91,26 @@ class TypingManagerIntegrationTest {
         account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
         return Party(myProfiles, rooms, typing, lockers)
     }
+
+    @Test(timeout = 60_000)
+    fun `typing in a room the server has not acknowledged yet does not fail`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            // Hold the new room's setup batch (its lock + membership + info) so the room only
+            // exists locally while typing is sent.
+            val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val held = SetupGateRpcClient(server.rpcClient, gate)
+            val alice = newParty(held)
+            try {
+                alice.myProfiles.createProfile("Alice")
+                val roomId = alice.rooms.createGroup("Team")
+                assertTrue(roomId in alice.rooms.watchUnacknowledgedRooms().first())
+                alice.typing.setTyping(roomId, true)
+                alice.typing.setTyping(roomId, false)
+                gate.complete(Unit)
+                alice.rooms.watchUnacknowledgedRooms().first { roomId !in it }
+                alice.typing.setTyping(roomId, true)
+            } finally { gate.complete(Unit); alice.close() }
+        }
 
     @Test(timeout = 60_000)
     fun `a member's typing is delivered to other members`() =
@@ -267,5 +289,20 @@ private class FakeJoinClient : JoinClient {
     private suspend fun keyMatchesRoom(privateKey: ByteArray, roomId: ByteArray): Boolean {
         val keyPair = Secp256r1KeyPair.fromPrivateKey(privateKey) ?: return false
         return RoomKeying.publicKeyed(keyPair.publicKey.encode()).rawValue.contentEquals(roomId)
+    }
+}
+
+/** Holds the atomic batch write (PostLockerChanges) that sets a new room up, until [gate] opens. */
+internal class SetupGateRpcClient(
+    private val delegate: RpcClient,
+    private val gate: kotlinx.coroutines.CompletableDeferred<Unit>,
+) : RpcClient by delegate {
+    override suspend fun unaryCall(
+        method: com.latenighthack.ktbuf.net.RpcMethodSpecifier,
+        headers: Map<String, String>,
+        request: ByteArray,
+    ): com.latenighthack.ktbuf.net.RpcResponse {
+        if (method.methodName == "PostLockerChanges") gate.await()
+        return delegate.unaryCall(method, headers, request)
     }
 }

@@ -35,7 +35,7 @@ interface RoomsProviders : com.latenighthack.social.runtime.SocialRuntimeProvide
     fun roomsManagerImpl(
         account: AccountManager,
         myProfiles: MyProfilesManager,
-        joinClient: JoinClient, invitePolicy: RoomInvitePolicy, tasks: com.latenighthack.social.runtime.SocialTaskScope): RoomsManagerImpl = RoomsManagerImpl(account, myProfiles, joinClient, scope = tasks.scope, invitePolicy = invitePolicy).observedBy(socialTelemetry())
+        joinClient: JoinClient, database: com.latenighthack.ktstore.Database, invitePolicy: RoomInvitePolicy, tasks: com.latenighthack.social.runtime.SocialTaskScope): RoomsManagerImpl = RoomsManagerImpl(account, myProfiles, joinClient, database, scope = tasks.scope, invitePolicy = invitePolicy).observedBy(socialTelemetry())
 
     @Provides
     fun roomsManager(impl: RoomsManagerImpl): RoomsManager = impl

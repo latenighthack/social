@@ -8,6 +8,7 @@ import com.latenighthack.social.rooms.v1.RoomInfo
 import com.latenighthack.social.rooms.v1.RoomInfoBuilder
 import com.latenighthack.social.rooms.v1.RoomKind
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * The user's rooms: shared, mutable, multi-participant spaces built on the lockers lock system.
@@ -92,6 +93,13 @@ interface RoomsManager {
     fun watchRooms(): Flow<List<RoomId>>
 
     fun watchInfo(roomId: RoomId): Flow<RoomInfo?>
+
+    /**
+     * Rooms this device created that the server hasn't acknowledged yet (their lock, membership and
+     * info are not yet committed). They are already listed and readable locally, but writes into
+     * them must wait until they leave this set.
+     */
+    fun watchUnacknowledgedRooms(): Flow<Set<RoomId>> = flowOf(emptySet())
 
     /** The profile ids of the room's current members. */
     fun watchMembers(roomId: RoomId): Flow<List<ProfileId>>

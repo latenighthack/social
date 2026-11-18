@@ -97,3 +97,12 @@ message RoomRecord {
   // Stable rendezvous identity; independent of the peer's current membership.
   bytes peer_profile_id = 11;
 }
+
+// Device-local durable record of a group this device created whose server setup (room lock,
+// membership, info, account-room record) has not finished. The record's key is account-protected
+// (encrypted_shared_private_key), as in the account room.
+message LocalPendingRoom {
+  bytes room_id = 1;
+  string owner_account_id = 2;
+  RoomRecord record = 3;
+}

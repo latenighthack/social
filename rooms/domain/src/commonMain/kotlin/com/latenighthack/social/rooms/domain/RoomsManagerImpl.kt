@@ -24,6 +24,8 @@ import com.latenighthack.lockers.common.v1.LockScopeKind
 import com.latenighthack.lockers.common.v1.LockerId
 import com.latenighthack.lockers.common.v1.RoomId
 import com.latenighthack.lockers.connector.LockerClient
+import com.latenighthack.lockers.connector.LockerWriteException
+import com.latenighthack.ktstore.Database
 import com.latenighthack.lockers.connector.LockersClient
 import com.latenighthack.lockers.connector.TypedLockerClient
 import com.latenighthack.lockers.connector.TypedLockerUpdate
@@ -40,6 +42,7 @@ import com.latenighthack.social.rooms.v1.Invite
 import com.latenighthack.social.rooms.v1.InviteCode
 import com.latenighthack.social.rooms.v1.JoinRequest
 import com.latenighthack.social.rooms.v1.JoinResult
+import com.latenighthack.social.rooms.v1.LocalPendingRoom
 import com.latenighthack.social.rooms.v1.Member
 import com.latenighthack.social.rooms.v1.MemberProfile
 import com.latenighthack.social.rooms.v1.RevokeInviteCodeRequest
@@ -55,6 +58,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.onStart
 import com.latenighthack.social.runtime.TaskHealth
 import com.latenighthack.social.runtime.recoverTask
 import kotlinx.coroutines.SupervisorJob
@@ -94,11 +102,13 @@ class RoomsManagerImpl(
     private val account: AccountManager,
     private val myProfiles: MyProfilesManager,
     private val joinClient: JoinClient,
+    database: Database,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val invitePolicy: RoomInvitePolicy = AcceptRoomInvites,
 ) : RoomsManager, DomainLifecycle, SocialTelemetryOwner {
     override var socialTelemetry: SocialTelemetry = NoopSocialTelemetry
 
+    override suspend fun prepare() = socialTelemetry.measure("rooms", "prepare") { pendingRooms.prepare() }
     override fun start(lockers: LockersClient) = run { socialTelemetry.event("rooms", "start"); (run observedOperation@ {
         runner.start(lockers) {
              recoverTask(mutableTaskHealth) { run(lockers) } }
@@ -141,12 +151,20 @@ class RoomsManagerImpl(
     override fun watchRooms(): Flow<List<RoomId>>  = (combine(_rooms, account.owner, account.generation, loadedGeneration) { rooms, owner, epoch, loadedEpoch ->
         if (owner != null && owner == loadedOwner.value && epoch == loadedEpoch) rooms else emptyList()
     }).socialObserved(socialTelemetry, "rooms")
-    override fun watchInfo(roomId: RoomId): Flow<RoomInfo?>  = (infoClient(requireLockers()).watch(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER).map {
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    override fun watchInfo(roomId: RoomId): Flow<RoomInfo?> {
+        val server = infoClient(requireLockers()).watch(roomId, RoomsKeyspaces.ROOM_INFO_LOCKER).map {
             when (it) {
-                is TypedLockerUpdate.Present -> verifyInfo(roomId, it.value)
+                is TypedLockerUpdate.Present -> it.value
                 is TypedLockerUpdate.Deleted -> null
             }
-        }.distinctUntilChanged()).socialObserved(socialTelemetry, "rooms")
+        }
+        // A room this device created serves its initial info until the server has it.
+        return (unacknowledged.map { it[roomId] }.distinctUntilChanged().flatMapLatest { local ->
+            if (local == null) server else server.map { it ?: local }.onStart { emit(local) }
+        }.map { it?.let { info -> verifyInfo(roomId, info) } }.distinctUntilChanged()).socialObserved(socialTelemetry, "rooms")
+    }
+    override fun watchUnacknowledgedRooms(): Flow<Set<RoomId>> = unacknowledged.map { it.keys }.distinctUntilChanged()
     override fun watchMembers(roomId: RoomId): Flow<List<ProfileId>>  = (membershipClient(requireLockers()).watchAll(roomId, RoomsKeyspaces.MEMBERSHIP).map { members ->
             members.keys.map { ProfileId { rawValue = it.rawValue } }
         }.distinctUntilChanged()).socialObserved(socialTelemetry, "rooms")
@@ -172,6 +190,21 @@ class RoomsManagerImpl(
     private val runner = com.latenighthack.social.runtime.ManagerRunner(scope)
     private val lockers: LockersClient? get() = runner.token as? LockersClient
 
+    private val pendingRooms = PendingRoomStore(database)
+
+    // Server setup of groups this device created, one job per room; children of the running
+    // generation so stop() cancels them. Commands that need the server state join the room's job.
+    private val setups = MutableStateFlow<Map<RoomId, Job>>(emptyMap())
+    // Groups this device created whose setup hasn't finished. Unlike a pending join they are listed
+    // in [watchRooms] immediately: the local row makes them durable before the server knows them.
+    // Guarded by [stateMutex].
+    private var localCreates: Set<RoomId> = emptySet()
+    // Local creates whose lock + membership + info batch the server hasn't committed, with the
+    // initial info [watchInfo] serves meanwhile. Writes into these rooms wait (see
+    // [watchUnacknowledgedRooms]).
+    private val unacknowledged = MutableStateFlow<Map<RoomId, RoomInfo>>(emptyMap())
+    private var setupScope: CoroutineScope? = null
+
 
     override suspend fun stopAndJoin() {
         runner.stopAndJoin()
@@ -189,6 +222,7 @@ class RoomsManagerImpl(
         // so stop() — which cancels this job — tears them down too; supervisorScope keeps one
         // collector's failure from cancelling the others.
         coroutineScope {
+            setupScope = this
             launch {
                 // Restore the room list from the synced account room — this is what makes a freshly
                 // restored account recover its rooms and shared keys. Ready arrives offline too
@@ -202,23 +236,30 @@ class RoomsManagerImpl(
                     }.collectLatest { (ready, epoch) ->
                 val accountRoom = ready?.privateRoom
                         stateMutex.withLock {
-                            keyPairs = emptyMap(); records = emptyMap(); leftRooms = emptySet()
+                            keyPairs = emptyMap(); records = emptyMap(); leftRooms = emptySet(); localCreates = emptySet()
+                            unacknowledged.value = emptyMap()
                             _rooms.value = emptyList()
                         }
                         loadedOwner.value = ready?.accountId?.joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
                         loadedGeneration.value = epoch
                         if (loadedOwner.value != account.owner.value || epoch != account.generation.value) return@collectLatest
                         if (accountRoom == null) return@collectLatest
-                        var previous = emptySet<RoomId>()
+                        resumePendingCreates(lockers, loadedOwner.value ?: return@collectLatest)
+                        var previous = emptyMap<RoomId, ByteArray>()
                         accountRoomsClient(lockers).watchAll(accountRoom).collect { source ->
-                            val ids = source.values.map { RoomId(rawValue = it.roomId) }.toSet()
+                            val current = source.values.associate { RoomId(rawValue = it.roomId) to it.toByteArray() }
                             stateMutex.withLock {
-                                val removed = previous - ids
+                                val removed = previous.keys - current.keys
                                 keyPairs = keyPairs - removed; records = records - removed; leftRooms = leftRooms - removed
                                 _rooms.value = sortedRoomIds()
                             }
-                            loadRooms(lockers, accountRoom, source.values)
-                            previous = ids
+                            // Only records that are new or changed since the last emission need decrypting
+                            // and (re)subscribing; an unchanged record's in-memory state is already loaded.
+                            val changed = source.values.filter { record ->
+                                previous[RoomId(rawValue = record.roomId)]?.contentEquals(current.getValue(RoomId(rawValue = record.roomId))) != true
+                            }
+                            loadRooms(lockers, accountRoom, changed)
+                            previous = current
                         }
                     }
             }
@@ -252,9 +293,106 @@ class RoomsManagerImpl(
         val info = built.copy { disclosures = built.disclosures.map {
             RoomInfoDisclosures.sign(groupKey, roomId, RoomInfo.DisclosurePayload.fromByteArray(it.content))
         } }
-        adopt(lockers, stamped.copy(initialInfo = info.toByteArray()))
-        repairMembership(lockers, records.getValue(roomId))
+        val record = stamped.copy(initialInfo = info.toByteArray(), membershipPending = true)
+
+        // Local only: the durable local row is what a crash mid-create resumes from, so the server
+        // setup (lock + membership + info, then the account-room record) runs in the background.
+        account.requireOperationOwner()
+        val owner = checkNotNull(account.owner.value) { "account is signed out" }
+        val encrypted = account.protectSecret("room/${record.roomId.toList()}", record.sharedPrivateKey)
+        account.requireOperationOwner()
+        pendingRooms.savePending(LocalPendingRoom(
+            roomId = record.roomId,
+            ownerAccountId = owner,
+            record = record.copy(sharedPrivateKey = ByteArray(0), encryptedSharedPrivateKey = encrypted),
+        ))
+        stateMutex.withLock {
+            leftRooms = leftRooms - roomId; localCreates = localCreates + roomId
+            unacknowledged.update { it + (roomId to info) }
+        }
+        remember(lockers, record)
+        launchSetup(lockers, owner, record)
         return roomId
+    }
+
+    /** Restart any group setups a previous run left unfinished (e.g. the app died mid-create). */
+    private suspend fun resumePendingCreates(lockers: LockersClient, owner: String) {
+        for (pending in pendingRooms.pendingFor(owner)) {
+            val stored = pending.record ?: continue
+            val raw = account.unprotectSecret("room/${stored.roomId.toList()}", stored.encryptedSharedPrivateKey)
+            val record = stored.copy(sharedPrivateKey = raw, encryptedSharedPrivateKey = ByteArray(0))
+            stateMutex.withLock {
+                val id = RoomId(rawValue = record.roomId)
+                localCreates = localCreates + id
+                unacknowledged.update { it + (id to RoomInfo.fromByteArray(record.initialInfo)) }
+            }
+            remember(lockers, record)
+            launchSetup(lockers, owner, record)
+        }
+    }
+
+    private fun launchSetup(lockers: LockersClient, owner: String, record: RoomRecord) {
+        val id = RoomId(rawValue = record.roomId)
+        val scope = setupScope ?: error("rooms manager is not running")
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            recoverTask(mutableTaskHealth) { account.withAccount { setUpCreatedGroup(lockers, owner, record) } }
+        }
+        var launched = false
+        setups.update { current ->
+            if (current[id]?.isActive == true) current else { launched = true; current + (id to job) }
+        }
+        if (!launched) { job.cancel(); return }
+        job.invokeOnCompletion { setups.update { if (it[id] === job) it - id else it } }
+        job.start()
+    }
+
+    /** Wait for this device's in-flight server setup of [roomId], if any. */
+    private suspend fun awaitSetup(roomId: RoomId) {
+        setups.value[roomId]?.join()
+    }
+
+    /**
+     * Server setup for a group this device created: the root lock, membership and info in one atomic
+     * batch, then the (already complete) account-room record, then drop the local pending row.
+     * Idempotent, so a resumed setup can repeat any step.
+     */
+    private suspend fun setUpCreatedGroup(lockers: LockersClient, owner: String, record: RoomRecord) {
+        val id = RoomId(rawValue = record.roomId)
+        if (stateMutex.withLock { records[id]?.left == true || id in leftRooms }) {
+            unacknowledged.update { it - id }
+            pendingRooms.deletePending(owner, id)
+            return
+        }
+        val key = Secp256r1KeyPair.fromPrivateKey(record.sharedPrivateKey) ?: error("invalid group key")
+        val changes = membershipChanges(ProfileId(rawValue = record.localProfileId)).let { membership ->
+            if (record.initialInfo.isEmpty()) membership
+            else listOf(LockerClient.Change(RoomsKeyspaces.ROOM_INFO_LOCKER) { record.initialInfo }) + membership
+        }
+        try {
+            // A new public-keyed room: the self-signed root lock rides in the same request.
+            lockers.lockers.updateLockers(id, changes, initialKey = key)
+        } catch (_: LockerWriteException) {
+            // Already locked (a resumed setup) or otherwise rejected: lock (a no-op when locked) and
+            // write separately, as the membership repair does.
+            infoClient(lockers).lockLocker(id, LockScope(kind = LockScopeKind.LOCK_SCOPE_ROOM), key, parentKeyPair = key)
+            lockers.lockers.updateLockers(id, changes)
+        }
+        // The server has the room: release held writes; its info now comes from the server copy.
+        unacknowledged.update { it - id }
+        // Carry any markUpdated bump made while the setup was running.
+        val updatedAt = records[id]?.updatedAtMillis ?: record.updatedAtMillis
+        val completed = record.copy(membershipPending = false, initialInfo = ByteArray(0), updatedAtMillis = updatedAt)
+        writeAccountRecord(lockers, completed)
+        stateMutex.withLock {
+            if (records[id]?.left != true && id !in leftRooms) {
+                // A bump made during the account write is newer than the one written; keep it.
+                val newest = maxOf(updatedAt, records[id]?.updatedAtMillis ?: 0L)
+                records = records + (id to completed.copy(updatedAtMillis = newest))
+                localCreates = localCreates - id
+                _rooms.value = sortedRoomIds()
+            }
+        }
+        pendingRooms.deletePending(owner, id)
     }
 
 
@@ -297,6 +435,7 @@ class RoomsManagerImpl(
     private suspend fun openDerivedRoomOwned(parentRoomId: RoomId, purpose: String, salt: ByteArray): RoomId {
         check(ownsKeys()) { "room keys belong to a different account" }
         val lockers = requireLockers()
+        awaitSetup(parentRoomId)
         val parent = records[parentRoomId] ?: error("not a member of the parent room")
         val me = ProfileId(rawValue = parent.localProfileId)
 
@@ -334,6 +473,8 @@ class RoomsManagerImpl(
 
     private suspend fun createInviteCodeOwned(roomId: RoomId): InviteCode {
         check(ownsKeys()) { "room keys belong to a different account" }
+        // The server only accepts the group key once the room exists there.
+        awaitSetup(roomId)
         val record = records[roomId] ?: error("not a member of this room")
         require(record.kind == RoomKind.ROOM_KIND_GROUP) { "invite codes are for group rooms; rendezvous is 1:1" }
         // Hand the server the shared key so it can seal per-joiner grants; whoever holds the key is a
@@ -359,6 +500,7 @@ class RoomsManagerImpl(
 
     private suspend fun inviteToRoomOwned(roomId: RoomId, peerProfileId: ProfileId) {
         check(ownsKeys()) { "room keys belong to a different account" }
+        awaitSetup(roomId)
         val lockers = lockers ?: error("inviteToRoom requires start(lockers) first")
         val record = records[roomId] ?: error("not a member of this room")
         require(record.kind == RoomKind.ROOM_KIND_GROUP) { "direct invites are for group rooms; rendezvous is 1:1" }
@@ -408,6 +550,10 @@ class RoomsManagerImpl(
     private suspend fun leaveOwned(roomId: RoomId) {
         check(ownsKeys()) { "room keys belong to a different account" }
         val lockers = lockers ?: return
+        // Stop an in-flight create setup first so it can't publish membership after the leave.
+        setups.value[roomId]?.cancelAndJoin()
+        account.owner.value?.let { pendingRooms.deletePending(it, roomId) }
+        stateMutex.withLock { localCreates = localCreates - roomId; unacknowledged.update { it - roomId } }
         val record = records[roomId] ?: return
         val leaving = record.copy(left = true, leaving = true)
         // Persist leave intent before any destructive room write; retain the encrypted key for repair.
@@ -419,6 +565,8 @@ class RoomsManagerImpl(
 
     private suspend fun updateInfoOwned(roomId: RoomId, builder: RoomInfoBuilder.() -> Unit) {
         check(ownsKeys()) { "room keys belong to a different account" }
+        // The setup writes the initial info; an edit must land after it, not be overwritten by it.
+        awaitSetup(roomId)
         val lockers = lockers ?: error("updateInfo requires start(lockers) first")
         val roomKey = keyPairs[roomId] ?: error("not a member of this room")
         writeInfo(lockers, roomId, roomKey, builder = builder)
@@ -434,6 +582,15 @@ class RoomsManagerImpl(
                 records = records + (roomId to it)
                 _rooms.value = sortedRoomIds()
             }
+        }
+        // The list reorders now; the durable bump waits for a local create's setup so it never
+        // publishes a pending record, and is written from the then-current (completed) record.
+        if (setups.value.containsKey(roomId)) {
+            awaitSetup(roomId)
+            val current = stateMutex.withLock { records[roomId] } ?: return
+            if (current.membershipPending || current.left) return
+            accountRoom()?.let { writeAccountRecord(lockers, current) }
+            return
         }
         accountRoom()?.let { accountRoom ->
             writeAccountRecord(lockers, bumped)
@@ -571,6 +728,9 @@ class RoomsManagerImpl(
                 }
                 continue
             }
+            // A pending copy of a membership this run already completed is a stale emission; loading
+            // it would mark the room pending again and start a redundant repair.
+            if (record.membershipPending && !record.leaving && records[id]?.membershipPending == false) continue
             val raw = if (record.encryptedSharedPrivateKey.isNotEmpty()) {
                 account.unprotectSecret("room/${record.roomId.toList()}", record.encryptedSharedPrivateKey)
             } else record.sharedPrivateKey
@@ -630,7 +790,7 @@ class RoomsManagerImpl(
 
     /** The user's room ids ordered by `updated_at`, newest first. */
     private fun sortedRoomIds(): List<RoomId> =
-        records.entries.filter { !it.value.left && !it.value.membershipPending }.sortedByDescending { it.value.updatedAtMillis }.map { it.key }
+        records.entries.filter { !it.value.left && (!it.value.membershipPending || it.key in localCreates) }.sortedByDescending { it.value.updatedAtMillis }.map { it.key }
 
     private fun accountRoom(): RoomId? =
         (account.lifecycle.value as? AccountManager.Lifecycle.Ready)?.privateRoom
@@ -677,10 +837,13 @@ class RoomsManagerImpl(
         }
     }
 
-    private suspend fun repairMembership(lockers: LockersClient, record: RoomRecord) = repairMutex.withLock {
-        if (!record.membershipPending || record.left) return@withLock
-        val id = RoomId(rawValue = record.roomId)
-        if (stateMutex.withLock { records[id]?.left == true || id in leftRooms }) return@withLock
+    private suspend fun repairMembership(lockers: LockersClient, candidate: RoomRecord) = repairMutex.withLock {
+        // Re-check the current state, not the caller's copy: a repair that ran while this one waited
+        // on the mutex may already have completed the membership.
+        val id = RoomId(rawValue = candidate.roomId)
+        val record = stateMutex.withLock {
+            records[id]?.takeIf { it.membershipPending && !it.left && id !in leftRooms }
+        } ?: return@withLock
         val key = Secp256r1KeyPair.fromPrivateKey(record.sharedPrivateKey) ?: error("invalid membership key")
         infoClient(lockers).lockLocker(id, LockScope(kind = LockScopeKind.LOCK_SCOPE_ROOM), key,
             parentKeyPair = if (record.kind == RoomKind.ROOM_KIND_RENDEZVOUS) null else key)

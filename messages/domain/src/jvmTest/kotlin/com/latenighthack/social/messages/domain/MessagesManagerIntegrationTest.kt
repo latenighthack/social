@@ -96,11 +96,12 @@ class MessagesManagerIntegrationTest {
         val accountKeySource = AccountKeySource(account)
         val myProfiles = MyProfilesManagerImpl(account)
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
-        val rooms = RoomsManagerImpl(account, myProfiles, joinClient)
+        val database = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions + com.latenighthack.social.rooms.domain.RoomsStorage.definitions), databaseDelegate)
+        val rooms = RoomsManagerImpl(account, myProfiles, joinClient, database)
+        rooms.prepare()
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         // One delegate for the managers and the lockers client, as in production: every store is
         // prepared first, then LockersClient.create performs the single createStores() call.
-        val database = com.latenighthack.ktstore.Database(com.latenighthack.social.messages.domain.MessagesStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", com.latenighthack.lockers.connector.ConnectorStorage.definitions), databaseDelegate)
         val messages = MessagesManagerImpl(
             messageRooms(rooms), messageProfiles(myProfiles), database,
             maxAttempts = maxAttempts, backoffBaseMillis = backoffBaseMillis, session = account,
@@ -300,6 +301,53 @@ class MessagesManagerIntegrationTest {
         }
 
     @Test(timeout = 60_000)
+    fun `a message to a room the server has not acknowledged stays queued until it is`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            val held = kotlinx.coroutines.flow.MutableStateFlow<Set<RoomId>>(emptySet())
+            val alice = newParty(server.rpcClient, maxAttempts = 1, messageRooms = { delegate ->
+                object : com.latenighthack.social.rooms.domain.RoomsManager by delegate {
+                    override fun watchUnacknowledgedRooms() = held
+                }
+            })
+            try {
+                alice.myProfiles.createProfile("Alice")
+                val roomId = alice.rooms.createGroup("Team")
+                alice.rooms.watchUnacknowledgedRooms().first { roomId !in it }
+                held.value = setOf(roomId)
+                alice.messages.send(roomId, Draft { text = "held" })
+                // Held: never attempted, so with one allowed attempt it is neither sent nor failed.
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { kotlinx.coroutines.delay(1500) }
+                val queued = alice.messages.watchMessages(roomId).first().single { it.payload.component?.text == "held" }
+                assertEquals(MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENDING, queued.status)
+                held.value = emptySet()
+                alice.messages.watchMessages(roomId).first { list ->
+                    list.any { it.payload.component?.text == "held" && it.status == MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT }
+                }
+            } finally { alice.close() }
+        }
+
+    @Test(timeout = 60_000)
+    fun `a message sent right after createGroup is sent and the room still sets up`() =
+        runTestWithServer(Application::attachTestServices) { server, _ ->
+            val alice = newParty(server.rpcClient)
+            val bob = newParty(server.rpcClient)
+            try {
+                val aliceProfile = alice.myProfiles.createProfile("Alice")
+                val bobProfile = bob.myProfiles.createProfile("Bob")
+                // createGroup returns before the room exists on the server, so this send can race
+                // the room's lock-and-membership setup.
+                val roomId = alice.rooms.createGroup("Team")
+                alice.messages.send(roomId, Draft { text = "first" })
+                alice.messages.watchMessages(roomId).first { list ->
+                    list.any { it.payload.component?.text == "first" && it.status == MessageDeliveryStatus.MESSAGE_DELIVERY_STATUS_SENT }
+                }
+                alice.rooms.watchRooms().first { roomId in it }
+                bob.rooms.joinByCode(alice.rooms.createInviteCode(roomId))
+                assertEquals(setOf(aliceProfile, bobProfile), bob.rooms.watchMembers(roomId).first { it.size == 2 }.toSet())
+            } finally { bob.close(); alice.close() }
+        }
+
+    @Test(timeout = 60_000)
     fun `a group message is delivered with signed sender attribution`() =
         runTestWithServer(Application::attachTestServices) { server, _ ->
             val alice = newParty(server.rpcClient)
@@ -480,7 +528,9 @@ class MessagesManagerIntegrationTest {
             }
             alice.myProfiles.createProfile("Alice")
             val roomId = alice.rooms.createGroup("Team")
-            alice.rooms.watchRooms().first { it.contains(roomId) }
+            // A new room is listed before its server setup; the server only rejects unsigned writes
+            // once the room is locked, which happens in the same batch that publishes membership.
+            alice.rooms.watchMembers(roomId).first { it.isNotEmpty() }
 
             // The blocked write exhausts its one attempt and the message is dead-lettered as FAILED.
             alice.messages.send(roomId, Draft { text = "will fail" })

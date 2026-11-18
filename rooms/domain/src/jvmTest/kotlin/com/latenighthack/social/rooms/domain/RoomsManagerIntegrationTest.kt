@@ -94,6 +94,7 @@ class RoomsManagerIntegrationTest {
         val myProfiles: MyProfilesManagerImpl,
         val rooms: RoomsManagerImpl,
         val lockers: LockersClient,
+        val database: Database,
     ) {
         fun close() {
             rooms.stop()
@@ -107,7 +108,7 @@ class RoomsManagerIntegrationTest {
         rpcClient: RpcClient,
         accountStore: KeyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
         joinClient: JoinClient = FakeJoinClient(),
-        database: Database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", emptyList()), com.latenighthack.ktstore.InMemoryStoreDelegate()),
+        database: Database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("social-test-${kotlin.random.Random.nextLong()}", RoomsStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate()),
         clientStore: KeyValueStore = KeyValueStore(InMemoryKeyValueStoreDelegate()),
         invitePolicy: RoomInvitePolicy = AcceptRoomInvites,
     ): Party {
@@ -115,7 +116,8 @@ class RoomsManagerIntegrationTest {
         val accountKeySource = AccountKeySource(account)
         val myProfiles = MyProfilesManagerImpl(account)
         val profileKeySource = ProfileKeySource(myProfiles, accountKeySource)
-        val rooms = RoomsManagerImpl(account, myProfiles, joinClient, invitePolicy = invitePolicy)
+        val rooms = RoomsManagerImpl(account, myProfiles, joinClient, database, invitePolicy = invitePolicy)
+        rooms.prepare()
         val roomsKeySource = RoomsKeySource(rooms, profileKeySource)
         val lockers = LockersClient.create(
             rpcClient = rpcClient,
@@ -130,7 +132,7 @@ class RoomsManagerIntegrationTest {
         rooms.start(lockers)
         account.createAccount()
         account.lifecycle.first { it is AccountManager.Lifecycle.Ready }
-        return Party(account, myProfiles, rooms, lockers)
+        return Party(account, myProfiles, rooms, lockers, database)
     }
 
     /** Fails every RPC to simulate a fully offline network. */
@@ -193,7 +195,7 @@ class RoomsManagerIntegrationTest {
         runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                 val store = KeyValueStore(InMemoryKeyValueStoreDelegate())
-                val db = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("review-offline"), com.latenighthack.ktstore.InMemoryStoreDelegate())
+                val db = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("review-offline", RoomsStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
                 val clientStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
                 val online = newParty(server.rpcClient, store, database=db, clientStore=clientStore)
                 val id = online.myProfiles.createProfile("cached")
@@ -304,9 +306,14 @@ class RoomsManagerIntegrationTest {
             val device1 = newParty(server.rpcClient, accountStore)
             device1.myProfiles.createProfile("Alice")
             val roomId = device1.rooms.createGroup("Team")
-            // Let the record + info sync to the account room before the device goes away.
-            device1.rooms.watchRooms().first { it.contains(roomId) }
+            // Let the record + info sync to the account room before the device goes away (a new room
+            // is listed locally at once; its account-room record lands when server setup finishes).
             device1.rooms.watchInfo(roomId).first { it?.name() == "Team" }
+            device1.lockers.typed(RoomsKeyspaces.ACCOUNT_ROOMS,
+                com.latenighthack.social.rooms.v1.RoomRecord::toByteArray,
+                com.latenighthack.social.rooms.v1.RoomRecord.Companion::fromByteArray)
+                .watch(device1.account.localAccountRoom()!!, LockerId(roomId.rawValue, RoomsKeyspaces.ACCOUNT_ROOMS))
+                .first { it is com.latenighthack.lockers.connector.TypedLockerUpdate.Present && !it.value.membershipPending }
             device1.close()
 
             // A fresh device restoring the same account identity (shared account store, but empty
@@ -417,8 +424,9 @@ class RoomsManagerIntegrationTest {
                 alice.rooms.watchMembers(room).first { it == listOf(aliceProfile) }
                 assertEquals(bobProfile, alice.rooms.peerProfile(room))
                 alice.rooms.stopAndJoin()
-                val restored = RoomsManagerImpl(alice.account, alice.myProfiles, FakeJoinClient())
+                val restored = RoomsManagerImpl(alice.account, alice.myProfiles, FakeJoinClient(), alice.database)
                 try {
+                    restored.prepare()
                     restored.start(alice.lockers)
                     restored.watchRooms().first { room in it }
                     assertEquals(bobProfile, restored.peerProfile(room))
@@ -498,7 +506,7 @@ class RoomsManagerIntegrationTest {
         runTestWithServer(Application::attachFastpathTestServices) { server, _ ->
             // Online session creates a room and lets its record land in the local cache.
             val accountStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
-            val database = com.latenighthack.lockers.connector.ConnectorStorage.inMemory()
+            val database = com.latenighthack.ktstore.Database(com.latenighthack.lockers.connector.ConnectorStorage.configuration("cached-rooms", RoomsStorage.definitions), com.latenighthack.ktstore.InMemoryStoreDelegate())
             val clientStore = KeyValueStore(InMemoryKeyValueStoreDelegate())
             val online = newParty(server.rpcClient, accountStore, database = database, clientStore = clientStore)
             online.myProfiles.createProfile("Alice")
