@@ -228,7 +228,10 @@ class MessagesManagerImpl(
                     }
                 }
             }
-            launch { messageClient(lockers).notifications.collect { onNotification(it) } }
+            // Resumes after the last notification this device handled: replaying the whole accepted
+            // journal on each start held the client database for seconds, and the saved cursor lets
+            // the connector prune it.
+            launch { messageClient(lockers).durableNotifications(NOTIFICATION_CONSUMER).collect { onNotification(it) } }
 
             val observers = mutableMapOf<RoomId, Job>()
             rooms.watchRooms().collect { roomIds ->
@@ -644,6 +647,8 @@ class MessagesManagerImpl(
     }
 
     private companion object {
+        /** Names this manager's saved place in the connector's accepted-event journal. */
+        const val NOTIFICATION_CONSUMER = "social.messages"
         const val DEFAULT_MAX_ATTEMPTS = 8
         const val DEFAULT_BACKOFF_BASE_MILLIS = 1_000L
         const val DEFAULT_BACKOFF_CAP_MILLIS = 60_000L

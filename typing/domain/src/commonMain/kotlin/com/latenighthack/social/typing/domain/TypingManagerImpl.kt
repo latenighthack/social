@@ -120,6 +120,7 @@ class TypingManagerImpl(
         // filtered to this keyspace); subscribing each room is what makes its events flow. Launched as
         // children of this coroutine so stop() tears them down; supervisorScope isolates failures.
         coroutineScope {
+            // Live only: typing is ephemeral, so earlier runs' notifications are never replayed.
             launch { typingClient(lockers).notifications.collect { onNotification(it) } }
             launch {
                 while (true) {
